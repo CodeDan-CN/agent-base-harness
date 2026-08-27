@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@client-contracts": ["src/client-contracts/index.ts"],
+      "@ui/*": ["ui/src/*"]
+    }
+  },
+  "include": ["ui/src", "src/client-contracts"],
+  "exclude": ["node_modules", "dist", "dist-*", "out", "reference_ui", "tests"]
+}

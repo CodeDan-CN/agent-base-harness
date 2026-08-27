@@ -1,0 +1,89 @@
+{
+  "name": "agent-base-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Base Harness - single Agent desktop client and low-context runtime",
+  "main": "dist/main/index.cjs",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "npm run rebuild:electron && node scripts/dev.mjs",
+    "build": "npm run build:main && npm run build:preload && npm run build:worker && npm run build:renderer",
+    "build:main": "node scripts/build.mjs main",
+    "build:preload": "node scripts/build.mjs preload",
+    "build:worker": "node scripts/build.mjs worker",
+    "build:renderer": "npm run check:ui-boundary && vite build",
+    "start": "npm run rebuild:electron && electron .",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.ui.json",
+    "check:ui-boundary": "node scripts/check-ui-boundary.mjs",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "catalog:build": "node scripts/build-model-catalog.mjs",
+    "test": "npm run rebuild:node && vitest run",
+    "test:unit": "npm run rebuild:node && vitest run tests/unit",
+    "test:integration": "npm run rebuild:node && vitest run tests/integration",
+    "test:contract": "npm run rebuild:node && vitest run tests/contract",
+    "test:security": "npm run rebuild:node && vitest run tests/security",
+    "test:watch": "npm run rebuild:node && vitest",
+    "e2e": "npm run rebuild:electron && npm run build && playwright test",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
+    "rebuild": "npm run rebuild:electron",
+    "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
+    "rebuild:node": "node scripts/rebuild-native.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.0",
+    "lucide-react": "^0.546.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "yauzl": "^3.4.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "@eslint/js": "^9.20.0",
+    "@playwright/test": "^1.62.1",
+    "@types/archiver": "^8.0.0",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@types/yauzl": "^3.4.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "archiver": "^8.0.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.20.0",
+    "playwright": "^1.50.1",
+    "prettier": "^3.4.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "~5.8.2",
+    "typescript-eslint": "^8.24.0",
+    "vite": "^6.2.0",
+    "vitest": "^3.0.5"
+  },
+  "build": {
+    "appId": "com.agentharness.client",
+    "productName": "Agent Harness",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**"
+    ],
+    "npmRebuild": true,
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dir"
+      ]
+    }
+  }
+}

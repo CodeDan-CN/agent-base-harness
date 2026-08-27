@@ -1,0 +1,9 @@
+node_modules
+dist
+release
+coverage
+test-results
+playwright-report
+reference_ui
+.omo
+package-lock.json

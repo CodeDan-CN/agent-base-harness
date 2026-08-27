@@ -1,0 +1,344 @@
+/** Stage 1 migration 定义。SQL 来自《阶段1架构设计》第 6 节，发布后不可改写。 */
+
+export interface Migration {
+  version: number;
+  name: string;
+  sql: string;
+}
+
+const V1_SQL = `
+CREATE TABLE local_users (
+  id            TEXT PRIMARY KEY,
+  display_name  TEXT NOT NULL,
+  avatar_key    TEXT,
+  sort_order    INTEGER NOT NULL,
+  status        TEXT NOT NULL CHECK (status = 'active'),
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE app_settings (
+  key           TEXT PRIMARY KEY,
+  value_json    TEXT NOT NULL CHECK (json_valid(value_json)),
+  revision      INTEGER NOT NULL DEFAULT 0,
+  updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE user_config_revisions (
+  user_id           TEXT PRIMARY KEY,
+  model_revision    INTEGER NOT NULL DEFAULT 0,
+  skill_revision    INTEGER NOT NULL DEFAULT 0,
+  runtime_revision  INTEGER NOT NULL DEFAULT 0,
+  updated_at        TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES local_users(id)
+);
+
+CREATE TABLE sessions (
+  id          TEXT NOT NULL,
+  user_id     TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  status      TEXT NOT NULL CHECK (status IN ('active', 'archived')),
+  next_seq    INTEGER NOT NULL DEFAULT 1 CHECK (next_seq > 0),
+  version     INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (user_id, id),
+  FOREIGN KEY (user_id) REFERENCES local_users(id)
+);
+
+CREATE TABLE session_events (
+  user_id         TEXT NOT NULL,
+  session_id      TEXT NOT NULL,
+  seq             INTEGER NOT NULL CHECK (seq > 0),
+  event_id        TEXT NOT NULL,
+  event_type      TEXT NOT NULL,
+  schema_version  INTEGER NOT NULL CHECK (schema_version > 0),
+  occurred_at     TEXT NOT NULL,
+  request_id      TEXT,
+  payload_json    TEXT NOT NULL CHECK (json_valid(payload_json)),
+  PRIMARY KEY (user_id, session_id, seq),
+  UNIQUE (user_id, event_id),
+  FOREIGN KEY (user_id, session_id) REFERENCES sessions(user_id, id)
+);
+
+CREATE INDEX idx_sessions_user_status_updated
+  ON sessions(user_id, status, updated_at DESC);
+
+CREATE INDEX idx_session_events_user_event
+  ON session_events(user_id, event_id);
+
+CREATE INDEX idx_session_events_user_session_type_seq
+  ON session_events(user_id, session_id, event_type, seq);
+
+CREATE TABLE model_services (
+  id              TEXT NOT NULL,
+  user_id         TEXT NOT NULL,
+  name            TEXT NOT NULL,
+  provider_type   TEXT NOT NULL,
+  endpoint        TEXT NOT NULL,
+  credential_ref  TEXT,
+  status          TEXT NOT NULL CHECK (status IN ('enabled', 'disabled', 'archived')),
+  config_json     TEXT NOT NULL CHECK (json_valid(config_json)),
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  archived_at     TEXT,
+  PRIMARY KEY (user_id, id),
+  FOREIGN KEY (user_id) REFERENCES local_users(id)
+);
+
+CREATE TABLE models (
+  id                   TEXT NOT NULL,
+  user_id              TEXT NOT NULL,
+  service_id           TEXT NOT NULL,
+  remote_model_id      TEXT NOT NULL,
+  display_name         TEXT NOT NULL,
+  context_window       INTEGER CHECK (context_window IS NULL OR context_window > 0),
+  max_output_tokens    INTEGER CHECK (max_output_tokens IS NULL OR max_output_tokens > 0),
+  capabilities_json    TEXT NOT NULL CHECK (json_valid(capabilities_json)),
+  default_params_json  TEXT NOT NULL CHECK (json_valid(default_params_json)),
+  source               TEXT NOT NULL CHECK (source IN ('discovered', 'manual')),
+  status               TEXT NOT NULL CHECK (status IN ('enabled', 'disabled', 'archived')),
+  created_at           TEXT NOT NULL,
+  updated_at           TEXT NOT NULL,
+  archived_at          TEXT,
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, service_id, remote_model_id),
+  FOREIGN KEY (user_id, service_id) REFERENCES model_services(user_id, id)
+);
+
+CREATE TABLE user_model_settings (
+  user_id           TEXT PRIMARY KEY,
+  default_model_id  TEXT,
+  updated_at        TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES local_users(id),
+  FOREIGN KEY (user_id, default_model_id) REFERENCES models(user_id, id)
+);
+
+CREATE INDEX idx_model_services_user_status
+  ON model_services(user_id, status, updated_at DESC);
+
+CREATE INDEX idx_models_user_service_status
+  ON models(user_id, service_id, status, display_name);
+
+CREATE TABLE skill_installations (
+  id                    TEXT NOT NULL,
+  user_id               TEXT NOT NULL,
+  skill_name            TEXT NOT NULL,
+  description           TEXT NOT NULL,
+  source_type           TEXT NOT NULL CHECK (source_type IN ('local', 'modelscope', 'clawhub', 'bundled')),
+  source_ref            TEXT,
+  root_path             TEXT NOT NULL,
+  metadata_json         TEXT NOT NULL CHECK (json_valid(metadata_json)),
+  content_digest        TEXT NOT NULL,
+  enabled               INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  status                TEXT NOT NULL CHECK (status IN ('valid', 'invalid', 'missing', 'incompatible')),
+  compatibility_status  TEXT NOT NULL CHECK (compatibility_status IN ('compatible', 'incompatible', 'unknown')),
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, skill_name),
+  FOREIGN KEY (user_id) REFERENCES local_users(id)
+);
+
+CREATE INDEX idx_skill_installations_user_enabled
+  ON skill_installations(user_id, enabled, updated_at DESC);
+`;
+
+export const STAGE1_MIGRATIONS: readonly Migration[] = [
+  { version: 1, name: 'initial-schema', sql: V1_SQL },
+];
+
+/**
+ * Stage 2 只追加结构，不改写已经发布的 V1。
+ * Runtime 的事实仍写入 session_events；其余表是可重建的查询投影与租约元数据。
+ */
+const V2_SQL = `
+ALTER TABLE sessions ADD COLUMN lease_owner TEXT;
+ALTER TABLE sessions ADD COLUMN lease_expires_at TEXT;
+ALTER TABLE session_events ADD COLUMN idempotency_key TEXT;
+
+CREATE UNIQUE INDEX idx_session_events_input_idempotency
+  ON session_events(user_id, session_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+
+CREATE TABLE conversation_events (
+  id                            TEXT NOT NULL,
+  user_id                       TEXT NOT NULL,
+  session_id                    TEXT NOT NULL,
+  status                        TEXT NOT NULL CHECK (status IN ('open', 'awaiting_user', 'completed', 'failed')),
+  title                         TEXT,
+  summary                       TEXT,
+  summary_through_exchange_seq  INTEGER NOT NULL DEFAULT 0,
+  summary_tokens                INTEGER NOT NULL DEFAULT 0,
+  summary_version               INTEGER NOT NULL DEFAULT 0,
+  exchange_count                INTEGER NOT NULL DEFAULT 0,
+  created_at                    TEXT NOT NULL,
+  updated_at                    TEXT NOT NULL,
+  completed_at                  TEXT,
+  PRIMARY KEY (user_id, id),
+  FOREIGN KEY (user_id, session_id) REFERENCES sessions(user_id, id)
+);
+
+CREATE TABLE conversation_exchanges (
+  id                        TEXT NOT NULL,
+  user_id                   TEXT NOT NULL,
+  event_id                  TEXT NOT NULL,
+  exchange_seq              INTEGER NOT NULL,
+  execution_turn_id         TEXT NOT NULL,
+  status                    TEXT NOT NULL CHECK (status IN ('open', 'completed', 'interrupted', 'failed')),
+  user_visible_from_seq     INTEGER,
+  user_visible_through_seq  INTEGER,
+  created_at                TEXT NOT NULL,
+  completed_at              TEXT,
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, event_id, exchange_seq),
+  UNIQUE (user_id, execution_turn_id),
+  FOREIGN KEY (user_id, event_id) REFERENCES conversation_events(user_id, id)
+);
+
+CREATE TABLE conversation_event_relations (
+  user_id         TEXT NOT NULL,
+  source_event_id TEXT NOT NULL,
+  target_event_id TEXT NOT NULL,
+  relation        TEXT NOT NULL CHECK (relation IN ('explicit', 'continuation')),
+  created_at      TEXT NOT NULL,
+  PRIMARY KEY (user_id, source_event_id, target_event_id, relation),
+  FOREIGN KEY (user_id, source_event_id) REFERENCES conversation_events(user_id, id),
+  FOREIGN KEY (user_id, target_event_id) REFERENCES conversation_events(user_id, id)
+);
+
+CREATE TABLE projection_checkpoints (
+  user_id        TEXT NOT NULL,
+  session_id     TEXT NOT NULL,
+  projection     TEXT NOT NULL,
+  through_seq    INTEGER NOT NULL DEFAULT 0,
+  schema_version INTEGER NOT NULL,
+  updated_at     TEXT NOT NULL,
+  PRIMARY KEY (user_id, session_id, projection),
+  FOREIGN KEY (user_id, session_id) REFERENCES sessions(user_id, id)
+);
+
+CREATE INDEX idx_conversation_events_user_session_status
+  ON conversation_events(user_id, session_id, status, updated_at DESC);
+CREATE INDEX idx_conversation_exchanges_user_event_seq
+  ON conversation_exchanges(user_id, event_id, exchange_seq);
+`;
+
+export const STAGE2_MIGRATIONS: readonly Migration[] = [
+  ...STAGE1_MIGRATIONS,
+  { version: 2, name: 'single-agent-runtime', sql: V2_SQL },
+];
+
+/** Stage 3 Client 管理界面所需的配置版本、受管资源和设置结构。 */
+const V3_SQL = `
+ALTER TABLE sessions ADD COLUMN tombstoned_at TEXT;
+ALTER TABLE model_services ADD COLUMN config_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE models ADD COLUMN config_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE skill_installations ADD COLUMN managed_root_path TEXT;
+ALTER TABLE skill_installations ADD COLUMN authorization_status TEXT NOT NULL DEFAULT 'pending'
+  CHECK (authorization_status IN ('pending', 'granted', 'denied'));
+
+CREATE TABLE skill_settings (
+  user_id                TEXT NOT NULL,
+  installation_id        TEXT NOT NULL,
+  settings_json          TEXT NOT NULL CHECK (json_valid(settings_json)),
+  permission_grants_json TEXT NOT NULL CHECK (json_valid(permission_grants_json)),
+  content_digest         TEXT NOT NULL,
+  revision               INTEGER NOT NULL DEFAULT 0,
+  updated_at             TEXT NOT NULL,
+  PRIMARY KEY (user_id, installation_id),
+  FOREIGN KEY (user_id, installation_id)
+    REFERENCES skill_installations(user_id, id)
+);
+
+CREATE TABLE skill_secret_bindings (
+  user_id          TEXT NOT NULL,
+  installation_id  TEXT NOT NULL,
+  secret_name      TEXT NOT NULL,
+  credential_ref   TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (user_id, installation_id, secret_name),
+  FOREIGN KEY (user_id, installation_id)
+    REFERENCES skill_installations(user_id, id)
+);
+
+CREATE TABLE runtime_settings (
+  user_id       TEXT PRIMARY KEY,
+  settings_json TEXT NOT NULL CHECK (json_valid(settings_json)),
+  revision      INTEGER NOT NULL DEFAULT 0,
+  updated_at    TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES local_users(id)
+);
+
+CREATE TABLE attachments (
+  id             TEXT NOT NULL,
+  user_id        TEXT NOT NULL,
+  session_id     TEXT,
+  display_name   TEXT NOT NULL,
+  media_type     TEXT NOT NULL,
+  byte_size      INTEGER NOT NULL CHECK (byte_size >= 0),
+  content_digest TEXT NOT NULL,
+  storage_key    TEXT NOT NULL,
+  status         TEXT NOT NULL CHECK (status IN ('ready', 'deleted', 'missing')),
+  created_at     TEXT NOT NULL,
+  deleted_at     TEXT,
+  PRIMARY KEY (user_id, id),
+  FOREIGN KEY (user_id, session_id) REFERENCES sessions(user_id, id)
+);
+
+CREATE INDEX idx_attachments_user_session_status
+  ON attachments(user_id, session_id, status, created_at DESC);
+`;
+
+export const STAGE3_MIGRATIONS: readonly Migration[] = [
+  ...STAGE2_MIGRATIONS,
+  { version: 3, name: 'client-product-management', sql: V3_SQL },
+];
+
+/** Stage 4 模型能力、思考配置与 Session 业务记忆。 */
+const V4_SQL = `
+ALTER TABLE model_services ADD COLUMN provider_preset_id TEXT;
+ALTER TABLE model_services ADD COLUMN provider_preset_version INTEGER;
+
+ALTER TABLE models ADD COLUMN input_capability INTEGER
+  CHECK (input_capability IS NULL OR input_capability > 0);
+ALTER TABLE models ADD COLUMN max_output_capability INTEGER
+  CHECK (max_output_capability IS NULL OR max_output_capability > 0);
+ALTER TABLE models ADD COLUMN request_max_output_tokens INTEGER
+  CHECK (request_max_output_tokens IS NULL OR request_max_output_tokens > 0);
+ALTER TABLE models ADD COLUMN metadata_source TEXT NOT NULL DEFAULT 'legacy'
+  CHECK (metadata_source IN ('manual', 'endpoint', 'catalog', 'fallback', 'legacy'));
+ALTER TABLE models ADD COLUMN catalog_version TEXT;
+ALTER TABLE models ADD COLUMN capability_profile_ref TEXT;
+ALTER TABLE models ADD COLUMN capability_match_kind TEXT NOT NULL DEFAULT 'unresolved'
+  CHECK (capability_match_kind IN ('profile', 'preset', 'host', 'model-unique', 'model-consensus', 'manual', 'unresolved'));
+ALTER TABLE models ADD COLUMN thinking_mode TEXT NOT NULL DEFAULT 'auto'
+  CHECK (thinking_mode IN ('auto', 'enabled', 'disabled'));
+ALTER TABLE models ADD COLUMN reasoning_effort TEXT
+  CHECK (reasoning_effort IS NULL OR reasoning_effort IN ('minimal', 'low', 'medium', 'high', 'xhigh', 'max'));
+
+UPDATE models SET
+  request_max_output_tokens = max_output_tokens,
+  max_output_capability = max_output_tokens
+WHERE request_max_output_tokens IS NULL;
+
+CREATE TABLE session_memory_summaries (
+  user_id                     TEXT NOT NULL,
+  session_id                  TEXT NOT NULL,
+  summary                     TEXT NOT NULL,
+  covered_through_session_seq INTEGER NOT NULL CHECK (covered_through_session_seq > 0),
+  summary_tokens              INTEGER NOT NULL CHECK (summary_tokens > 0),
+  summary_version             INTEGER NOT NULL CHECK (summary_version > 0),
+  input_tokens                INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+  output_tokens               INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+  updated_at                  TEXT NOT NULL,
+  PRIMARY KEY (user_id, session_id),
+  FOREIGN KEY (user_id, session_id) REFERENCES sessions(user_id, id)
+);
+`;
+
+export const STAGE4_MIGRATIONS: readonly Migration[] = [
+  ...STAGE3_MIGRATIONS,
+  { version: 4, name: 'model-capability-and-context-management', sql: V4_SQL },
+];

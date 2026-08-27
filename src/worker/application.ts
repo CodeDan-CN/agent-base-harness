@@ -1,0 +1,925 @@
+import { cpSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { openDatabase, currentSchemaVersion } from '../infrastructure/sqlite/connection';
+import { runMigrations } from '../infrastructure/sqlite/migration';
+import { STAGE4_MIGRATIONS } from '../infrastructure/sqlite/schema';
+import { SqliteRepositories } from '../infrastructure/sqlite/repositories';
+import { ProcessRunner } from '../infrastructure/process/process-runner';
+import { EnvironmentDetector } from '../infrastructure/process/environment-detector';
+import { SkillCatalogService } from './skill-catalog-service';
+import { parseSkillDirectory } from '../infrastructure/skills/parser';
+import { FakeCredentialStore } from '../infrastructure/credential/fake-credential-store';
+import { MacKeychainCredentialStore } from '../infrastructure/credential/mac-keychain-store';
+import { OpenAiCompatibleAdapter } from '../infrastructure/llm/openai-compatible-adapter';
+import {
+  credentialRefOf,
+  type CredentialScope,
+  type CredentialStore,
+} from '../infrastructure/credential/credential-store';
+import { SystemClock, UuidIdProvider } from '../shared/domain/ports';
+import type { Clock, IdProvider } from '../shared/domain/ports';
+import { isBuiltinUser } from '../shared/domain/user';
+import type { LocalUserId } from '../shared/domain/user';
+import { BridgeError } from '../shared/contracts/errors';
+import type { BootstrapResult } from '../shared/contracts/bootstrap';
+import type { HealthSnapshot, InterpreterHealth } from '../shared/contracts/health';
+import type { SkillCatalogSnapshot } from '../shared/domain/skill';
+import type { Model, ModelService } from '../shared/domain/model';
+import type { Logger } from '../infrastructure/logging/logger';
+import { LlmAdapterRegistry } from '../runtime/model';
+import { ToolRegistry } from '../runtime/tools';
+import { registerBuiltinRuntimeTools } from '../runtime/builtin-tools';
+import { RuntimeService, type RuntimeServiceOptions } from '../runtime/runtime-service';
+import type { ModelSnapshot } from '../runtime/model';
+import bundledCatalog from '../../resources/model-catalog.json';
+import {
+  matchModelCapability,
+  validateCatalog,
+  type CapabilityMatchKind,
+  type ModelCatalog,
+} from '../runtime/model-catalog';
+import {
+  applyThinkingSettings,
+  getProviderPreset,
+  inferProviderPresetFromEndpoint,
+  normalizeReasoningEffort,
+  supportedReasoningEffortsFor,
+  validatePresetEndpoint,
+} from '../runtime/provider-presets';
+import type { SessionEventBatch } from '../shared/contracts/ipc';
+import type {
+  CredentialMutation,
+  ModelDiscoveryResult,
+  ModelManagementSnapshot,
+  ModelSaveParams,
+  ModelServiceSaveParams,
+  ModelServiceTestParams,
+  SkillManagementSnapshot,
+} from '../shared/contracts/management';
+import type {
+  ModelCallStatisticsParams,
+  ModelCallStatisticsSnapshot,
+} from '../shared/contracts/statistics';
+import { buildModelCallStatistics } from './model-call-statistics';
+
+export interface CreateWorkerAppDeps {
+  appDataDir: string;
+  generation: number;
+  logger: Logger;
+  clock?: Clock;
+  idProvider?: IdProvider;
+  credentialStore?: CredentialStore;
+  env?: {
+    nodePath?: string;
+    pythonPaths?: string[];
+    shellPath?: string;
+  };
+  useSystemCredential?: boolean;
+  llmAdapters?: LlmAdapterRegistry;
+  tools?: ToolRegistry;
+  runtimeOptions?: RuntimeServiceOptions;
+  onEventsAppended?: (batch: SessionEventBatch) => void;
+}
+
+export interface WorkerApplication {
+  readonly generation: number;
+  readonly schemaVersion: number;
+  readonly activeUserId: LocalUserId;
+  readonly repos: SqliteRepositories;
+  readonly credentialStore: CredentialStore;
+  readonly processRunner: ProcessRunner;
+  readonly detector: EnvironmentDetector;
+  readonly logger: Logger;
+  readonly appDataDir: string;
+  readonly runtime: RuntimeService;
+  bootstrap(userId: LocalUserId): BootstrapResult;
+  health(userId: LocalUserId): Promise<HealthSnapshot>;
+  switchUser(userId: LocalUserId): BootstrapResult;
+  skillCatalog(userId: LocalUserId): SkillCatalogSnapshot;
+  modelManagement(userId: LocalUserId): Promise<ModelManagementSnapshot>;
+  modelCallStatistics(
+    userId: LocalUserId,
+    params: ModelCallStatisticsParams,
+  ): ModelCallStatisticsSnapshot;
+  saveModelService(userId: LocalUserId, input: ModelServiceSaveParams): Promise<{ id: string }>;
+  testModelService(
+    userId: LocalUserId,
+    input: ModelServiceTestParams,
+  ): Promise<{ status: 'success' | 'auth' | 'network' | 'timeout' | 'protocol' }>;
+  archiveModelService(userId: LocalUserId, id: string, expectedRevision: number): { id: string };
+  saveModel(userId: LocalUserId, input: ModelSaveParams): { id: string };
+  archiveModel(userId: LocalUserId, id: string, expectedRevision: number): { id: string };
+  setDefaultModel(
+    userId: LocalUserId,
+    modelId: string,
+    expectedRevision: number,
+  ): { modelId: string };
+  discoverModels(userId: LocalUserId, serviceId: string): Promise<ModelDiscoveryResult>;
+  skillManagement(userId: LocalUserId): SkillManagementSnapshot;
+  setSkillEnabled(
+    userId: LocalUserId,
+    skillName: string,
+    enabled: boolean,
+    expectedRevision: number,
+  ): { skillName: string; enabled: boolean };
+  installSkillDirectory(userId: LocalUserId, sourcePath: string): { skillName: string };
+  registerSecret(secret: string): void;
+  close(): void;
+}
+
+export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplication {
+  const clock = deps.clock ?? new SystemClock();
+  const modelCatalog = validateCatalog(bundledCatalog);
+
+  mkdirSync(path.join(deps.appDataDir, 'database'), { recursive: true });
+  const dbPath = path.join(deps.appDataDir, 'database', 'app.db');
+  const db = openDatabase(dbPath);
+
+  let schemaVersion: number;
+  try {
+    schemaVersion = runMigrations(db, STAGE4_MIGRATIONS, { clock: () => clock.nowIso() });
+  } catch (err) {
+    try {
+      db.close();
+    } catch {
+      // 关闭失败不掩盖原始迁移错误。
+    }
+    throw err;
+  }
+
+  const repos = new SqliteRepositories(db);
+  repos.users.seedUsers(clock.nowIso());
+  const activeUserId = repos.users.repairActiveUserId(clock.nowIso());
+
+  const processRunner = new ProcessRunner({ allowedRoots: [deps.appDataDir, os.tmpdir()] });
+  const detector = new EnvironmentDetector(processRunner, deps.env, deps.appDataDir);
+
+  const logger = deps.logger.child({ workerGeneration: deps.generation });
+
+  const credentialStore =
+    deps.credentialStore ??
+    (deps.useSystemCredential ? new MacKeychainCredentialStore() : new FakeCredentialStore());
+
+  const skillRoot = (userId: LocalUserId) => path.join(deps.appDataDir, 'skills', userId);
+  const skillCatalog = new SkillCatalogService({ repos, skillRoot, clock });
+  skillCatalog.refresh(activeUserId);
+
+  const ids = deps.idProvider ?? new UuidIdProvider();
+  const llmAdapters = deps.llmAdapters ?? new LlmAdapterRegistry();
+  if (!deps.llmAdapters) {
+    llmAdapters.register(
+      new OpenAiCompatibleAdapter({
+        credentialStore,
+        onCredentialLoaded: (secret) => logger.registerSecret(secret),
+      }),
+    );
+  }
+  const tools = deps.tools ?? new ToolRegistry();
+  if (!deps.tools)
+    registerBuiltinRuntimeTools(tools, { repos, processRunner, appDataDir: deps.appDataDir });
+  const runtime = new RuntimeService({
+    repos,
+    clock,
+    ids,
+    logger,
+    workerId: `worker-${deps.generation}`,
+    llmAdapters,
+    tools,
+    resolveModel: (userId) => resolveRuntimeModel(repos, modelCatalog, userId),
+    options: deps.runtimeOptions,
+    onEventsAppended: deps.onEventsAppended,
+  });
+
+  const app: WorkerApplication = {
+    generation: deps.generation,
+    schemaVersion,
+    activeUserId,
+    repos,
+    credentialStore,
+    processRunner,
+    detector,
+    logger,
+    appDataDir: deps.appDataDir,
+    runtime,
+
+    bootstrap(userId: LocalUserId): BootstrapResult {
+      const user = repos.users.getUser(userId);
+      if (!user) {
+        throw new BridgeError('USER_NOT_FOUND', 'User not found');
+      }
+      return {
+        activeUser: user,
+        users: repos.users.listUsers(),
+        runtime: { status: 'ready', generation: deps.generation },
+        schemaVersion,
+        revisions: repos.users.getRevisions(userId),
+        capabilities: { model: 'foundation', skill: 'foundation', runtime: 'ready' },
+      };
+    },
+
+    async health(userId: LocalUserId): Promise<HealthSnapshot> {
+      const interpreters = await detector.detect();
+      const credentialStatus = await detectCredentialHealth(credentialStore);
+      skillCatalog.refresh(userId);
+      const skillRoot = skillCatalog.skillRootHealth(userId);
+      return {
+        worker: { status: 'ready', generation: deps.generation },
+        database: { status: 'ok', schemaVersion: currentSchemaVersion(db) },
+        credential: { status: credentialStatus },
+        skillRoot,
+        interpreters: {
+          node: toHealth(interpreters.node),
+          python: toHealth(interpreters.python),
+          shell: toHealth(interpreters.shell),
+        },
+      };
+    },
+
+    switchUser(userId: LocalUserId): BootstrapResult {
+      if (!isBuiltinUser(userId)) {
+        throw new BridgeError('USER_NOT_FOUND', 'User not found');
+      }
+      repos.users.setActiveUserId(userId, clock.nowIso());
+      skillCatalog.refresh(userId);
+      return app.bootstrap(userId);
+    },
+
+    skillCatalog(userId: LocalUserId): SkillCatalogSnapshot {
+      return skillCatalog.catalog(userId);
+    },
+
+    async modelManagement(userId: LocalUserId): Promise<ModelManagementSnapshot> {
+      const services = repos.models
+        .listServices(userId)
+        .filter((service) => service.status !== 'archived');
+      const models = repos.models.listModels(userId).filter((model) => model.status !== 'archived');
+      return {
+        revision: repos.users.getRevisions(userId).modelRevision,
+        defaultModelId: repos.models.getDefaultModelId(userId),
+        services: await Promise.all(
+          services.map(async (service) => {
+            const serviceModels = models.filter((model) => model.serviceId === service.id);
+            const credentialStatus = service.credentialRef
+              ? await credentialStatusOf(credentialStore, service.credentialRef)
+              : ('missing' as const);
+            return {
+              id: service.id,
+              name: service.name,
+              providerType: service.providerType,
+              providerPresetId:
+                service.providerPresetId ??
+                inferProviderPresetFromEndpoint(service.endpoint)?.id ??
+                null,
+              endpoint: service.endpoint,
+              status: service.status,
+              credentialStatus,
+              config: service.config,
+              modelCount: serviceModels.length,
+              agentReady:
+                service.status === 'enabled' &&
+                serviceModels.some((model) => model.status === 'enabled'),
+            };
+          }),
+        ),
+        models: models.map((model) => {
+          const service = services.find((candidate) => candidate.id === model.serviceId);
+          const presetId =
+            service?.providerPresetId ??
+            (service ? inferProviderPresetFromEndpoint(service.endpoint)?.id : null) ??
+            null;
+          const capabilities = effectiveModelCapabilities(modelCatalog, service, model);
+          return {
+            id: model.id,
+            serviceId: model.serviceId,
+            remoteModelId: model.remoteModelId,
+            displayName: model.displayName,
+            contextWindow: capabilities.contextWindow,
+            maxOutputTokens: model.maxOutputTokens,
+            inputCapability: capabilities.inputCapability,
+            maxOutputCapability: capabilities.maxOutputCapability,
+            requestMaxOutputTokens: model.requestMaxOutputTokens,
+            metadataSource: capabilities.metadataSource,
+            catalogVersion: capabilities.catalogVersion,
+            capabilityProfileRef: model.capabilityProfileRef,
+            capabilityMatchKind: capabilities.capabilityMatchKind,
+            thinkingMode: model.thinkingMode,
+            reasoningEffort: normalizeReasoningEffort(
+              presetId,
+              model.remoteModelId,
+              model.reasoningEffort,
+            ),
+            supportedReasoningEfforts: [
+              ...supportedReasoningEffortsFor(presetId, model.remoteModelId),
+            ],
+            capabilities: model.capabilities,
+            defaultParams: model.defaultParams,
+            source: model.source,
+            status: model.status,
+          };
+        }),
+      };
+    },
+
+    modelCallStatistics(userId, params) {
+      const sessions = repos.sessions.listSessions(userId);
+      return buildModelCallStatistics(
+        sessions.map((session) => ({
+          session,
+          events: repos.sessions.listEvents(userId, session.id),
+        })),
+        params,
+      );
+    },
+
+    async saveModelService(userId, input) {
+      assertRevision(repos.users.getRevisions(userId).modelRevision, input.expectedRevision);
+      const id = input.id ?? ids.newId();
+      const existing = input.id ? repos.models.getService(userId, input.id) : undefined;
+      if (input.id && !existing) throw new BridgeError('INVALID_REQUEST', 'Service not found');
+      const scope = { userId, purpose: 'model-service', entityId: id };
+      const credentialRef = await applyCredentialMutation(
+        credentialStore,
+        logger,
+        scope,
+        existing?.credentialRef ?? null,
+        input.credential,
+      );
+      const endpoint = validateModelEndpoint(input.endpoint);
+      const preset =
+        getProviderPreset(input.providerPresetId) ?? inferProviderPresetFromEndpoint(endpoint);
+      if (preset && !validatePresetEndpoint(preset, endpoint)) {
+        throw new BridgeError('INVALID_REQUEST', 'Endpoint does not match the provider preset');
+      }
+      if (existing) {
+        repos.models.updateService(
+          userId,
+          id,
+          {
+            name: input.name,
+            endpoint,
+            providerPresetId: preset?.id ?? null,
+            providerPresetVersion: preset?.version ?? null,
+            config: sanitizeModelParams(input.config),
+            credentialRef,
+            status: input.enabled ? 'enabled' : 'disabled',
+          },
+          clock.nowIso(),
+        );
+      } else {
+        repos.models.createService({
+          id,
+          userId,
+          name: input.name,
+          providerType: input.providerType,
+          endpoint,
+          credentialRef,
+          providerPresetId: preset?.id ?? null,
+          providerPresetVersion: preset?.version ?? null,
+          config: sanitizeModelParams(input.config),
+          now: clock.nowIso(),
+        });
+        if (!input.enabled) {
+          repos.models.updateService(userId, id, { status: 'disabled' }, clock.nowIso());
+        }
+      }
+      return { id };
+    },
+
+    async testModelService(userId, input) {
+      const existing = input.id ? repos.models.getService(userId, input.id) : undefined;
+      const credential = await credentialForDraft(
+        credentialStore,
+        existing?.credentialRef ?? null,
+        input.credential,
+      );
+      if (credential) logger.registerSecret(credential);
+      return { status: await testOpenAiService(input.endpoint, credential) };
+    },
+
+    archiveModelService(userId, id, expectedRevision) {
+      assertRevision(repos.users.getRevisions(userId).modelRevision, expectedRevision);
+      repos.models.archiveService(userId, id, clock.nowIso());
+      return { id };
+    },
+
+    saveModel(userId, input) {
+      assertRevision(repos.users.getRevisions(userId).modelRevision, input.expectedRevision);
+      const service = repos.models.getService(userId, input.serviceId);
+      if (!service || service.status === 'archived') {
+        throw new BridgeError('INVALID_REQUEST', 'Service not found');
+      }
+      const matchingRemoteModel = repos.models.getModelByRemoteId(
+        userId,
+        input.serviceId,
+        input.remoteModelId,
+      );
+      const id = input.id ?? matchingRemoteModel?.id ?? ids.newId();
+      const existing = input.id ? repos.models.getModel(userId, input.id) : matchingRemoteModel;
+      if (input.id && (!existing || existing.serviceId !== input.serviceId)) {
+        throw new BridgeError('INVALID_REQUEST', 'Model not found');
+      }
+      const defaultParams = sanitizeModelParams(input.defaultParams);
+      const effectivePreset =
+        getProviderPreset(service.providerPresetId) ??
+        inferProviderPresetFromEndpoint(service.endpoint);
+      if (
+        effectivePreset &&
+        ['thinking', 'enable_thinking', 'reasoning_effort'].some((key) => key in defaultParams)
+      ) {
+        throw new BridgeError(
+          'INVALID_REQUEST',
+          'Thinking parameters must be configured with the preset controls',
+        );
+      }
+      const thinkingMode = input.thinkingMode ?? 'auto';
+      const reasoningEffort =
+        thinkingMode === 'enabled'
+          ? normalizeReasoningEffort(
+              effectivePreset?.id,
+              input.remoteModelId,
+              input.reasoningEffort ?? 'medium',
+            )
+          : null;
+      const catalogCapabilities = trustedCatalogCapabilities(modelCatalog, service, {
+        remoteModelId: input.remoteModelId,
+        capabilityProfileRef: input.capabilityProfileRef ?? null,
+      });
+      const contextWindow = catalogCapabilities?.context ?? input.contextWindow;
+      const inputCapability = catalogCapabilities?.input ?? input.inputCapability ?? null;
+      const maxOutputCapability = catalogCapabilities?.output ?? input.maxOutputCapability ?? null;
+      const metadataSource = catalogCapabilities ? ('catalog' as const) : input.metadataSource;
+      const catalogVersion = catalogCapabilities ? modelCatalog.generatedAt : input.catalogVersion;
+      const capabilityMatchKind = catalogCapabilities?.matchKind ?? input.capabilityMatchKind;
+      const requestMaxOutputTokens = Math.min(
+        input.requestMaxOutputTokens ?? input.maxOutputTokens,
+        maxOutputCapability ?? Number.POSITIVE_INFINITY,
+      );
+      if (existing) {
+        repos.models.updateModel(
+          userId,
+          id,
+          {
+            remoteModelId: input.remoteModelId,
+            displayName: input.displayName,
+            contextWindow,
+            maxOutputTokens: requestMaxOutputTokens,
+            inputCapability,
+            maxOutputCapability,
+            requestMaxOutputTokens,
+            metadataSource,
+            catalogVersion,
+            capabilityProfileRef: input.capabilityProfileRef,
+            capabilityMatchKind,
+            thinkingMode,
+            reasoningEffort,
+            capabilities: input.capabilities,
+            defaultParams,
+            status: input.enabled ? 'enabled' : 'disabled',
+          },
+          clock.nowIso(),
+        );
+      } else {
+        repos.models.createModel({
+          id,
+          userId,
+          serviceId: input.serviceId,
+          remoteModelId: input.remoteModelId,
+          displayName: input.displayName,
+          contextWindow,
+          maxOutputTokens: requestMaxOutputTokens,
+          inputCapability,
+          maxOutputCapability,
+          requestMaxOutputTokens,
+          metadataSource,
+          catalogVersion,
+          capabilityProfileRef: input.capabilityProfileRef,
+          capabilityMatchKind,
+          thinkingMode,
+          reasoningEffort,
+          capabilities: input.capabilities,
+          defaultParams,
+          source: 'manual',
+          now: clock.nowIso(),
+        });
+        if (!input.enabled) repos.models.setModelStatus(userId, id, 'disabled', clock.nowIso());
+      }
+      return { id };
+    },
+
+    archiveModel(userId, id, expectedRevision) {
+      assertRevision(repos.users.getRevisions(userId).modelRevision, expectedRevision);
+      repos.models.setModelStatus(userId, id, 'archived', clock.nowIso());
+      return { id };
+    },
+
+    setDefaultModel(userId, modelId, expectedRevision) {
+      assertRevision(repos.users.getRevisions(userId).modelRevision, expectedRevision);
+      repos.models.setDefaultModel(userId, modelId, clock.nowIso());
+      return { modelId };
+    },
+
+    async discoverModels(userId, serviceId) {
+      const service = repos.models.getService(userId, serviceId);
+      if (!service || service.status !== 'enabled') {
+        throw new BridgeError('INVALID_REQUEST', 'Service not found');
+      }
+      const credential = service.credentialRef
+        ? await credentialStore.getByRef(service.credentialRef)
+        : null;
+      if (credential) logger.registerSecret(credential);
+      const remoteModelIds = await fetchOpenAiModels(service.endpoint, credential);
+      return {
+        serviceId,
+        remoteModelIds,
+        models: remoteModelIds.map((id) => {
+          const match = matchModelCapability(modelCatalog, {
+            modelId: id,
+            apiEndpoint: service.endpoint,
+            providerPresetId: service.providerPresetId,
+          });
+          return {
+            id,
+            contextWindow: match.model?.context ?? null,
+            inputCapability: match.model?.input ?? null,
+            maxOutputCapability: match.model?.output ?? null,
+            metadataSource: match.model ? ('catalog' as const) : ('fallback' as const),
+            capabilityMatchKind: match.matchKind,
+            conflicts: match.conflicts,
+          };
+        }),
+      };
+    },
+
+    skillManagement(userId) {
+      skillCatalog.refresh(userId);
+      return {
+        revision: repos.users.getRevisions(userId).skillRevision,
+        skills: repos.skills.listInstallations(userId).map((skill) => ({
+          id: skill.id,
+          name: skill.skillName,
+          description: skill.description,
+          sourceType: skill.sourceType,
+          enabled: skill.enabled,
+          status: skill.status,
+          compatibilityStatus: skill.compatibilityStatus,
+          contentDigest: skill.contentDigest,
+          metadata: skill.metadata,
+        })),
+      };
+    },
+
+    setSkillEnabled(userId, skillName, enabled, expectedRevision) {
+      assertRevision(repos.users.getRevisions(userId).skillRevision, expectedRevision);
+      repos.skills.setEnabled(userId, skillName, enabled, clock.nowIso());
+      return { skillName, enabled };
+    },
+
+    installSkillDirectory(userId, sourcePath) {
+      const parsed = parseSkillDirectory(sourcePath);
+      if (!parsed.ok) throw new BridgeError('INVALID_REQUEST', `Invalid Skill: ${parsed.error}`);
+      assertSafeSkillTree(parsed.skill.resourceBase);
+      const userRoot = skillRoot(userId);
+      mkdirSync(userRoot, { recursive: true });
+      const destination = path.join(userRoot, parsed.skill.name);
+      if (pathExists(destination)) {
+        throw new BridgeError('REVISION_CONFLICT', 'Skill already exists; use update');
+      }
+      const temporary = path.join(userRoot, `.install-${ids.newId()}`);
+      try {
+        cpSync(parsed.skill.resourceBase, temporary, { recursive: true, dereference: false });
+        renameSync(temporary, destination);
+      } catch (error) {
+        rmSync(temporary, { recursive: true, force: true });
+        throw error;
+      }
+      skillCatalog.refresh(userId);
+      return { skillName: parsed.skill.name };
+    },
+
+    registerSecret(secret: string): void {
+      logger.registerSecret(secret);
+    },
+
+    close(): void {
+      runtime.close();
+      try {
+        db.close();
+      } catch {
+        // 忽略关闭错误。
+      }
+    },
+  };
+
+  return app;
+}
+
+function resolveRuntimeModel(
+  repos: SqliteRepositories,
+  modelCatalog: ModelCatalog,
+  userId: LocalUserId,
+): ModelSnapshot {
+  const modelId = repos.models.getDefaultModelId(userId);
+  if (!modelId) throw new BridgeError('MODEL_NOT_CONFIGURED', 'Default model is not configured');
+  const model = repos.models.getModel(userId, modelId);
+  if (!model || model.status !== 'enabled') {
+    throw new BridgeError('MODEL_NOT_CONFIGURED', 'Default model is unavailable');
+  }
+  const service = repos.models.getService(userId, model.serviceId);
+  if (!service || service.status !== 'enabled') {
+    throw new BridgeError('MODEL_NOT_CONFIGURED', 'Model service is unavailable');
+  }
+  const capabilities = effectiveModelCapabilities(modelCatalog, service, model);
+  return {
+    serviceId: service.id,
+    modelId: model.id,
+    providerType: service.providerType,
+    remoteModelId: model.remoteModelId,
+    endpoint: validateModelEndpoint(service.endpoint),
+    credentialRef: service.credentialRef,
+    contextWindow: capabilities.contextWindow ?? 32_768,
+    inputCapability: capabilities.inputCapability,
+    maxOutputCapability: capabilities.maxOutputCapability ?? model.maxOutputTokens ?? 4096,
+    requestMaxOutputTokens: model.requestMaxOutputTokens ?? model.maxOutputTokens ?? 4096,
+    maxOutputTokens: model.requestMaxOutputTokens ?? model.maxOutputTokens ?? 4096,
+    metadataSource: capabilities.metadataSource,
+    catalogVersion: capabilities.catalogVersion,
+    capabilityMatchKind: capabilities.capabilityMatchKind,
+    providerPresetId:
+      service.providerPresetId ?? inferProviderPresetFromEndpoint(service.endpoint)?.id ?? null,
+    thinkingMode: model.thinkingMode,
+    reasoningEffort: model.reasoningEffort,
+    params: applyThinkingSettings(
+      service.providerPresetId ?? inferProviderPresetFromEndpoint(service.endpoint)?.id ?? null,
+      model.remoteModelId,
+      { thinkingMode: model.thinkingMode, reasoningEffort: model.reasoningEffort },
+      sanitizeModelParams({ ...service.config, ...model.defaultParams }),
+    ),
+    configRevision: repos.users.getRevisions(userId).modelRevision,
+  };
+}
+
+function trustedCatalogCapabilities(
+  catalog: ModelCatalog,
+  service: ModelService | undefined,
+  model: Pick<Model, 'remoteModelId' | 'capabilityProfileRef'>,
+):
+  | {
+      context: number;
+      input: number | null;
+      output: number;
+      matchKind: CapabilityMatchKind;
+    }
+  | undefined {
+  if (!service) return undefined;
+  const presetId =
+    service.providerPresetId ?? inferProviderPresetFromEndpoint(service.endpoint)?.id ?? null;
+  const match = matchModelCapability(catalog, {
+    modelId: model.remoteModelId,
+    apiEndpoint: service.endpoint,
+    providerPresetId: presetId,
+    capabilityProfileRef: model.capabilityProfileRef,
+  });
+  if (
+    !match.model ||
+    !['profile', 'preset', 'host', 'model-unique', 'model-consensus'].includes(match.matchKind)
+  )
+    return undefined;
+  return {
+    context: match.model.context,
+    input: match.model.input ?? null,
+    output: match.model.output,
+    matchKind: match.matchKind,
+  };
+}
+
+function effectiveModelCapabilities(
+  catalog: ModelCatalog,
+  service: ModelService | undefined,
+  model: Model,
+): Pick<
+  Model,
+  | 'contextWindow'
+  | 'inputCapability'
+  | 'maxOutputCapability'
+  | 'metadataSource'
+  | 'catalogVersion'
+  | 'capabilityMatchKind'
+> {
+  const catalogCapabilities = trustedCatalogCapabilities(catalog, service, model);
+  if (!catalogCapabilities) {
+    return {
+      contextWindow: model.contextWindow,
+      inputCapability: model.inputCapability,
+      maxOutputCapability: model.maxOutputCapability,
+      metadataSource: model.metadataSource,
+      catalogVersion: model.catalogVersion,
+      capabilityMatchKind: model.capabilityMatchKind,
+    };
+  }
+  return {
+    contextWindow: catalogCapabilities.context,
+    inputCapability: catalogCapabilities.input,
+    maxOutputCapability: catalogCapabilities.output,
+    metadataSource: 'catalog',
+    catalogVersion: catalog.generatedAt,
+    capabilityMatchKind: catalogCapabilities.matchKind,
+  };
+}
+
+function sanitizeModelParams(input: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (/(api[-_]?key|token|secret|password|authorization|credential)/i.test(key)) continue;
+    output[key] = sanitizeParamValue(value);
+  }
+  return output;
+}
+
+function validateModelEndpoint(endpoint: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new BridgeError('MODEL_NOT_CONFIGURED', 'Model endpoint is invalid');
+  }
+  if (
+    (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+    parsed.username.length > 0 ||
+    parsed.password.length > 0 ||
+    [...parsed.searchParams.keys()].some((key) =>
+      /(api[-_]?key|token|secret|password|authorization|credential)/i.test(key),
+    )
+  ) {
+    throw new BridgeError('MODEL_NOT_CONFIGURED', 'Model endpoint is unsafe');
+  }
+  return parsed.toString();
+}
+
+function sanitizeParamValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeParamValue);
+  if (typeof value === 'object' && value !== null) {
+    return sanitizeModelParams(value as Record<string, unknown>);
+  }
+  return value;
+}
+
+async function detectCredentialHealth(
+  store: CredentialStore,
+): Promise<HealthSnapshot['credential']['status']> {
+  try {
+    const ok = await store.available();
+    return ok ? 'configured' : 'unavailable';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+async function credentialStatusOf(
+  store: CredentialStore,
+  credentialRef: string,
+): Promise<'configured' | 'missing'> {
+  try {
+    return (await store.getByRef(credentialRef)) ? 'configured' : 'missing';
+  } catch {
+    return 'missing';
+  }
+}
+
+function assertRevision(actual: number, expected: number): void {
+  if (actual !== expected) {
+    throw new BridgeError('REVISION_CONFLICT', 'Configuration revision changed');
+  }
+}
+
+async function applyCredentialMutation(
+  store: CredentialStore,
+  logger: Logger,
+  scope: CredentialScope,
+  existingRef: string | null,
+  mutation: CredentialMutation,
+): Promise<string | null> {
+  if (mutation.action === 'unchanged') return existingRef;
+  if (mutation.action === 'clear') {
+    await store.delete(scope);
+    return null;
+  }
+  logger.registerSecret(mutation.value);
+  await store.set(scope, mutation.value);
+  return credentialRefOf(scope);
+}
+
+async function credentialForDraft(
+  store: CredentialStore,
+  existingRef: string | null,
+  mutation: CredentialMutation,
+): Promise<string | null> {
+  if (mutation.action === 'replace') return mutation.value;
+  if (mutation.action === 'clear' || !existingRef) return null;
+  return store.getByRef(existingRef);
+}
+
+async function testOpenAiService(
+  endpoint: string,
+  credential: string | null,
+): Promise<'success' | 'auth' | 'network' | 'timeout' | 'protocol'> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  timer.unref();
+  try {
+    const response = await fetch(openAiModelsUrl(endpoint), {
+      headers: credential ? { authorization: `Bearer ${credential}` } : undefined,
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    if (response.status === 401 || response.status === 403) return 'auth';
+    if (!response.ok) return 'protocol';
+    const value = (await response.json()) as unknown;
+    return Array.isArray(asRecord(value)?.data) ? 'success' : 'protocol';
+  } catch (error) {
+    return error instanceof DOMException && error.name === 'AbortError' ? 'timeout' : 'network';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchOpenAiModels(endpoint: string, credential: string | null): Promise<string[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  timer.unref();
+  try {
+    const response = await fetch(openAiModelsUrl(endpoint), {
+      headers: credential ? { authorization: `Bearer ${credential}` } : undefined,
+      signal: controller.signal,
+      redirect: 'error',
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw new BridgeError('MODEL_NOT_CONFIGURED', 'Model credential is invalid');
+    }
+    if (!response.ok) throw new BridgeError('RUNTIME_UNAVAILABLE', 'Model service unavailable');
+    const root = asRecord((await response.json()) as unknown);
+    const data = root?.data;
+    if (!Array.isArray(data)) throw new BridgeError('INVALID_REQUEST', 'Invalid models response');
+    return data
+      .map((item) => stringAt(asRecord(item), 'id'))
+      .filter((item): item is string => Boolean(item))
+      .sort();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function openAiModelsUrl(endpoint: string): string {
+  const url = new URL(validateModelEndpoint(endpoint));
+  const pathname = url.pathname.replace(/\/+$/, '');
+  if (!pathname.endsWith('/models')) url.pathname = `${pathname}/models`;
+  return url.toString();
+}
+
+function pathExists(target: string): boolean {
+  try {
+    lstatSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertSafeSkillTree(root: string): void {
+  let files = 0;
+  let bytes = 0;
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      const stat = lstatSync(target);
+      if (stat.isSymbolicLink()) throw new BridgeError('INVALID_REQUEST', 'Skill contains symlink');
+      files += 1;
+      if (files > 2_000) throw new BridgeError('INVALID_REQUEST', 'Skill contains too many files');
+      if (stat.isDirectory()) visit(target);
+      else if (stat.isFile()) bytes += stat.size;
+      else throw new BridgeError('INVALID_REQUEST', 'Skill contains unsupported entry');
+      if (bytes > 20 * 1024 * 1024) {
+        throw new BridgeError('INVALID_REQUEST', 'Skill exceeds size limit');
+      }
+    }
+  };
+  visit(root);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringAt(value: Record<string, unknown> | undefined, key: string): string | undefined {
+  const found = value?.[key];
+  return typeof found === 'string' ? found : undefined;
+}
+
+function toHealth(input: {
+  status: 'available' | 'missing' | 'error' | 'unsupported';
+  version: string | null;
+}): InterpreterHealth {
+  return { status: input.status, version: input.version };
+}
