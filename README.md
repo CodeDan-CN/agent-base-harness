@@ -4,7 +4,7 @@
 
 ## 项目状态
 
-阶段 1 Client 基础平台、阶段 2 Headless 单 Agent Runtime V1 和阶段 3 Client 主界面已完成；界面状态和交互均来自真实 Bridge、Runtime Projection 与管理快照，不使用参考项目的 Mock 逻辑。阶段 4 聚焦模型能力目录、DeepSeek/百炼供应商预制和完整上下文管理；阶段 4.5 设计为通用 MCP Tool Bridge 与可插拔长期记忆。
+阶段 1 Client 基础平台、阶段 2 Headless 单 Agent Runtime V1 和阶段 3 Client 主界面已完成；界面状态和交互均来自真实 Bridge、Runtime Projection 与管理快照，不使用参考项目的 Mock 逻辑。阶段 4 聚焦模型能力目录、DeepSeek/百炼供应商预制和完整上下文管理；阶段 4.5 已接入通用 MCP Tool Bridge，并将官方 Memory MCP 作为默认本地服务，同时参考 Pi Agent 定义 `read`、`write`、`edit`、`bash` 四个第一方基础工具。
 
 已完成能力：
 
@@ -14,6 +14,8 @@
 - 单 SQLite 双用户隔离、EventStore、Model/Skill 完整 Repository 与 SkillCatalog 业务闭环
 - Credential：macOS Keychain 适配器接入生产链路，health 返回真实可用状态
 - ProcessRunner：真实路径（realpath）校验 symlink 逃逸、环境变量 allowlist 约束
+- macOS arm64 Runtime Pack：固定 Node.js 24.20.0 与 Python 3.13.15，国内/官方双源下载、SHA-256 校验、应用内离线执行
+- 默认 Memory MCP：固定 `@modelcontextprotocol/server-memory@2026.7.4`，随 Runtime Pack 离线运行，为两个本地用户分别预置、存储和发现工具
 - 单 Agent Session Driver：Turn/Step、Queue、Steer、队列项“立刻介入”、Cancel、Interaction 与跨 Session 并行
 - SQLite V2：持久 Inbox、输入幂等、Session lease、ConversationEvent/Exchange 与可重建 Projection
 - Runtime：稳定 Prompt、上下文预算、Event 压缩、History Tool、Skill 按需加载和宿主命令工具
@@ -60,6 +62,9 @@ docs/  reference_ui/  resources/  scripts/
 npm install
 npm run dev            # Vite + Electron 开发模式
 npm run build          # 四入口生产构建
+npm run runtime:prepare # 准备并校验 macOS arm64 内置 Node/Python
+npm run runtime:verify  # 实际执行 node/npm/python/pip 验证 Runtime Pack
+npm run pack           # 构建 arm64 .app，并进行本地 ad-hoc 签名验证
 npm run typecheck      # strict 类型检查
 npm run lint           # ESLint
 npm run format         # Prettier
@@ -80,7 +85,7 @@ npm run e2e            # Playwright Electron E2E
 - 单 SQLite 双用户隔离、复合外键阻止跨用户访问。
 - 仅追加 EventStore：连续 seq、版本冲突、整批回滚。
 - Model/Skill 配置 Repository、config revision、Credential 仅存 `credential_ref`。
-- 标准 Agent Skills 目录解析、宿主机 Node/Python/Shell 探测、受控 ProcessRunner。
+- 标准 Agent Skills 目录解析、内置优先的 Node/Python 与宿主 Shell 探测、受控 ProcessRunner。
 - 结构化日志脱敏、健康 Snapshot、测试 Harness 与 CI 门禁。
 - 同 Session 串行、跨 Session 有界并行；lease 丢失后旧 Driver 无法继续写入。
 - 普通补充进入 `next-turn`；“立刻介入”保持同一 InboxItem 并原子提升至 `next-step`。

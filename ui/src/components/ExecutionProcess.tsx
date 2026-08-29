@@ -16,9 +16,10 @@ import { MarkdownContent } from './MarkdownContent';
 
 interface ExecutionProcessProps {
   projection: RuntimeProjection;
+  sessionId: string | null;
 }
 
-export function ExecutionProcess({ projection }: ExecutionProcessProps): JSX.Element | null {
+export function ExecutionProcess({ projection, sessionId }: ExecutionProcessProps): JSX.Element | null {
   const [expanded, setExpanded] = useState(true);
   const turn = projection.activeTurn ?? [...projection.turns.values()].at(-1);
   if (!turn) return null;
@@ -79,7 +80,7 @@ export function ExecutionProcess({ projection }: ExecutionProcessProps): JSX.Ele
                     )}
                   </div>
                   {stepReasoning?.content ? (
-                    <MarkdownContent content={stepReasoning.content} />
+                    <MarkdownContent content={stepReasoning.content} sessionId={sessionId} />
                   ) : (
                     <p className="execution-placeholder">
                       {step.status === 'running' ? '正在思考…' : '模型未返回独立思考内容'}
@@ -94,7 +95,11 @@ export function ExecutionProcess({ projection }: ExecutionProcessProps): JSX.Ele
                       <span>步骤说明</span>
                     </div>
                     {stepMessages.map((message) => (
-                      <MarkdownContent key={message.seq} content={message.content} />
+                      <MarkdownContent
+                        key={message.seq}
+                        content={message.content}
+                        sessionId={sessionId}
+                      />
                     ))}
                   </section>
                 )}
@@ -114,11 +119,17 @@ export function ExecutionProcess({ projection }: ExecutionProcessProps): JSX.Ele
                         </summary>
                         <div className="tool-detail">
                           <label>输入</label>
-                          <MarkdownContent content={toolMarkdown(tool.input)} />
+                          <MarkdownContent
+                            content={toolMarkdown(tool.input)}
+                            sessionId={sessionId}
+                          />
                           {tool.output !== undefined && (
                             <>
                               <label>输出</label>
-                              <MarkdownContent content={toolMarkdown(tool.output)} />
+                              <MarkdownContent
+                                content={toolMarkdown(tool.output)}
+                                sessionId={sessionId}
+                              />
                             </>
                           )}
                         </div>

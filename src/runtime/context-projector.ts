@@ -1,6 +1,6 @@
 import type { SkillInstallation } from '../shared/domain/skill';
 import type { RuntimeProjection } from '../client-contracts/projection';
-import type { RuntimeMessage, RuntimeToolDefinition } from './model';
+import type { ModelToolDefinition, RuntimeMessage } from './model';
 import { MINIMAL_SYSTEM_PROMPT } from './model';
 
 export interface ContextProjectionInput {
@@ -11,7 +11,7 @@ export interface ContextProjectionInput {
   inputCapability?: number | null;
   reservedOutputTokens: number;
   safetyTokens: number;
-  tools: readonly RuntimeToolDefinition[];
+  tools: readonly ModelToolDefinition[];
   skills: readonly SkillInstallation[];
   promptEpoch?: number;
 }
@@ -197,7 +197,7 @@ export class ContextProjector {
   }
 
   private buildStableSystem(
-    tools: readonly RuntimeToolDefinition[],
+    tools: readonly ModelToolDefinition[],
     skills: readonly SkillInstallation[],
   ): string {
     const enabledSkills = skills

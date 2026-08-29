@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 import {
   ArrowLeft,
   BarChart3,
+  Cable,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -29,6 +30,8 @@ import type {
   ModelSaveParams,
   ModelServiceSaveParams,
   SkillManagementSnapshot,
+  McpManagementSnapshot,
+  McpServerSaveParams,
 } from '@client-contracts';
 import { command, query, requireClient, unwrap, userMessage } from '../client';
 import type { SettingsTab } from '../types';
@@ -61,6 +64,9 @@ export function SettingsModal(props: SettingsModalProps): JSX.Element {
         <button className={tab === 'models' ? 'active' : ''} onClick={() => setTab('models')}>
           <Database size={15} /> 模型配置
         </button>
+        <button className={tab === 'mcp' ? 'active' : ''} onClick={() => setTab('mcp')}>
+          <Cable size={15} /> MCP 服务
+        </button>
         <button className={tab === 'skills' ? 'active' : ''} onClick={() => setTab('skills')}>
           <Zap size={15} /> 技能与插件
         </button>
@@ -74,6 +80,8 @@ export function SettingsModal(props: SettingsModalProps): JSX.Element {
       <section className="settings-content">
         {tab === 'models' ? (
           <ModelSettings {...props} />
+        ) : tab === 'mcp' ? (
+          <McpSettings onNotify={props.onNotify} />
         ) : tab === 'skills' ? (
           <SkillSettings onNotify={props.onNotify} />
         ) : (
@@ -1046,6 +1054,527 @@ function formatDateTime(value: string): string {
 
 function statisticsStatusLabel(status: 'completed' | 'failed' | 'running'): string {
   return status === 'completed' ? '完成' : status === 'failed' ? '失败' : '运行中';
+}
+
+interface McpDraft {
+  id?: string;
+  name: string;
+  summary: string;
+  transport: 'streamable-http' | 'stdio';
+  url: string;
+  local: boolean;
+  command: string;
+  args: string;
+  cwd: string;
+  env: string;
+  enabled: boolean;
+  token: string;
+  clearCredential: boolean;
+}
+
+const emptyMcpDraft = (): McpDraft => ({
+  name: 'memory',
+  summary: '',
+  transport: 'streamable-http',
+  url: '',
+  local: false,
+  command: '',
+  args: '',
+  cwd: '',
+  env: '{}',
+  enabled: true,
+  token: '',
+  clearCredential: false,
+});
+
+function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.Element {
+  const [snapshot, setSnapshot] = useState<McpManagementSnapshot | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<McpDraft>(emptyMcpDraft);
+  const [busy, setBusy] = useState<string | null>('load');
+
+  const reload = async (preferred?: string) => {
+    setBusy('load');
+    try {
+      const next = await query<McpManagementSnapshot>('mcp-management.snapshot');
+      setSnapshot(next);
+      const target = preferred ?? selectedId ?? next.servers[0]?.id ?? null;
+      setSelectedId(target);
+      const server = next.servers.find((item) => item.id === target);
+      setDraft(server ? mcpDraftOf(server) : emptyMcpDraft());
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  useEffect(() => {
+    void reload();
+  }, []);
+
+  const selectServer = (id: string) => {
+    const server = snapshot?.servers.find((item) => item.id === id);
+    if (!server) return;
+    setSelectedId(id);
+    setDraft(mcpDraftOf(server));
+  };
+
+  const credential = () => {
+    if (draft.clearCredential) return { action: 'clear' as const };
+    if (draft.token.trim()) return { action: 'replace' as const, value: draft.token.trim() };
+    return { action: 'unchanged' as const };
+  };
+
+  const params = (): McpServerSaveParams => {
+    const common = {
+      ...(draft.id ? { id: draft.id } : {}),
+      name: draft.name.trim(),
+      summary: draft.summary.trim(),
+      enabled: draft.enabled,
+      credential: credential(),
+      expectedRevision: snapshot?.revision ?? 0,
+    };
+    if (draft.transport === 'stdio') {
+      return {
+        ...common,
+        transport: 'stdio',
+        config: {
+          command: draft.command.trim(),
+          args: splitArgs(draft.args),
+          ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}),
+          env: parseEnv(draft.env),
+        },
+      };
+    }
+    return {
+      ...common,
+      transport: 'streamable-http',
+      config: { url: draft.url.trim(), local: draft.local },
+    };
+  };
+
+  const validateDraft = (): string | null => {
+    if (!draft.name.trim()) {
+      return '请填写 MCP Server 名称。';
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(draft.name.trim())) {
+      return 'MCP Server 名称仅支持英文字母、数字、下划线和连字符。';
+    }
+    if (draft.name.trim().length > 80) {
+      return 'MCP Server 名称不能超过 80 个字符。';
+    }
+    if (draft.summary.trim().length > 300) {
+      return 'MCP Server 摘要不能超过 300 个字符。';
+    }
+    if (draft.transport === 'streamable-http') {
+      if (!draft.url.trim()) return '请填写 Streamable HTTP 地址。';
+      let endpoint: URL;
+      try {
+        endpoint = new URL(draft.url.trim());
+      } catch {
+        return '请输入完整有效的 MCP Endpoint。';
+      }
+      if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') {
+        return 'MCP Endpoint 仅支持 HTTP 或 HTTPS。';
+      }
+      const loopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(endpoint.hostname);
+      if (draft.local && !loopback) {
+        return '本地 MCP Endpoint 必须使用 localhost、127.0.0.1 或 ::1。';
+      }
+    }
+    if (draft.transport === 'stdio' && !draft.command.trim()) {
+      return '请填写 stdio 启动命令。';
+    }
+    return null;
+  };
+
+  const save = async () => {
+    const validationError = validateDraft();
+    if (validationError) {
+      onNotify(validationError, 'error');
+      return;
+    }
+    setBusy('save');
+    try {
+      const result = await command<{ id: string }>('mcp-server.save', params());
+      onNotify('MCP Server 已保存。新发现工具默认关闭。', 'success');
+      await reload(result.id);
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+      setBusy(null);
+    }
+  };
+
+  const test = async () => {
+    const validationError = validateDraft();
+    if (validationError) {
+      onNotify(validationError, 'error');
+      return;
+    }
+    setBusy('test');
+    try {
+      const { expectedRevision, ...testParams } = params();
+      void expectedRevision;
+      const result = await command<{ status: string; toolCount: number }>(
+        'mcp-server.test',
+        testParams,
+      );
+      onNotify(
+        result.status === 'success'
+          ? `连接成功，发现 ${result.toolCount} 个工具。`
+          : '连接失败，请检查地址、命令或凭证。',
+        result.status === 'success' ? 'success' : 'error',
+      );
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const refresh = async () => {
+    if (!draft.id) return;
+    setBusy('refresh');
+    try {
+      const result = await command<{ toolCount: number }>('mcp-server.refresh', { id: draft.id });
+      onNotify(`工具目录已刷新，共 ${result.toolCount} 个工具。`, 'success');
+      await reload(draft.id);
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+      setBusy(null);
+    }
+  };
+
+  const archive = async () => {
+    if (!draft.id || !snapshot || !window.confirm(`删除 MCP Server“${draft.name}”？`)) return;
+    setBusy('archive');
+    try {
+      await command('mcp-server.archive', {
+        id: draft.id,
+        expectedRevision: snapshot.revision,
+      });
+      setSelectedId(null);
+      onNotify('MCP Server 已删除。', 'success');
+      await reload('');
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+      setBusy(null);
+    }
+  };
+
+  const toggleTool = async (rawName: string, enabled: boolean) => {
+    if (!snapshot || !draft.id) return;
+    setBusy(`tool:${rawName}`);
+    try {
+      await command('mcp-tool.toggle', {
+        serverId: draft.id,
+        rawName,
+        enabled,
+        expectedRevision: snapshot.revision,
+      });
+      onNotify(`工具 ${rawName} 已${enabled ? '审核启用' : '停用'}。`, 'success');
+      await reload(draft.id);
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+      setBusy(null);
+    }
+  };
+
+  const serverTools = snapshot?.tools.filter((tool) => tool.serverId === draft.id) ?? [];
+  const isBundledMemory = draft.id === 'builtin-memory';
+
+  return (
+    <div className="settings-page models-page">
+      <header className="settings-page-header">
+        <div>
+          <h2>MCP Tool Bridge</h2>
+          <p>Streamable HTTP 为外部 MCP 主路径；发现的工具需逐项审核后才进入 Agent。</p>
+        </div>
+      </header>
+      <div className="model-layout">
+        <aside className="service-list">
+          <button
+            className="dashed-button"
+            onClick={() => {
+              setSelectedId(null);
+              setDraft(emptyMcpDraft());
+            }}
+          >
+            <Plus size={14} /> 添加 MCP Server
+          </button>
+          <div className="service-items custom-scrollbar">
+            {(snapshot?.servers ?? []).map((server) => (
+              <button
+                key={server.id}
+                className={`service-item ${selectedId === server.id ? 'active' : ''}`}
+                onClick={() => selectServer(server.id)}
+              >
+                <span className="service-icon">
+                  <Cable size={14} />
+                </span>
+                <span className="service-copy">
+                  <strong>{server.name}</strong>
+                  <small>
+                    {server.transport} · {server.toolCount} 个工具
+                  </small>
+                </span>
+                {server.id === 'builtin-memory' && <em>内置</em>}
+                {server.connectionStatus === 'connected' && <em>已连接</em>}
+              </button>
+            ))}
+          </div>
+        </aside>
+        <main className="service-editor custom-scrollbar">
+          <div className="editor-column">
+            <div className="editor-heading">
+              <div>
+                <Cable size={18} />
+                <h3>{draft.id ? draft.name : '新 MCP Server'}</h3>
+              </div>
+              <div className="row-actions">
+                <button
+                  className="secondary-button"
+                  disabled={Boolean(busy)}
+                  onClick={() => void test()}
+                >
+                  测试连接
+                </button>
+                <button
+                  className="primary-button"
+                  disabled={Boolean(busy)}
+                  onClick={() => void save()}
+                >
+                  保存
+                </button>
+              </div>
+            </div>
+            <div className="form-grid two">
+              <label>
+                <span>Server 名称</span>
+                <input
+                  value={draft.name}
+                  disabled={isBundledMemory}
+                  onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+                  placeholder="memory"
+                />
+              </label>
+              <label>
+                <span>Transport</span>
+                <select
+                  value={draft.transport}
+                  disabled={isBundledMemory}
+                  onChange={(event) =>
+                    setDraft({
+                      ...draft,
+                      transport: event.target.value as McpDraft['transport'],
+                    })
+                  }
+                >
+                  <option value="streamable-http">Streamable HTTP（推荐）</option>
+                  <option value="stdio">stdio（本地）</option>
+                </select>
+              </label>
+            </div>
+            <label className="form-field">
+              <span>能力摘要</span>
+              <textarea
+                value={draft.summary}
+                onChange={(event) => setDraft({ ...draft, summary: event.target.value })}
+                placeholder="简要说明这个 MCP 能做什么；留空时保存后自动生成"
+                maxLength={300}
+              />
+              <small>
+                用于 mcp_search 的 Server
+                摘要。留空时会优先使用默认模型根据工具目录生成；无可用模型时自动使用目录摘要。
+              </small>
+            </label>
+            {draft.transport === 'streamable-http' ? (
+              <>
+                <label className="form-field">
+                  <span>MCP Endpoint</span>
+                  <input
+                    value={draft.url}
+                    onChange={(event) => setDraft({ ...draft, url: event.target.value })}
+                    placeholder="https://memory.example.com/mcp"
+                  />
+                  <small>支持 HTTP 或 HTTPS；本地模式仅允许 loopback 地址。</small>
+                </label>
+                <label className="check-label mcp-check">
+                  <input
+                    type="checkbox"
+                    checked={draft.local}
+                    onChange={(event) => setDraft({ ...draft, local: event.target.checked })}
+                  />
+                  本地 loopback MCP
+                </label>
+                <label className="form-field">
+                  <span>Bearer Token</span>
+                  <input
+                    type="password"
+                    value={draft.token}
+                    onChange={(event) =>
+                      setDraft({ ...draft, token: event.target.value, clearCredential: false })
+                    }
+                    placeholder="留空保持现有凭证"
+                  />
+                </label>
+              </>
+            ) : isBundledMemory ? (
+              <div className="bundled-mcp-note">
+                <strong>内置知识图谱记忆</strong>
+                <p>
+                  使用应用自带的 Node.js 和 Memory
+                  MCP，无需安装或联网。记忆文件保存在当前用户的应用数据目录，与其他用户隔离。
+                </p>
+              </div>
+            ) : (
+              <>
+                <label className="form-field">
+                  <span>启动命令</span>
+                  <input
+                    value={draft.command}
+                    onChange={(event) => setDraft({ ...draft, command: event.target.value })}
+                    placeholder="node"
+                  />
+                </label>
+                <label className="form-field">
+                  <span>参数（每行一个）</span>
+                  <textarea
+                    value={draft.args}
+                    onChange={(event) => setDraft({ ...draft, args: event.target.value })}
+                    placeholder={'server.js\n--stdio'}
+                  />
+                </label>
+                <div className="form-grid two">
+                  <label>
+                    <span>托管目录内 cwd</span>
+                    <input
+                      value={draft.cwd}
+                      onChange={(event) => setDraft({ ...draft, cwd: event.target.value })}
+                      placeholder="."
+                    />
+                  </label>
+                  <label>
+                    <span>环境变量 JSON</span>
+                    <input
+                      value={draft.env}
+                      onChange={(event) => setDraft({ ...draft, env: event.target.value })}
+                      placeholder="{}"
+                    />
+                  </label>
+                </div>
+              </>
+            )}
+            <label className="switch-label mcp-switch">
+              <input
+                type="checkbox"
+                checked={draft.enabled}
+                onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
+              />
+              <span /> 启用 Server
+            </label>
+
+            {draft.id && (
+              <>
+                <div className="models-heading mcp-tools-heading">
+                  <div>
+                    <h4>发现工具</h4>
+                    <p>Schema 变化后自动关闭并要求重新审核。</p>
+                  </div>
+                  <button
+                    className="secondary-button"
+                    disabled={Boolean(busy)}
+                    onClick={() => void refresh()}
+                  >
+                    <RefreshCw size={13} /> 刷新目录
+                  </button>
+                </div>
+                <div className="skill-list mcp-tool-list">
+                  {serverTools.map((tool) => (
+                    <article className="skill-card" key={tool.rawName}>
+                      <span className="skill-icon">
+                        <Wrench size={18} />
+                      </span>
+                      <div>
+                        <div className="skill-name">
+                          <strong>{tool.rawName}</strong>
+                          {tool.reviewStatus !== 'approved' && (
+                            <em>{tool.reviewStatus === 'pending' ? '待审核' : 'Schema 已变更'}</em>
+                          )}
+                        </div>
+                        <p>{tool.description || tool.publicName}</p>
+                        <small>{tool.publicName}</small>
+                      </div>
+                      <label className="toggle">
+                        <input
+                          type="checkbox"
+                          checked={tool.enabled && tool.reviewStatus === 'approved'}
+                          disabled={Boolean(busy)}
+                          onChange={(event) => void toggleTool(tool.rawName, event.target.checked)}
+                        />
+                        <span />
+                      </label>
+                    </article>
+                  ))}
+                  {serverTools.length === 0 && (
+                    <div className="empty-panel">保存并连接后显示 Server 的 tools/list 结果。</div>
+                  )}
+                </div>
+                <div className="danger-zone">
+                  <button disabled={Boolean(busy)} onClick={() => void archive()}>
+                    <Trash2 size={13} /> 删除 MCP Server
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function mcpDraftOf(server: McpManagementSnapshot['servers'][number]): McpDraft {
+  const config = server.config;
+  return {
+    id: server.id,
+    name: server.name,
+    summary: server.summary,
+    transport: server.transport,
+    url: typeof config.url === 'string' ? config.url : '',
+    local: config.local === true,
+    command: typeof config.command === 'string' ? config.command : '',
+    args: Array.isArray(config.args)
+      ? config.args.filter((value): value is string => typeof value === 'string').join('\n')
+      : '',
+    cwd: typeof config.cwd === 'string' ? config.cwd : '',
+    env: typeof config.env === 'object' && config.env !== null ? JSON.stringify(config.env) : '{}',
+    enabled: server.status === 'enabled',
+    token: '',
+    clearCredential: false,
+  };
+}
+
+function splitArgs(value: string): string[] {
+  return value
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseEnv(value: string): Record<string, string> {
+  if (!value.trim()) return {};
+  const parsed = JSON.parse(value) as unknown;
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('环境变量必须是 JSON 对象');
+  }
+  const output: Record<string, string> = {};
+  for (const [key, item] of Object.entries(parsed)) {
+    if (typeof item !== 'string') throw new Error('环境变量值必须是字符串');
+    output[key] = item;
+  }
+  return output;
 }
 
 function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.Element {

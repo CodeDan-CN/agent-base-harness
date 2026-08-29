@@ -26,4 +26,4 @@ export interface BannerState {
   message: string;
 }
 
-export type SettingsTab = 'models' | 'skills' | 'statistics';
+export type SettingsTab = 'models' | 'mcp' | 'skills' | 'statistics';

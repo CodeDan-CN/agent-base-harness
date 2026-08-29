@@ -1,4 +1,33 @@
-import type { RuntimeToolDefinition } from './model';
+import Ajv, { type ValidateFunction } from 'ajv';
+import type { ModelToolDefinition } from './model';
+
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type JsonSchema = Record<string, unknown>;
+
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string }
+  | { type: 'audio'; data: string; mimeType: string }
+  | { type: 'resource'; uri: string; text?: string; mimeType?: string };
+
+export interface ToolLocation {
+  path: string;
+}
+
+export interface ToolCallView {
+  kind: 'generic' | 'read' | 'diff' | 'terminal';
+  title: string;
+  detail?: string;
+  path?: string;
+  command?: string;
+  locations?: ToolLocation[];
+}
+
+export interface ToolResultView extends ToolCallView {
+  status?: 'success' | 'error';
+  summary?: string;
+}
 
 export type ToolResultStatus =
   'success' | 'needs_input' | 'retryable_error' | 'fatal_error' | 'cancelled';
@@ -12,9 +41,12 @@ export interface InteractionRequest {
 
 export interface ToolResult {
   status: ToolResultStatus;
-  output: unknown;
+  content: ContentBlock[];
   errorCode?: string;
   interaction?: InteractionRequest;
+  meta?: JsonValue;
+  presentation?: ToolResultView;
+  executionFacts?: JsonValue;
 }
 
 export interface ToolExecutionContext {
@@ -26,15 +58,47 @@ export interface ToolExecutionContext {
   signal: AbortSignal;
 }
 
-export interface RuntimeTool {
-  readonly definition: RuntimeToolDefinition;
+export interface RuntimeToolOutput<Value = unknown> {
+  schema: JsonSchema;
+  render(args: unknown, value: Value): ContentBlock[];
+  presentationMeta?(args: unknown, value: Value): JsonValue;
+}
+
+export interface RuntimeToolDefinition<Value = unknown> {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: JsonSchema;
+  readonly output: RuntimeToolOutput<Value>;
+  execute(input: unknown, context: ToolExecutionContext): Promise<Value>;
+  presentCall?(args: unknown): ToolCallView | undefined;
+  presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined;
+}
+
+export interface RuntimeTool<Value = unknown> extends RuntimeToolDefinition<Value> {
   readonly concurrencySafe: boolean;
   readonly replaySafe?: boolean;
   readonly exclusive?: boolean;
   readonly timeoutMs?: number;
   isConcurrencySafe?(input: unknown): boolean;
-  validateOutput?(output: unknown): boolean;
-  execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult>;
+}
+
+export class ToolExecutionError extends Error {
+  constructor(
+    readonly code: string,
+    readonly status: Exclude<ToolResultStatus, 'success' | 'needs_input'> = 'fatal_error',
+    readonly facts?: unknown,
+    message = code,
+  ) {
+    super(message);
+    this.name = 'ToolExecutionError';
+  }
+}
+
+export class ToolInteractionError extends Error {
+  constructor(readonly interaction: InteractionRequest) {
+    super('Tool requires user input');
+    this.name = 'ToolInteractionError';
+  }
 }
 
 export interface ScheduledToolCall {
@@ -49,21 +113,85 @@ export interface ScheduledToolResult {
 }
 
 export class ToolRegistry {
-  private readonly tools = new Map<string, RuntimeTool>();
+  private readonly globalTools = new Map<string, RuntimeTool<unknown>>();
+  private readonly userTools = new Map<string, Map<string, RuntimeTool<unknown>>>();
+  private readonly turnExposedTools = new Map<string, Map<string, RuntimeTool<unknown>>>();
 
-  register(tool: RuntimeTool): void {
-    this.tools.set(tool.definition.name, tool);
+  register(tool: RuntimeTool<unknown>): () => void {
+    if (this.globalTools.has(tool.name)) throw new Error(`Tool already registered: ${tool.name}`);
+    this.globalTools.set(tool.name, tool);
+    return () => this.globalTools.delete(tool.name);
   }
 
-  get(name: string): RuntimeTool | undefined {
-    return this.tools.get(name);
+  replaceUserTools(userId: string, tools: readonly RuntimeTool<unknown>[]): void {
+    const next = new Map<string, RuntimeTool<unknown>>();
+    for (const tool of tools) {
+      if (this.globalTools.has(tool.name) || next.has(tool.name)) {
+        throw new Error(`Tool already registered: ${tool.name}`);
+      }
+      next.set(tool.name, tool);
+    }
+    this.userTools.set(userId, next);
+    this.clearUserTurnToolExposure(userId);
   }
 
-  definitions(): RuntimeToolDefinition[] {
-    return [...this.tools.values()]
-      .map((tool) => tool.definition)
+  clearUserTools(userId: string): void {
+    this.userTools.delete(userId);
+    this.clearUserTurnToolExposure(userId);
+  }
+
+  exposeTurnTools(userId: string, turnId: string, tools: readonly RuntimeTool<unknown>[]): void {
+    const key = turnToolExposureKey(userId, turnId);
+    const exposed = new Map(this.turnExposedTools.get(key));
+    for (const tool of tools) {
+      if (this.globalTools.has(tool.name) || this.userTools.get(userId)?.has(tool.name)) {
+        throw new Error(`Tool already registered: ${tool.name}`);
+      }
+      exposed.set(tool.name, tool);
+    }
+    this.turnExposedTools.set(key, exposed);
+  }
+
+  clearTurnToolExposure(userId: string, turnId: string): void {
+    this.turnExposedTools.delete(turnToolExposureKey(userId, turnId));
+  }
+
+  get(name: string, userId?: string, turnId?: string): RuntimeTool<unknown> | undefined {
+    return (
+      (userId && turnId
+        ? this.turnExposedTools.get(turnToolExposureKey(userId, turnId))?.get(name)
+        : undefined) ??
+      (userId ? this.userTools.get(userId)?.get(name) : undefined) ??
+      this.globalTools.get(name)
+    );
+  }
+
+  definitions(userId?: string, turnId?: string): ModelToolDefinition[] {
+    const tools = [
+      ...this.globalTools.values(),
+      ...(userId ? (this.userTools.get(userId)?.values() ?? []) : []),
+      ...(userId && turnId
+        ? (this.turnExposedTools.get(turnToolExposureKey(userId, turnId))?.values() ?? [])
+        : []),
+    ];
+    return tools
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.parameters,
+      }))
       .sort((left, right) => left.name.localeCompare(right.name));
   }
+
+  private clearUserTurnToolExposure(userId: string): void {
+    for (const key of this.turnExposedTools.keys()) {
+      if (key.startsWith(`${userId}\0`)) this.turnExposedTools.delete(key);
+    }
+  }
+}
+
+function turnToolExposureKey(userId: string, turnId: string): string {
+  return `${userId}\0${turnId}`;
 }
 
 export class ToolScheduler {
@@ -77,23 +205,23 @@ export class ToolScheduler {
     context: Omit<ToolExecutionContext, 'toolCallId'>,
   ): Promise<ScheduledToolResult[]> {
     const output: ScheduledToolResult[] = new Array(calls.length);
-
-    // 只有显式声明 concurrencySafe 且非 exclusive 的连续调用才并发；其余调用形成屏障。
+    const resolvedTools = calls.map((call) =>
+      this.registry.get(call.name, context.userId, context.turnId),
+    );
     let start = 0;
     while (start < calls.length) {
       const first = calls[start];
-      const tool = first ? this.registry.get(first.name) : undefined;
+      const tool = resolvedTools[start];
       if (!first) break;
       if (!tool || !isSafe(tool, first.arguments) || tool.exclusive) {
-        const result = await this.executeOne(first, context);
-        output[start] = result;
+        output[start] = await this.executeOne(first, tool, context);
         start += 1;
         continue;
       }
       let end = start + 1;
       while (end < calls.length) {
         const next = calls[end];
-        const nextTool = next ? this.registry.get(next.name) : undefined;
+        const nextTool = resolvedTools[end];
         if (!nextTool || !isSafe(nextTool, next?.arguments) || nextTool.exclusive) break;
         end += 1;
       }
@@ -103,57 +231,36 @@ export class ToolScheduler {
           const index = groupCursor;
           groupCursor += 1;
           const call = calls[index];
-          if (call) output[index] = await this.executeOne(call, context);
+          if (call) output[index] = await this.executeOne(call, resolvedTools[index], context);
         }
       };
-      const limit = Math.min(this.parallelism, end - start);
-      await Promise.all(Array.from({ length: limit }, () => groupWorker()));
+      await Promise.all(
+        Array.from({ length: Math.min(this.parallelism, end - start) }, () => groupWorker()),
+      );
       start = end;
     }
-
     return output;
   }
 
   private async executeOne(
     call: ScheduledToolCall,
+    tool: RuntimeTool<unknown> | undefined,
     context: Omit<ToolExecutionContext, 'toolCallId'>,
   ): Promise<ScheduledToolResult> {
-    const tool = this.registry.get(call.name);
-    if (!tool) {
-      return { call, result: { status: 'fatal_error', output: null, errorCode: 'TOOL_NOT_FOUND' } };
+    if (!tool) return { call, result: failure('TOOL_NOT_FOUND') };
+    if (context.signal.aborted) return { call, result: cancelled() };
+    if (!validate(tool.parameters, call.arguments)) {
+      return {
+        call,
+        result: withPresentation(tool, call.arguments, failure('INVALID_TOOL_INPUT')),
+      };
     }
-    if (context.signal.aborted) return { call, result: { status: 'cancelled', output: null } };
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        const result = await executeWithTimeout(tool, call, context);
-        if (!isJsonSerializable(result.output)) {
-          return {
-            call,
-            result: { status: 'fatal_error', output: null, errorCode: 'INVALID_TOOL_OUTPUT' },
-          };
-        }
-        if (
-          result.status === 'success' &&
-          tool.validateOutput &&
-          !tool.validateOutput(result.output)
-        ) {
-          return {
-            call,
-            result: { status: 'fatal_error', output: null, errorCode: 'INVALID_TOOL_OUTPUT' },
-          };
-        }
-        if (result.status !== 'retryable_error' || attempt === 2) return { call, result };
-      } catch {
-        return {
-          call,
-          result: { status: 'fatal_error', output: null, errorCode: 'TOOL_EXECUTION_FAILED' },
-        };
-      }
+      const result = await executeWithTimeout(tool, call, context);
+      const presented = withPresentation(tool, call.arguments, result);
+      if (result.status !== 'retryable_error' || attempt === 2) return { call, result: presented };
     }
-    return {
-      call,
-      result: { status: 'fatal_error', output: null, errorCode: 'TOOL_RETRY_EXHAUSTED' },
-    };
+    return { call, result: failure('TOOL_RETRY_EXHAUSTED') };
   }
 }
 
@@ -182,40 +289,118 @@ async function executeWithTimeout(
   }, tool.timeoutMs ?? 30_000);
   timer.unref();
   try {
-    const cancellation = new Promise<ToolResult>((resolve) => {
-      if (controller.signal.aborted) {
-        resolve({ status: context.signal.aborted ? 'cancelled' : 'fatal_error', output: null });
-        return;
-      }
-      controller.signal.addEventListener(
-        'abort',
-        () =>
-          resolve({
-            status: context.signal.aborted ? 'cancelled' : 'fatal_error',
-            output: null,
-            errorCode: timedOut ? 'TOOL_TIMEOUT' : undefined,
-          }),
-        { once: true },
-      );
+    const value = await tool.execute(call.arguments, {
+      ...context,
+      toolCallId: call.id,
+      signal: controller.signal,
     });
-    return await Promise.race([
-      tool.execute(call.arguments, {
-        ...context,
-        toolCallId: call.id,
-        signal: controller.signal,
-      }),
-      cancellation,
-    ]);
+    if (controller.signal.aborted) {
+      return context.signal.aborted ? cancelled() : failure('TOOL_TIMEOUT');
+    }
+    if (!isJsonSerializable(value) || !validate(tool.output.schema, value)) {
+      return failure('INVALID_TOOL_OUTPUT');
+    }
+    let content: ContentBlock[];
+    let meta: JsonValue | undefined;
+    try {
+      content = tool.output.render(call.arguments, value);
+      meta = tool.output.presentationMeta?.(call.arguments, value);
+    } catch {
+      return failure('TOOL_OUTPUT_PROJECTION_FAILED');
+    }
+    if (!isJsonSerializable(content) || (meta !== undefined && !isJsonSerializable(meta))) {
+      return failure('INVALID_TOOL_OUTPUT');
+    }
+    return { status: 'success', content, ...(meta === undefined ? {} : { meta }) };
+  } catch (error) {
+    if (context.signal.aborted) return cancelled();
+    if (timedOut || controller.signal.aborted) return failure('TOOL_TIMEOUT');
+    if (error instanceof ToolInteractionError) {
+      return {
+        status: 'needs_input',
+        content: [{ type: 'text', text: 'Waiting for user input.' }],
+        interaction: error.interaction,
+      };
+    }
+    if (error instanceof ToolExecutionError) {
+      return {
+        status: error.status,
+        content: [{ type: 'text', text: error.message }],
+        errorCode: error.code,
+        ...(error.facts === undefined || !isJsonSerializable(error.facts)
+          ? {}
+          : { executionFacts: error.facts }),
+      };
+    }
+    return failure('TOOL_EXECUTION_FAILED');
   } finally {
     clearTimeout(timer);
     context.signal.removeEventListener('abort', abort);
   }
 }
 
-function isJsonSerializable(value: unknown): boolean {
+function withPresentation(tool: RuntimeTool, args: unknown, result: ToolResult): ToolResult {
   try {
-    JSON.stringify(value ?? null);
-    return true;
+    const presentation = tool.presentResult?.(args, result);
+    return presentation ? { ...result, presentation } : result;
+  } catch {
+    return result;
+  }
+}
+
+function failure(code: string): ToolResult {
+  return {
+    status: 'fatal_error',
+    content: [{ type: 'text', text: `Tool failed: ${code}` }],
+    errorCode: code,
+  };
+}
+
+function cancelled(): ToolResult {
+  return { status: 'cancelled', content: [{ type: 'text', text: 'Tool call cancelled.' }] };
+}
+
+const ajv = new Ajv({ allErrors: true, strict: false, allowUnionTypes: true });
+const validators = new Map<string, ValidateFunction>();
+
+function validate(schema: JsonSchema, value: unknown): boolean {
+  try {
+    const key = JSON.stringify(schema);
+    let validator = validators.get(key);
+    if (!validator) {
+      validator = ajv.compile(schema);
+      validators.set(key, validator);
+    }
+    return validator(value) as boolean;
+  } catch {
+    return isJsonSerializable(value);
+  }
+}
+
+export function textContent(value: unknown): ContentBlock[] {
+  return [
+    {
+      type: 'text',
+      text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
+    },
+  ];
+}
+
+export function contentBlocksToText(blocks: readonly ContentBlock[]): string {
+  return blocks
+    .map((block) => {
+      if (block.type === 'text') return block.text;
+      if (block.type === 'image') return `[image: ${block.mimeType}]`;
+      if (block.type === 'audio') return `[audio: ${block.mimeType}]`;
+      return block.text ?? `[resource: ${block.uri}]`;
+    })
+    .join('\n');
+}
+
+function isJsonSerializable(value: unknown): value is JsonValue {
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized !== undefined;
   } catch {
     return false;
   }

@@ -1,4 +1,4 @@
-import { app, dialog, ipcMain } from 'electron';
+import { app, dialog, ipcMain, shell } from 'electron';
 import { lstatSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -7,7 +7,7 @@ import { RuntimeWorkerSupervisor } from './worker-supervisor';
 import type { WorkerFactory, WorkerLike } from './worker-supervisor';
 import { BridgeController } from './bridge-controller';
 import { applyContentSecurityPolicy, createMainWindow, isAllowedNavigation } from './window';
-import { IPC_CHANNELS } from '../shared/contracts/ipc';
+import { IPC_CHANNELS, sessionFileOpenSchema } from '../shared/contracts/ipc';
 import type { RpcEnvelope } from '../shared/contracts/ipc';
 import { BridgeError, toErrorPayload } from '../shared/contracts/errors';
 import { SystemClock } from '../shared/domain/ports';
@@ -16,6 +16,8 @@ import type { Logger } from '../infrastructure/logging/logger';
 import type { WorkerBootstrapData } from '../worker/index';
 import { sessionSubscriptionSchema } from '../shared/contracts/schemas';
 import { extractSkillArchive } from './skill-archive';
+import { loadBundledRuntime } from '../infrastructure/runtime/bundled-runtime-registry';
+import { resolveSessionFile } from './session-file';
 
 const devServerUrl = process.env.AGENT_CLIENT_DEV_SERVER_URL ?? '';
 const useDevServer = devServerUrl.length > 0;
@@ -87,6 +89,22 @@ if (hasSingleInstanceLock)
       console: isDev,
     });
     const mainLogger = logger;
+    const runtimeTarget = `${process.platform}-${process.arch}`;
+    const runtimeRoot = isDev
+      ? path.join(app.getAppPath(), '.runtime-cache', runtimeTarget)
+      : path.join(process.resourcesPath, 'runtimes', runtimeTarget);
+    const bundledRuntime = loadBundledRuntime(runtimeRoot, { required: !isDev });
+    if (bundledRuntime) {
+      mainLogger.info('bundled runtime ready', {
+        platform: bundledRuntime.platform,
+        arch: bundledRuntime.arch,
+        nodeVersion: bundledRuntime.node.version,
+        pythonVersion: bundledRuntime.python.version,
+        memoryMcpVersion: bundledRuntime.mcp.memory.version,
+      });
+    } else {
+      mainLogger.warn('bundled runtime unavailable in development; using system interpreters');
+    }
 
     const workerPath = path.join(__dirname, '..', 'worker', 'index.cjs');
     const factory: WorkerFactory = (data) =>
@@ -100,6 +118,7 @@ if (hasSingleInstanceLock)
         logDir: path.join(dataDir, 'logs'),
         debug: isDev,
         useSystemCredential: true,
+        runtime: bundledRuntime ?? undefined,
       }),
       clock: new SystemClock(),
       logger: mainLogger,
@@ -207,6 +226,25 @@ if (hasSingleInstanceLock)
         } finally {
           extracted?.cleanup();
         }
+      });
+    });
+    ipcMain.handle(IPC_CHANNELS.openSessionFile, async (event, payload: unknown) => {
+      if (!isTrustedSender(event) || !controller) return unauthorizedEnvelope();
+      return handleRpc(async () => {
+        const parsed = sessionFileOpenSchema.safeParse(payload);
+        if (!parsed.success) throw new BridgeError('INVALID_REQUEST', 'Invalid file request');
+        if (controller!.getSubscribedSessionId(String(event.sender.id)) !== parsed.data.sessionId) {
+          throw new BridgeError('INVALID_REQUEST', 'Session is not active');
+        }
+        const file = await resolveSessionFile({
+          appDataDir: dataDir,
+          userId: controller!.getActiveUserId(),
+          sessionId: parsed.data.sessionId,
+          target: parsed.data.target,
+        });
+        const openError = await shell.openPath(file);
+        if (openError) throw new BridgeError('INTERNAL_ERROR', 'Unable to open file');
+        return { opened: true };
       });
     });
 

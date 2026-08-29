@@ -40,6 +40,10 @@ const DEFAULT_ALLOWED_ENV = [
   'TMPDIR',
   'TEMP',
   'TMP',
+  'PYTHONNOUSERSITE',
+  'PIP_DISABLE_PIP_VERSION_CHECK',
+  'AGENT_WORKSPACE',
+  'AGENT_ARTIFACTS_DIR',
 ];
 
 function isInside(rootDir: string, target: string): boolean {

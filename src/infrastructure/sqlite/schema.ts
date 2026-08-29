@@ -342,3 +342,63 @@ export const STAGE4_MIGRATIONS: readonly Migration[] = [
   ...STAGE3_MIGRATIONS,
   { version: 4, name: 'model-capability-and-context-management', sql: V4_SQL },
 ];
+
+/** Stage 4.5 通用 MCP Server、工具目录与逐工具审核。 */
+const V5_SQL = `
+ALTER TABLE user_config_revisions ADD COLUMN mcp_revision INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE mcp_servers (
+  id                 TEXT NOT NULL,
+  user_id            TEXT NOT NULL,
+  name               TEXT NOT NULL,
+  transport          TEXT NOT NULL CHECK (transport IN ('stdio', 'streamable-http')),
+  status             TEXT NOT NULL CHECK (status IN ('enabled', 'disabled', 'archived')),
+  config_json        TEXT NOT NULL CHECK (json_valid(config_json)),
+  credential_ref     TEXT,
+  connection_status  TEXT NOT NULL DEFAULT 'disconnected'
+    CHECK (connection_status IN ('disconnected', 'connecting', 'connected', 'error')),
+  generation         INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+  last_error         TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  archived_at        TEXT,
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, name),
+  FOREIGN KEY (user_id) REFERENCES local_users(id)
+);
+
+CREATE TABLE mcp_tools (
+  user_id             TEXT NOT NULL,
+  server_id           TEXT NOT NULL,
+  raw_name            TEXT NOT NULL,
+  public_name         TEXT NOT NULL,
+  description         TEXT NOT NULL,
+  input_schema_json   TEXT NOT NULL CHECK (json_valid(input_schema_json)),
+  output_schema_json  TEXT CHECK (output_schema_json IS NULL OR json_valid(output_schema_json)),
+  schema_digest       TEXT NOT NULL,
+  enabled             INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  review_status       TEXT NOT NULL DEFAULT 'pending'
+    CHECK (review_status IN ('pending', 'approved', 'changed')),
+  generation          INTEGER NOT NULL CHECK (generation >= 0),
+  discovered_at       TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  PRIMARY KEY (user_id, server_id, raw_name),
+  UNIQUE (user_id, public_name),
+  FOREIGN KEY (user_id, server_id) REFERENCES mcp_servers(user_id, id)
+);
+
+CREATE INDEX idx_mcp_servers_user_status
+  ON mcp_servers(user_id, status, updated_at DESC);
+CREATE INDEX idx_mcp_tools_user_server_enabled
+  ON mcp_tools(user_id, server_id, enabled, public_name);
+`;
+
+export const STAGE45_MIGRATIONS: readonly Migration[] = [
+  ...STAGE4_MIGRATIONS,
+  { version: 5, name: 'mcp-tool-bridge', sql: V5_SQL },
+  {
+    version: 6,
+    name: 'mcp-server-summary',
+    sql: `ALTER TABLE mcp_servers ADD COLUMN summary TEXT NOT NULL DEFAULT '';`,
+  },
+];

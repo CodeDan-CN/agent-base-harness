@@ -6,6 +6,7 @@ import type { WorkerApplication } from './application';
 import { dispatch } from './dispatcher';
 import { toErrorPayload } from '../shared/contracts/errors';
 import type { WorkerControlMessage, WorkerEventMessage } from '../shared/contracts/worker-messages';
+import type { BundledRuntimeSnapshot } from '../infrastructure/runtime/bundled-runtime-registry';
 
 export interface WorkerBootstrapData {
   appDataDir: string;
@@ -13,6 +14,7 @@ export interface WorkerBootstrapData {
   logDir?: string;
   debug?: boolean;
   useSystemCredential?: boolean;
+  runtime?: BundledRuntimeSnapshot;
   env?: {
     nodePath?: string;
     pythonPaths?: string[];
@@ -39,6 +41,7 @@ try {
     generation: data.generation,
     logger,
     env: data.env,
+    runtime: data.runtime,
     useSystemCredential: data.useSystemCredential,
     onEventsAppended: (batch) =>
       post({ type: 'session-events', workerGeneration: data.generation, ...batch }),

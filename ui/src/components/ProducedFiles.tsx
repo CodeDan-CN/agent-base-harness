@@ -1,0 +1,33 @@
+import { FileText } from 'lucide-react';
+import type { JSX } from 'react';
+import { basename } from '../produced-files';
+
+export function ProducedFiles({
+  sessionId,
+  paths,
+}: {
+  sessionId: string | null;
+  paths: readonly string[];
+}): JSX.Element | null {
+  if (!sessionId || paths.length === 0) return null;
+  const open = (path: string): void => {
+    const client = window.agentClient;
+    if (!client) return;
+    void client.openSessionFile(sessionId, path).then((result) => {
+      if (!result.ok) window.alert(result.error.message || '无法打开文件');
+    });
+  };
+  return (
+    <section className="produced-files" aria-label="产出文件">
+      <span className="produced-files-label">产出文件</span>
+      <div className="produced-files-list">
+        {paths.map((path) => (
+          <button key={path} type="button" title={path} onClick={() => open(path)}>
+            <FileText size={13} />
+            <span>{basename(path)}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}

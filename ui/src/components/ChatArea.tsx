@@ -5,6 +5,8 @@ import type { InboxItem, RuntimeProjection } from '@client-contracts';
 import { ExecutionProcess } from './ExecutionProcess';
 import { InputArea } from './InputArea';
 import { MarkdownContent } from './MarkdownContent';
+import { ProducedFiles } from './ProducedFiles';
+import { producedFilesForMessage } from '../produced-files';
 import {
   isExecutionProcessAssistant,
   shouldRenderExecutionForMessage,
@@ -12,6 +14,7 @@ import {
 } from '../chat-layout-policy';
 
 interface ChatAreaProps {
+  sessionId: string | null;
   title: string;
   modelLabel: string;
   sidebarOpen: boolean;
@@ -105,6 +108,10 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
               const isLastAssistant =
                 message.role === 'assistant' &&
                 !messages.slice(index + 1).some((candidate) => candidate.role === 'assistant');
+              const producedFiles =
+                message.role === 'assistant'
+                  ? producedFilesForMessage(projection, message.turnId, message.seq)
+                  : [];
               return (
                 <article
                   className={`message ${message.role}`}
@@ -112,7 +119,7 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                 >
                   {message.role === 'user' ? (
                     <div className="user-bubble">
-                      <MarkdownContent content={message.content} />
+                      <MarkdownContent content={message.content} sessionId={props.sessionId} />
                     </div>
                   ) : message.role === 'assistant' ? (
                     <div className="assistant-block">
@@ -121,8 +128,15 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                         messageTurnId: message.turnId,
                         executionTurnId: executionTurn?.id ?? null,
                         hasRunningStream: Boolean(runningStream),
-                      }) && <ExecutionProcess projection={projection} />}
-                      <MarkdownContent content={message.content} />
+                      }) && (
+                        <ExecutionProcess projection={projection} sessionId={props.sessionId} />
+                      )}
+                      <MarkdownContent
+                        content={message.content}
+                        sessionId={props.sessionId}
+                        producedFiles={producedFiles}
+                      />
+                      <ProducedFiles sessionId={props.sessionId} paths={producedFiles} />
                       {message.content && (
                         <div className="message-actions">
                           <button
@@ -147,17 +161,18 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
               executionTurnHasAssistant,
             }) && (
               <div className="assistant-block">
-                <ExecutionProcess projection={projection} />
+                <ExecutionProcess projection={projection} sessionId={props.sessionId} />
               </div>
             )}
             {runningStream && (
               <article className="message assistant streaming" aria-live="polite">
                 <div className="assistant-block">
-                  <ExecutionProcess projection={projection} />
+                  <ExecutionProcess projection={projection} sessionId={props.sessionId} />
                   {runningStream.content ? (
                     <MarkdownContent
                       content={runningStream.content}
                       className="streaming-markdown"
+                      sessionId={props.sessionId}
                     />
                   ) : (
                     <span className="typing-caret" />

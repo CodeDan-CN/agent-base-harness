@@ -54,6 +54,9 @@ const api: AgentClientApi = {
   selectAndInstallSkill(): Promise<RpcEnvelope> {
     return ipcRenderer.invoke(IPC_CHANNELS.selectSkillDirectory);
   },
+  openSessionFile(sessionId: string, target: string): Promise<RpcEnvelope> {
+    return ipcRenderer.invoke(IPC_CHANNELS.openSessionFile, { sessionId, target });
+  },
 };
 
 contextBridge.exposeInMainWorld('agentClient', api);

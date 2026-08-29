@@ -28,6 +28,10 @@ import {
   modelServiceSaveParamsSchema,
   modelServiceTestParamsSchema,
   skillToggleParamsSchema,
+  mcpServerSaveParamsSchema,
+  mcpServerTargetParamsSchema,
+  mcpServerTestParamsSchema,
+  mcpToolToggleParamsSchema,
 } from '../shared/contracts/management';
 import { modelCallStatisticsParamsSchema } from '../shared/contracts/statistics';
 
@@ -139,6 +143,28 @@ export async function dispatch(
       const value = parse(z.object({ sourcePath: z.string().min(1).max(4096) }).strict(), params);
       return app.installSkillDirectory(userId, value.sourcePath);
     }
+    case 'mcp-server.save':
+      return app.saveMcpServer(userId, parse(mcpServerSaveParamsSchema, params));
+    case 'mcp-server.test':
+      return app.testMcpServer(userId, parse(mcpServerTestParamsSchema, params));
+    case 'mcp-server.archive': {
+      const value = parse(mcpServerTargetParamsSchema, params);
+      return app.archiveMcpServer(userId, value.id, value.expectedRevision);
+    }
+    case 'mcp-server.refresh': {
+      const value = parse(z.object({ id: z.string().min(1) }).strict(), params);
+      return app.refreshMcpServer(userId, value.id);
+    }
+    case 'mcp-tool.toggle': {
+      const value = parse(mcpToolToggleParamsSchema, params);
+      return app.setMcpToolEnabled(
+        userId,
+        value.serverId,
+        value.rawName,
+        value.enabled,
+        value.expectedRevision,
+      );
+    }
     case 'session.list':
       return app.runtime.listSessions(userId);
     case 'session.snapshot': {
@@ -171,6 +197,8 @@ export async function dispatch(
       return app.modelCallStatistics(userId, parse(modelCallStatisticsParamsSchema, params));
     case 'skill-management.snapshot':
       return app.skillManagement(userId);
+    case 'mcp-management.snapshot':
+      return app.mcpManagement(userId);
     default:
       throw new BridgeError('INVALID_REQUEST', 'Unknown method');
   }

@@ -455,6 +455,50 @@ select:focus-visible {
   background: #f2f2f5;
   color: #5b5e69;
 }
+.produced-files {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 12px;
+  min-width: 0;
+}
+.produced-files-label {
+  flex: none;
+  color: #8a8e9a;
+  font-size: 11px;
+}
+.produced-files-list {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+}
+.produced-files-list button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  padding: 5px 8px;
+  border: 1px solid #dedde7;
+  border-radius: 7px;
+  background: #faf9ff;
+  color: #6253d8;
+  font-size: 11px;
+}
+.produced-files-list button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.markdown-file-mention {
+  display: inline;
+  padding: 0;
+  color: #6253d8;
+  text-decoration: underline;
+}
+.markdown-file-mention code {
+  color: inherit;
+}
 .center-state {
   min-height: 180px;
   display: flex;
@@ -1265,6 +1309,7 @@ select:focus-visible {
 .form-grid input,
 .form-grid select,
 .form-field > input,
+.form-field > textarea,
 .password-field input,
 .manual-model input {
   width: 100%;
@@ -1276,10 +1321,57 @@ select:focus-visible {
   font-size: 11px;
   outline: none;
 }
+.form-field > textarea {
+  min-height: 82px;
+  padding: 8px 9px;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.5;
+}
 .form-grid input:focus,
 .form-field input:focus,
+.form-field textarea:focus,
 .manual-model input:focus {
   border-color: #9388ed;
+}
+.mcp-check {
+  width: fit-content;
+  margin-top: 12px;
+}
+.mcp-switch {
+  margin-top: 18px;
+}
+.bundled-mcp-note {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid #ddd8ff;
+  border-radius: 8px;
+  background: #f7f5ff;
+}
+.bundled-mcp-note strong {
+  color: #514893;
+  font-size: 11px;
+}
+.bundled-mcp-note p {
+  margin: 5px 0 0;
+  color: #747080;
+  font-size: 9px;
+  line-height: 1.55;
+}
+.mcp-tools-heading {
+  margin-top: 30px;
+  padding-top: 20px;
+  border-top: 1px solid #eeeef2;
+}
+.mcp-tools-heading p {
+  margin: 4px 0 0;
+  color: #8a8d98;
+  font-size: 9px;
+}
+.mcp-tool-list {
+  max-height: 330px;
+  margin-top: 12px;
+  padding-bottom: 0;
 }
 .form-field small {
   color: #9598a3;

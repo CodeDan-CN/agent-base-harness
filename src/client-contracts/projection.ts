@@ -73,6 +73,7 @@ export interface ProjectedStep {
     includedEventIds: string[];
     skillRevision: number;
     runtimeRevision: number;
+    mcpRevision: number;
   } | null;
 }
 
@@ -83,10 +84,14 @@ export interface ProjectedToolCall {
   eventId: string;
   name: string;
   callIndex: number;
+  resultSeq?: number;
   input: unknown;
   status: string;
   output?: unknown;
   errorCode?: string | null;
+  meta?: unknown;
+  presentation?: unknown;
+  executionFacts?: unknown;
 }
 
 export interface ProjectedStream {
@@ -472,6 +477,7 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
           includedEventIds: stringArrayAt(payload, 'includedEventIds'),
           skillRevision: numberAt(payload, 'skillRevision') ?? 0,
           runtimeRevision: numberAt(payload, 'runtimeRevision') ?? 0,
+          mcpRevision: numberAt(payload, 'mcpRevision') ?? 0,
         };
       }
       break;
@@ -600,6 +606,7 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
           name: stringAt(payload, 'toolName') ?? 'unknown',
           callIndex: numberAt(payload, 'callIndex') ?? 0,
           input: payload?.input,
+          presentation: payload?.presentation,
           status: 'running',
         });
         const assistantMessage = [...state.messages]
@@ -625,16 +632,20 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
       break;
     }
     case 'tool.result': {
-      const content = stringifyAt(payload, 'output');
+      const content = toolOutputText(payload?.output);
       const eventId = stringAt(payload, 'eventId');
       const turnId = stringAt(payload, 'turnId');
       const toolCallId = stringAt(payload, 'toolCallId');
       if (content === undefined || !eventId || !turnId || !toolCallId) break;
       const call = state.toolCalls.get(toolCallId);
       if (call) {
+        call.resultSeq = event.seq;
         call.status = stringAt(payload, 'status') ?? 'unknown';
         call.output = payload?.output;
         call.errorCode = stringAt(payload, 'errorCode') ?? null;
+        call.meta = payload?.meta;
+        call.presentation = payload?.presentation ?? call.presentation;
+        call.executionFacts = payload?.executionFacts;
       }
       state.messages.push({ seq: event.seq, role: 'tool', content, eventId, turnId, toolCallId });
       break;
@@ -669,6 +680,32 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
   }
 }
 
+function toolOutputText(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    const parts = value.map((candidate) => {
+      const block = asRecord(candidate);
+      const type = stringAt(block, 'type');
+      if (type === 'text') return stringAt(block, 'text') ?? '';
+      if (type === 'image') return `[image: ${stringAt(block, 'mimeType') ?? 'unknown'}]`;
+      if (type === 'audio') return `[audio: ${stringAt(block, 'mimeType') ?? 'unknown'}]`;
+      if (type === 'resource') {
+        return stringAt(block, 'text') ?? `[resource: ${stringAt(block, 'uri') ?? 'unknown'}]`;
+      }
+      return '';
+    });
+    return parts.join('\n');
+  }
+  return stringifyValue(value);
+}
+
+function stringifyValue(value: unknown): string | undefined {
+  try {
+    return typeof value === 'string' ? value : JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -697,12 +734,6 @@ function numberArrayAt(value: Record<string, unknown> | undefined, key: string):
   return Array.isArray(found)
     ? found.filter((item): item is number => typeof item === 'number' && Number.isFinite(item))
     : [];
-}
-
-function stringifyAt(value: Record<string, unknown> | undefined, key: string): string | undefined {
-  if (!value || !(key in value)) return undefined;
-  const found = value[key];
-  return typeof found === 'string' ? found : JSON.stringify(found);
 }
 
 function isConversationStatus(

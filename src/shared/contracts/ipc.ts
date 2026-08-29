@@ -14,6 +14,7 @@ export const IPC_CHANNELS = {
   lifecycle: 'agent-client:lifecycle',
   sessionEvents: 'agent-client:session-events',
   selectSkillDirectory: 'agent-client:select-skill-directory',
+  openSessionFile: 'agent-client:open-session-file',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
@@ -38,7 +39,8 @@ export type QueryMethod =
   | 'execution.turn.read'
   | 'model-management.snapshot'
   | 'model-call-statistics.query'
-  | 'skill-management.snapshot';
+  | 'skill-management.snapshot'
+  | 'mcp-management.snapshot';
 export type CommandMethod =
   | 'user.switch'
   | 'runtime.retry'
@@ -60,7 +62,12 @@ export type CommandMethod =
   | 'model.default.set'
   | 'model.discover'
   | 'skill.enable'
-  | 'skill.disable';
+  | 'skill.disable'
+  | 'mcp-server.save'
+  | 'mcp-server.test'
+  | 'mcp-server.archive'
+  | 'mcp-server.refresh'
+  | 'mcp-tool.toggle';
 
 export interface QueryRequest {
   method: QueryMethod;
@@ -83,7 +90,15 @@ export interface AgentClientApi {
     listener: (event: SessionSubscriptionEvent) => void,
   ): () => void;
   selectAndInstallSkill(): Promise<RpcEnvelope>;
+  openSessionFile(sessionId: string, target: string): Promise<RpcEnvelope>;
 }
+
+export const sessionFileOpenSchema = z
+  .object({
+    sessionId: z.string().min(1).max(256),
+    target: z.string().min(1).max(4096),
+  })
+  .strict();
 
 /** Main 返回的统一响应信封。 */
 export type RpcEnvelope = { ok: true; result: unknown } | { ok: false; error: BridgeErrorPayload };

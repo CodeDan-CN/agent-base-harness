@@ -5,12 +5,17 @@ import type { ProcessResult } from './process-runner';
 export interface InterpreterProbe {
   status: InterpreterStatus;
   version: string | null;
+  source: 'bundled' | 'system' | null;
+  arch: string | null;
 }
 
 export interface EnvironmentDetectionConfig {
   nodePath?: string;
+  nodeSource?: 'bundled' | 'system';
   pythonPaths?: string[];
+  pythonSource?: 'bundled' | 'system';
   shellPath?: string;
+  allowSystemFallback?: boolean;
 }
 
 interface NamedRunner {
@@ -69,7 +74,10 @@ export class EnvironmentDetector {
   }
 
   private async detectNode(): Promise<InterpreterProbe> {
-    const candidates = [this.config.nodePath, 'node'].filter((c): c is string => !!c);
+    const candidates = [
+      this.config.nodePath,
+      ...(this.config.allowSystemFallback === false ? [] : ['node']),
+    ].filter((c): c is string => !!c);
     for (const cmd of candidates) {
       try {
         const result = await this.runner.run({
@@ -80,17 +88,30 @@ export class EnvironmentDetector {
         });
         if (result.exitCode === 0) {
           const version = parseNodeVersion(result.stdout);
-          if (version) return { status: 'available', version };
+          if (version) {
+            return {
+              status: 'available',
+              version,
+              source:
+                cmd === this.config.nodePath ? (this.config.nodeSource ?? 'system') : 'system',
+              arch: process.arch,
+            };
+          }
         }
       } catch (err) {
         if (!(err instanceof ProcessRunError)) throw err;
       }
     }
-    return { status: 'missing', version: null };
+    return { status: 'missing', version: null, source: null, arch: null };
   }
 
   private async detectPython(): Promise<InterpreterProbe> {
-    const candidates = this.config.pythonPaths ?? ['python3', 'python'];
+    const candidates = [
+      ...new Set([
+        ...(this.config.pythonPaths ?? []),
+        ...(this.config.allowSystemFallback === false ? [] : ['python3', 'python']),
+      ]),
+    ];
     for (const cmd of candidates) {
       try {
         const result = await this.runner.run({
@@ -100,18 +121,27 @@ export class EnvironmentDetector {
           timeoutMs: 5000,
         });
         const version = parsePythonVersion(result.stdout, result.stderr);
-        if (version) return { status: 'available', version };
+        if (version) {
+          return {
+            status: 'available',
+            version,
+            source: this.config.pythonPaths?.includes(cmd)
+              ? (this.config.pythonSource ?? 'system')
+              : 'system',
+            arch: process.arch,
+          };
+        }
       } catch (err) {
         if (!(err instanceof ProcessRunError)) throw err;
       }
     }
-    return { status: 'missing', version: null };
+    return { status: 'missing', version: null, source: null, arch: null };
   }
 
   private async detectShell(): Promise<InterpreterProbe> {
     const candidate = this.config.shellPath ?? process.env.SHELL;
     if (!candidate) {
-      return { status: 'unsupported', version: null };
+      return { status: 'unsupported', version: null, source: null, arch: null };
     }
     try {
       const result = await this.runner.run({
@@ -121,12 +151,17 @@ export class EnvironmentDetector {
         timeoutMs: 5000,
       });
       if (result.exitCode === 0) {
-        return { status: 'available', version: parseShellVersion(result.stdout) };
+        return {
+          status: 'available',
+          version: parseShellVersion(result.stdout),
+          source: 'system',
+          arch: process.arch,
+        };
       }
-      return { status: 'unsupported', version: null };
+      return { status: 'unsupported', version: null, source: null, arch: null };
     } catch (err) {
       if (err instanceof ProcessRunError) {
-        return { status: 'missing', version: null };
+        return { status: 'missing', version: null, source: null, arch: null };
       }
       throw err;
     }

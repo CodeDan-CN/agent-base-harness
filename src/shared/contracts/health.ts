@@ -9,6 +9,8 @@ export type InterpreterStatus = z.infer<typeof interpreterStatusSchema>;
 export const interpreterHealthSchema = z.object({
   status: interpreterStatusSchema,
   version: z.string().nullable(),
+  source: z.enum(['bundled', 'system']).nullable().optional(),
+  arch: z.string().nullable().optional(),
 });
 export type InterpreterHealth = z.infer<typeof interpreterHealthSchema>;
 

@@ -256,6 +256,10 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
       includedEventIds: z.array(id),
       skillRevision: z.number().int().nonnegative(),
       runtimeRevision: z.number().int().nonnegative(),
+      mcpRevision: z.number().int().nonnegative().optional(),
+      toolSnapshot: z
+        .array(z.object({ name: id, schemaDigest: id.nullable() }).strict())
+        .optional(),
       skillSnapshot: z.array(
         z.object({ name: id, contentDigest: id, enabled: z.boolean() }).strict(),
       ),
@@ -319,6 +323,7 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
       toolName: id,
       input: z.unknown(),
       replaySafe: z.boolean(),
+      presentation: z.unknown().nullable().optional(),
       callIndex: z.number().int().nonnegative(),
     })
     .strict(),
@@ -332,6 +337,9 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
       status: z.enum(['success', 'needs_input', 'retryable_error', 'fatal_error', 'cancelled']),
       output: z.unknown(),
       errorCode: z.string().nullable(),
+      meta: z.unknown().nullable().optional(),
+      presentation: z.unknown().nullable().optional(),
+      executionFacts: z.unknown().nullable().optional(),
       recovered: z.boolean().optional(),
       callIndex: z.number().int().nonnegative(),
     })

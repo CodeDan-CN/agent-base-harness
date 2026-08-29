@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "target": {
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "node": {
+    "version": "24.20.0",
+    "artifact": "node-v24.20.0-darwin-arm64.tar.xz",
+    "urls": [
+      "https://registry.npmmirror.com/-/binary/node/v24.20.0/node-v24.20.0-darwin-arm64.tar.xz",
+      "https://nodejs.org/download/release/v24.20.0/node-v24.20.0-darwin-arm64.tar.xz"
+    ],
+    "sha256": "b7bf7707070b950ba1ec5f1af3bb6de0f2b1962c5033973d94068ab021ef3014"
+  },
+  "python": {
+    "version": "3.13.15",
+    "release": "20260807",
+    "artifact": "cpython-3.13.15+20260807-aarch64-apple-darwin-install_only_stripped.tar.gz",
+    "urls": [
+      "https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/20260807/cpython-3.13.15%2B20260807-aarch64-apple-darwin-install_only_stripped.tar.gz",
+      "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.13.15%2B20260807-aarch64-apple-darwin-install_only_stripped.tar.gz"
+    ],
+    "sha256": "dbadb0ffe46f8bace50daaf8a0c5fc6903c003690776da9eb5269e33c856bb53"
+  },
+  "memoryMcp": {
+    "package": "@modelcontextprotocol/server-memory",
+    "version": "2026.7.4",
+    "integrity": "sha512-D+NNzChsOHN72y58ngDmO+TzjJijGi/sSY/gBydhB3TJCcm1XQEozVWwEpruHeXt/HSkMV3Z/BpHDhdt1MLD5w=="
+  }
+}

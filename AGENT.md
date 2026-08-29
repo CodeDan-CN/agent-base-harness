@@ -16,13 +16,13 @@
 
 ## 2. 当前状态
 
-本项目是一个 **Client 应用开发项目**。阶段 1 的 Client 基础运行平台、阶段 2 的 Headless 单 Agent Runtime V1 和阶段 3 的正式 Client UI 主链路已经完成；阶段 4“模型能力与上下文管理”已形成实施方案，阶段 4.5“通用 MCP 接入与可插拔长期记忆”也已完成开发架构和测试设计。实际开发以当前阶段对应设计和测试文档为准。
+本项目是一个 **Client 应用开发项目**。阶段 1 的 Client 基础运行平台、阶段 2 的 Headless 单 Agent Runtime V1 和阶段 3 的正式 Client UI 主链路已经完成；阶段 4“模型能力与上下文管理”已形成实施方案，阶段 4.5“通用 MCP 接入、首个外部记忆 MCP 与 Pi 基础工具参考”也已完成开发架构和测试设计。实际开发以当前阶段对应设计和测试文档为准。
 
 仓库当前主要包含：
 
 - `ui/`：独立构建的正式 React Renderer，只能依赖公开 Client Contract 和 Preload 白名单 API。
 - `src/`：Electron Main、Preload、Runtime Worker、公开 Client Contract、单 Agent Runtime 与基础设施正式代码。
-- `tests/`：阶段 1～3 已有的单元、契约、安全与集成测试，以及阶段 4/4.5 将扩展的模型能力、Compaction、MCP Tool Bridge、长期记忆和迁移测试。
+- `tests/`：阶段 1～3 已有的单元、契约、安全与集成测试，以及阶段 4/4.5 将扩展的模型能力、Compaction、Pi 基础工具、MCP Tool Bridge、首个外部记忆 MCP 和迁移测试。
 - `src/infrastructure/llm/`：OpenAI-compatible 真实 HTTP/SSE Adapter；阶段 4 在其上增加 DeepSeek/百炼预制和思考参数映射，不建立通用真实 Provider 兼容矩阵。
 - `docs/`：Client 总体方案、Runtime 目标设计、各阶段技术落地方案和早期设计草案。
 - `reference_ui/`：未来应用的视觉和布局参考原型。
@@ -97,7 +97,7 @@
 - `McpServerConfig`：某个 LocalUser 显式配置的 stdio 或 Streamable HTTP MCP Server；秘密只使用 Credential 引用。
 - `McpToolCatalog`：完整发现但不直接进入 Prompt 的用户级 MCP Tool 管理目录。
 - `ToolCatalogSnapshot`：某个 Step 实际获得的第一方 Tool 与已审核 MCP Tool 的不可变定义和路由快照。
-- `MemoryProvider`：跨 Session 长期记忆的可替换边界；正文由 Provider 持有，不进入核心 SQLite 内容表。
+- `External Memory MCP`：通过通用 MCP Tool Bridge 接入的外部记忆 Server；工具、数据模型和正文由外部 Server 持有，Client 只管理 MCP 配置、权限和调用事实。
 
 代码中不要使用含糊的 `Event` 同时表示技术日志和业务事项。应明确使用 `SessionLogEvent` 与 `ConversationEvent`。
 
@@ -260,7 +260,16 @@ packages/mcp/mcp-client/src/tools.ts
 packages/mcp/mcp-client/src/transport.ts
 ```
 
-明确不引入：Subagent、Workflow Worker、自修改插件及完整 Cordis 组合层。阶段 4 引入 DeepSeek Harness 风格的压力触发 Tool Result 预裁剪；阶段 4.5 借鉴其 MCP Tool Bridge 的 transport、动态发现、generation、结果适配与有界重连，但增加逐工具审核和用户级 Prompt 预算。原始 Tool Result 永久保留且可回查。
+明确不引入：Subagent、Workflow Worker、自修改插件及完整 Cordis 组合层。阶段 4 引入 DeepSeek Harness 风格的压力触发 Tool Result 预裁剪；阶段 4.5 按其 MCP Client 源码复刻 transport、动态发现、generation、结果适配与有界重连，并增加逐工具审核和用户级 Prompt 预算；记忆 MCP 作为第一个外部 MCP 使用这套通用链路。原始 Tool Result 永久保留且可回查。
+
+阶段 4.5 还必须阅读并记录以下配套资料：
+
+- `packages/mcp/mcp-client/README.zh.md`：MCP 配置、工具命名、动态同步、重连、结果投影和已知限制。
+- `packages/mcp/mcp-client/tests/fixture-server.ts`：协议 Fixture、分页发现、通知、错误和真实测试 Server 行为。
+- `packages/mcp/mcp-client/tests/mcp-client.spec.ts`、`reconnect.spec.ts`、`mcp-client.e2e.ts`：MCP Bridge 的单元、恢复和协议级证据。
+- `packages/fs/tool-fs/README.md`、`packages/shell/tool-bash/README.md`：四个第一方 Tool 的模型接口、输出限制和失败语义。
+- `docs/subsystems/tools.zh.md`、`filesystem.zh.md`、`shell.zh.md`、`subprocess.md`：Tool Registry、文件系统、Shell、取消和子进程边界。
+- `examples/mcp-memory/README.zh.md` 及其三个 `.cordis.yml`：记忆 MCP 作为普通外部 MCP 的启动和验证样例。
 
 ### 7.6 Agent Base
 
@@ -312,6 +321,12 @@ schema/db/conversation_turn.py
 - 不为了与参考项目 API 一致而牺牲本项目的不变量。
 - 引入参考机制时，应有相应测试证明取消、并发、恢复或上下文语义正确。
 - 不修改两个外部参考项目，除非用户明确提出独立任务。
+
+### 7.8 Pi Agent 与 MCP 协议资料
+
+阶段 4.5 的四个第一方 Tool 参考 [Pi Agent / pi-mono](https://github.com/badlogic/pi-mono) 的 `read`、`write`、`edit`、`bash`；MCP 协议参考 [Model Context Protocol Specification](https://modelcontextprotocol.io/specification)，实现库参考 [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)。
+
+参考顺序固定为：协议规范确认边界，dp-harness 源码确认业务链路，Pi Agent 确认四个工具的模型体验，本项目设计确认用户隔离、审批、事件和上下文预算。Pi Agent 和外部 MCP Server 进入实现前必须钉住 commit/版本；不得直接依赖 moving branch，也不得把外部工具名或记忆数据模型写进本项目核心 Contract。
 
 ## 8. TypeScript 与代码编写规范
 

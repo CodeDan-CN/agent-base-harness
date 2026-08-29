@@ -66,6 +66,10 @@ export class BridgeController {
     return this.activeUserId;
   }
 
+  getSubscribedSessionId(senderId: string): string | undefined {
+    return this.sessionSubscribers.get(senderId)?.sessionId;
+  }
+
   hasSubscriber(senderId: string): boolean {
     return this.subscribers.has(senderId);
   }

@@ -18,6 +18,9 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "runtime:prepare": "node build-support/prepare-runtime-pack.mjs",
+    "runtime:verify": "node build-support/verify-runtime-pack.mjs",
+    "pack:sign-local": "codesign --force --deep --sign - \"release/mac-arm64/Agent Harness.app\" && codesign --verify --deep --strict \"release/mac-arm64/Agent Harness.app\"",
     "catalog:build": "node scripts/build-model-catalog.mjs",
     "test": "npm run rebuild:node && vitest run",
     "test:unit": "npm run rebuild:node && vitest run tests/unit",
@@ -26,13 +29,16 @@
     "test:security": "npm run rebuild:node && vitest run tests/security",
     "test:watch": "npm run rebuild:node && vitest",
     "e2e": "npm run rebuild:electron && npm run build && playwright test",
-    "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder",
+    "pack": "npm run runtime:prepare && npm run runtime:verify && npm run build && npm run rebuild:electron && ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ electron-builder --dir --mac --arm64 && npm run pack:sign-local",
+    "dist": "npm run runtime:prepare && npm run runtime:verify && npm run build && npm run rebuild:electron && ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ electron-builder --mac --arm64",
     "rebuild": "npm run rebuild:electron",
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
     "rebuild:node": "node scripts/rebuild-native.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server-memory": "2026.7.4",
+    "ajv": "^8.20.0",
     "better-sqlite3": "^11.8.0",
     "lucide-react": "^0.546.0",
     "react-markdown": "^10.1.0",
@@ -77,6 +83,12 @@
     ],
     "asarUnpack": [
       "node_modules/better-sqlite3/**"
+    ],
+    "extraResources": [
+      {
+        "from": ".runtime-cache/darwin-arm64",
+        "to": "runtimes/darwin-arm64"
+      }
     ],
     "npmRebuild": true,
     "mac": {

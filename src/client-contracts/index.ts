@@ -21,6 +21,8 @@ export type {
   ModelSaveParams,
   ModelServiceSaveParams,
   SkillManagementSnapshot,
+  McpManagementSnapshot,
+  McpServerSaveParams,
 } from '../shared/contracts/management';
 export type {
   ModelCallStatistic,

@@ -360,6 +360,7 @@ export function App(): JSX.Element {
         />
       )}
       <ChatArea
+        sessionId={activeSessionId}
         title={activeSession?.title ?? '新对话'}
         modelLabel={modelLabel}
         sidebarOpen={sidebarOpen}

@@ -3,9 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, currentSchemaVersion } from '../infrastructure/sqlite/connection';
 import { runMigrations } from '../infrastructure/sqlite/migration';
-import { STAGE4_MIGRATIONS } from '../infrastructure/sqlite/schema';
+import { STAGE45_MIGRATIONS } from '../infrastructure/sqlite/schema';
 import { SqliteRepositories } from '../infrastructure/sqlite/repositories';
 import { ProcessRunner } from '../infrastructure/process/process-runner';
+import { ShellExecutor } from '../infrastructure/process/shell-executor';
+import type { BundledRuntimeSnapshot } from '../infrastructure/runtime/bundled-runtime-registry';
+import { ScopedFileSystem } from '../infrastructure/filesystem/scoped-file-system';
 import { EnvironmentDetector } from '../infrastructure/process/environment-detector';
 import { SkillCatalogService } from './skill-catalog-service';
 import { parseSkillDirectory } from '../infrastructure/skills/parser';
@@ -31,6 +34,8 @@ import { LlmAdapterRegistry } from '../runtime/model';
 import { ToolRegistry } from '../runtime/tools';
 import { registerBuiltinRuntimeTools } from '../runtime/builtin-tools';
 import { RuntimeService, type RuntimeServiceOptions } from '../runtime/runtime-service';
+import { McpManager } from '../runtime/mcp/mcp-manager';
+import { seedBundledMemoryServers } from '../runtime/mcp/bundled-memory';
 import type { ModelSnapshot } from '../runtime/model';
 import bundledCatalog from '../../resources/model-catalog.json';
 import {
@@ -56,7 +61,11 @@ import type {
   ModelServiceSaveParams,
   ModelServiceTestParams,
   SkillManagementSnapshot,
+  McpManagementSnapshot,
+  McpServerSaveParams,
+  McpServerTestParams,
 } from '../shared/contracts/management';
+import type { McpServer, McpToolCatalogEntry } from '../shared/domain/mcp';
 import type {
   ModelCallStatisticsParams,
   ModelCallStatisticsSnapshot,
@@ -75,6 +84,7 @@ export interface CreateWorkerAppDeps {
     pythonPaths?: string[];
     shellPath?: string;
   };
+  runtime?: BundledRuntimeSnapshot;
   useSystemCredential?: boolean;
   llmAdapters?: LlmAdapterRegistry;
   tools?: ToolRegistry;
@@ -93,6 +103,7 @@ export interface WorkerApplication {
   readonly logger: Logger;
   readonly appDataDir: string;
   readonly runtime: RuntimeService;
+  readonly mcp: McpManager;
   bootstrap(userId: LocalUserId): BootstrapResult;
   health(userId: LocalUserId): Promise<HealthSnapshot>;
   switchUser(userId: LocalUserId): BootstrapResult;
@@ -124,6 +135,25 @@ export interface WorkerApplication {
     expectedRevision: number,
   ): { skillName: string; enabled: boolean };
   installSkillDirectory(userId: LocalUserId, sourcePath: string): { skillName: string };
+  mcpManagement(userId: LocalUserId): Promise<McpManagementSnapshot>;
+  saveMcpServer(userId: LocalUserId, input: McpServerSaveParams): Promise<{ id: string }>;
+  testMcpServer(
+    userId: LocalUserId,
+    input: McpServerTestParams,
+  ): Promise<{ status: 'success' | 'network' | 'protocol'; toolCount: number }>;
+  archiveMcpServer(
+    userId: LocalUserId,
+    id: string,
+    expectedRevision: number,
+  ): Promise<{ id: string }>;
+  refreshMcpServer(userId: LocalUserId, id: string): Promise<{ id: string; toolCount: number }>;
+  setMcpToolEnabled(
+    userId: LocalUserId,
+    serverId: string,
+    rawName: string,
+    enabled: boolean,
+    expectedRevision: number,
+  ): { serverId: string; rawName: string; enabled: boolean };
   registerSecret(secret: string): void;
   close(): void;
 }
@@ -138,7 +168,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
 
   let schemaVersion: number;
   try {
-    schemaVersion = runMigrations(db, STAGE4_MIGRATIONS, { clock: () => clock.nowIso() });
+    schemaVersion = runMigrations(db, STAGE45_MIGRATIONS, { clock: () => clock.nowIso() });
   } catch (err) {
     try {
       db.close();
@@ -150,10 +180,28 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
 
   const repos = new SqliteRepositories(db);
   repos.users.seedUsers(clock.nowIso());
+  seedBundledMemoryServers(repos, deps.runtime, clock.nowIso());
   const activeUserId = repos.users.repairActiveUserId(clock.nowIso());
 
   const processRunner = new ProcessRunner({ allowedRoots: [deps.appDataDir, os.tmpdir()] });
-  const detector = new EnvironmentDetector(processRunner, deps.env, deps.appDataDir);
+  const detector = new EnvironmentDetector(
+    processRunner,
+    {
+      ...deps.env,
+      ...(deps.runtime
+        ? {
+            nodePath: deps.runtime.node.executable,
+            nodeSource: 'bundled' as const,
+            pythonPaths: [deps.runtime.python.executable],
+            pythonSource: 'bundled' as const,
+            allowSystemFallback: false,
+          }
+        : {}),
+    },
+    deps.appDataDir,
+  );
+  const fileSystem = new ScopedFileSystem(deps.appDataDir);
+  const shell = new ShellExecutor(deps.appDataDir, processRunner, deps.runtime?.binDir);
 
   const logger = deps.logger.child({ workerGeneration: deps.generation });
 
@@ -176,8 +224,14 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
     );
   }
   const tools = deps.tools ?? new ToolRegistry();
-  if (!deps.tools)
-    registerBuiltinRuntimeTools(tools, { repos, processRunner, appDataDir: deps.appDataDir });
+  if (!deps.tools) {
+    registerBuiltinRuntimeTools(tools, {
+      appDataDir: deps.appDataDir,
+      repos,
+      fileSystem,
+      shell,
+    });
+  }
   const runtime = new RuntimeService({
     repos,
     clock,
@@ -189,6 +243,15 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
     resolveModel: (userId) => resolveRuntimeModel(repos, modelCatalog, userId),
     options: deps.runtimeOptions,
     onEventsAppended: deps.onEventsAppended,
+  });
+  const mcp = new McpManager({
+    repos,
+    tools,
+    credentialStore,
+    logger: logger.child({ component: 'mcp' }),
+    clock,
+    appDataDir: deps.appDataDir,
+    runtime: deps.runtime,
   });
 
   const app: WorkerApplication = {
@@ -202,6 +265,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
     logger,
     appDataDir: deps.appDataDir,
     runtime,
+    mcp,
 
     bootstrap(userId: LocalUserId): BootstrapResult {
       const user = repos.users.getUser(userId);
@@ -597,12 +661,185 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
       return { skillName: parsed.skill.name };
     },
 
+    async mcpManagement(userId) {
+      const servers = repos.mcp.listServers(userId);
+      const tools = repos.mcp.listTools(userId);
+      return {
+        revision: repos.users.getRevisions(userId).mcpRevision,
+        servers: await Promise.all(
+          servers.map(async (server) => {
+            const serverTools = tools.filter((tool) => tool.serverId === server.id);
+            return {
+              id: server.id,
+              name: server.name,
+              summary: server.summary,
+              transport: server.transport,
+              status: server.status === 'enabled' ? 'enabled' : 'disabled',
+              config: { ...server.config },
+              credentialStatus: server.credentialRef
+                ? await credentialStatusOf(credentialStore, server.credentialRef)
+                : ('missing' as const),
+              connectionStatus: server.connectionStatus,
+              generation: server.generation,
+              lastError: server.lastError,
+              toolCount: serverTools.length,
+              enabledToolCount: serverTools.filter(
+                (tool) => tool.enabled && tool.reviewStatus === 'approved',
+              ).length,
+            };
+          }),
+        ),
+        tools: tools.map((tool) => ({
+          serverId: tool.serverId,
+          rawName: tool.rawName,
+          publicName: tool.publicName,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          outputSchema: tool.outputSchema,
+          schemaDigest: tool.schemaDigest,
+          enabled: tool.enabled,
+          reviewStatus: tool.reviewStatus,
+          generation: tool.generation,
+        })),
+      };
+    },
+
+    async saveMcpServer(userId, input) {
+      assertRevision(repos.users.getRevisions(userId).mcpRevision, input.expectedRevision);
+      const id = input.id ?? ids.newId();
+      const existing = input.id ? repos.mcp.getServer(userId, input.id) : undefined;
+      if (input.id && !existing) throw new BridgeError('INVALID_REQUEST', 'MCP server not found');
+      const scope = { userId, purpose: 'mcp-server', entityId: id };
+      const credentialRef = await applyCredentialMutation(
+        credentialStore,
+        logger,
+        scope,
+        existing?.credentialRef ?? null,
+        input.credential,
+      );
+      if (existing) {
+        repos.mcp.updateServer(
+          userId,
+          id,
+          {
+            name: input.name,
+            summary: input.summary,
+            transport: input.transport,
+            config: input.config,
+            credentialRef,
+            enabled: input.enabled,
+          },
+          clock.nowIso(),
+        );
+      } else {
+        repos.mcp.createServer({
+          id,
+          userId,
+          name: input.name,
+          summary: input.summary,
+          transport: input.transport,
+          config: input.config,
+          credentialRef,
+          enabled: input.enabled,
+          now: clock.nowIso(),
+        });
+      }
+      let catalogReady = false;
+      try {
+        await mcp.reloadServer(userId, id);
+        catalogReady = true;
+      } catch (error) {
+        if (input.enabled) {
+          logger.warn('MCP server saved but connection failed', {
+            userId,
+            serverId: id,
+            error: error instanceof Error ? error.message : 'unknown',
+          });
+        }
+      }
+      if (!input.summary && catalogReady) await ensureMcpServerSummary(userId, id);
+      return { id };
+    },
+
+    async testMcpServer(userId, input) {
+      const id = input.id ?? ids.newId();
+      const existing = input.id ? repos.mcp.getServer(userId, input.id) : undefined;
+      const scope = { userId, purpose: 'mcp-server-test', entityId: id };
+      let credentialRef = existing?.credentialRef ?? null;
+      if (input.credential.action === 'replace') {
+        logger.registerSecret(input.credential.value);
+        await credentialStore.set(scope, input.credential.value);
+        credentialRef = credentialRefOf(scope);
+      } else if (input.credential.action === 'clear') {
+        credentialRef = null;
+      }
+      const server: McpServer = {
+        id,
+        userId,
+        name: input.name,
+        summary: input.summary,
+        transport: input.transport,
+        status: 'enabled',
+        config: input.config,
+        credentialRef,
+        connectionStatus: 'disconnected',
+        generation: 0,
+        lastError: null,
+        createdAt: clock.nowIso(),
+        updatedAt: clock.nowIso(),
+        archivedAt: null,
+      };
+      try {
+        const result = await mcp.testServer(server);
+        return { status: 'success' as const, toolCount: result.toolCount };
+      } catch (error) {
+        return {
+          status:
+            error instanceof TypeError || error instanceof DOMException
+              ? ('network' as const)
+              : ('protocol' as const),
+          toolCount: 0,
+        };
+      } finally {
+        if (input.credential.action === 'replace') {
+          await credentialStore.delete(scope).catch(() => undefined);
+        }
+      }
+    },
+
+    async archiveMcpServer(userId, id, expectedRevision) {
+      assertRevision(repos.users.getRevisions(userId).mcpRevision, expectedRevision);
+      const existing = repos.mcp.getServer(userId, id);
+      if (!existing) throw new BridgeError('INVALID_REQUEST', 'MCP server not found');
+      repos.mcp.archiveServer(userId, id, clock.nowIso());
+      await mcp.removeServer(userId, id);
+      await credentialStore
+        .delete({ userId, purpose: 'mcp-server', entityId: id })
+        .catch(() => undefined);
+      return { id };
+    },
+
+    async refreshMcpServer(userId, id) {
+      const toolCount = await mcp.refreshServer(userId, id);
+      const server = repos.mcp.getServer(userId, id);
+      if (server && !server.summary) await ensureMcpServerSummary(userId, id);
+      return { id, toolCount };
+    },
+
+    setMcpToolEnabled(userId, serverId, rawName, enabled, expectedRevision) {
+      assertRevision(repos.users.getRevisions(userId).mcpRevision, expectedRevision);
+      repos.mcp.setToolEnabled(userId, serverId, rawName, enabled, clock.nowIso());
+      mcp.rebuildUserTools(userId);
+      return { serverId, rawName, enabled };
+    },
+
     registerSecret(secret: string): void {
       logger.registerSecret(secret);
     },
 
     close(): void {
       runtime.close();
+      void mcp.close();
       try {
         db.close();
       } catch {
@@ -611,6 +848,61 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
     },
   };
 
+  async function ensureMcpServerSummary(userId: LocalUserId, serverId: string): Promise<void> {
+    const server = repos.mcp.getServer(userId, serverId);
+    if (!server || server.summary) return;
+    const discoveredTools = repos.mcp.listTools(userId, serverId);
+    if (discoveredTools.length === 0) return;
+    const fallback = fallbackMcpSummary(discoveredTools);
+    let summary = fallback;
+    if (repos.models.getDefaultModelId(userId)) {
+      try {
+        const model = resolveRuntimeModel(repos, modelCatalog, userId);
+        const adapter = llmAdapters.get(model.providerType);
+        if (adapter) {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 30_000);
+          timer.unref();
+          try {
+            const response = await adapter.generate(
+              {
+                requestId: ids.newId(),
+                purpose: 'metadata',
+                model,
+                messages: [
+                  {
+                    role: 'system',
+                    content:
+                      '你负责为 MCP Server 生成中文能力摘要。只输出一到两句纯文本，不要标题、Markdown、引号或解释；必须基于给定工具，控制在 120 个汉字以内。',
+                  },
+                  {
+                    role: 'user',
+                    content: mcpSummaryPrompt(server.name, discoveredTools),
+                  },
+                ],
+                tools: [],
+                maxOutputTokens: Math.min(256, model.maxOutputTokens),
+              },
+              controller.signal,
+            );
+            summary = normalizeMcpSummary(response.content) || fallback;
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+      } catch (error) {
+        logger.warn('MCP summary generation failed; using catalog fallback', {
+          userId,
+          serverId,
+          error: error instanceof Error ? error.message : 'unknown',
+        });
+      }
+    }
+    repos.mcp.setServerSummary(userId, serverId, summary, clock.nowIso());
+    mcp.rebuildUserTools(userId);
+  }
+
+  mcp.start();
   return app;
 }
 
@@ -657,6 +949,39 @@ function resolveRuntimeModel(
     ),
     configRevision: repos.users.getRevisions(userId).modelRevision,
   };
+}
+
+function mcpSummaryPrompt(serverName: string, tools: readonly McpToolCatalogEntry[]): string {
+  const catalog = tools.slice(0, 50).map((tool) => ({
+    name: tool.rawName,
+    description: tool.description.replace(/\s+/g, ' ').trim().slice(0, 300),
+    parameters: Object.keys(
+      typeof tool.inputSchema.properties === 'object' && tool.inputSchema.properties !== null
+        ? tool.inputSchema.properties
+        : {},
+    ).slice(0, 20),
+  }));
+  return `Server 名称：${serverName}\n工具目录：${JSON.stringify(catalog)}`;
+}
+
+function fallbackMcpSummary(tools: readonly McpToolCatalogEntry[]): string {
+  const descriptions = tools
+    .map((tool) => tool.description.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  if (descriptions.length > 0) return normalizeMcpSummary(descriptions.join('；'));
+  const names = tools.slice(0, 8).map((tool) => tool.rawName);
+  return normalizeMcpSummary(`提供 ${names.join('、')} 等 MCP 工具能力。`);
+}
+
+function normalizeMcpSummary(value: string): string {
+  return value
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```(?:text|markdown)?|```/gi, ''))
+    .replace(/^\s*(?:摘要|简介|能力摘要)\s*[:：]\s*/i, '')
+    .replace(/^[“”"']+|[“”"']+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 300);
 }
 
 function trustedCatalogCapabilities(
@@ -920,6 +1245,13 @@ function stringAt(value: Record<string, unknown> | undefined, key: string): stri
 function toHealth(input: {
   status: 'available' | 'missing' | 'error' | 'unsupported';
   version: string | null;
+  source: 'bundled' | 'system' | null;
+  arch: string | null;
 }): InterpreterHealth {
-  return { status: input.status, version: input.version };
+  return {
+    status: input.status,
+    version: input.version,
+    source: input.source,
+    arch: input.arch,
+  };
 }

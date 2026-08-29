@@ -37,6 +37,8 @@ export function userMessage(error: unknown): string {
         return '请先在设置中配置并选择默认模型。';
       case 'REVISION_CONFLICT':
         return '配置已在其他位置更新，请刷新后重试。';
+      case 'INVALID_REQUEST':
+        return '填写内容无效，请检查后重试。';
       case 'SESSION_BUSY':
         return '当前会话正在运行，请先停止任务。';
       case 'RUNTIME_NOT_READY':

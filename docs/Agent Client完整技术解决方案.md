@@ -91,7 +91,7 @@ Client 内部包含一个单 Agent Runtime，并内置两个可切换的本地�
 - 本地事件日志、Projection、崩溃修复和数据迁移。
 - ConversationEvent/Exchange、历史检索和两级上下文压缩。
 - 用户级通用 MCP Tool Bridge：stdio/Streamable HTTP、工具发现与审核、动态刷新、Credential、结果投影和有界重连。
-- 可插拔长期记忆边界、默认渐进式 Memory Skill 和随包本地文档记忆 MCP Provider。
+- 可插拔长期记忆由外部 MCP 提供；阶段 4.5 先交付通用 MCP Tool Bridge，并以一个外部记忆 MCP 作为首个业务接入案例。
 - usage、Context Breakdown、运行耗时和错误诊断。
 - 基础工具权限、结构化用户交互和敏感配置保护。
 
@@ -153,9 +153,9 @@ Electron 的主要成本是安装包体积、内存和安全面。方案通过�
 
 1. **展示与交互层**面向用户，包含双用户切换、会话与聊天、执行过程与队列、模型、技能、MCP 与长期记忆设置。它只处理界面展示和交互意图，不直接访问 Runtime、数据库或密钥。
 2. **客户端接入层**包含视图状态与事件订阅、预加载安全桥、主进程与应用生命周期。它负责把 Renderer 与本地 Node 能力隔离，并把用户操作转化为白名单、强类型的命令和查询。
-3. **应用服务层**是 Client 用例入口，包含命令服务、查询与订阅服务、本地用户上下文、模型、Skill、MCP 和长期记忆管理服务。它负责用户切换、会话提交、取消、各类能力配置和订阅管理，并把可信 `userId` 注入所有 Runtime 操作。
+3. **应用服务层**是 Client 用例入口，包含命令服务、查询与订阅服务、本地用户上下文、模型、Skill 和 MCP 管理服务。它负责用户切换、会话提交、取消、各类能力配置和订阅管理，并把可信 `userId` 注入所有 Runtime 操作。
 4. **单 Agent Runtime 核心层**包含输入接纳与持久 Inbox、Session Driver 与 Turn/Step Loop、Context Projector 与 LLM Adapter、Tool Registry/Scheduler/Interaction、事件 Projection 与崩溃恢复。这一层实现设计文档定义的核心运行语义。
-5. **数据与基础设施层**提供单一 SQLite Event Store、模型/Skill/MCP 配置 Repository、操作系统 Credential Store、Agent Skills 目录、MCP Client/Supervisor、Memory Provider、附件目录、宿主机命令执行、日志、迁移和诊断。两个内置用户共享 SQLite 文件和表结构，但所有私有数据按 `user_id` 隔离。
+5. **数据与基础设施层**提供单一 SQLite Event Store、模型/Skill/MCP 配置 Repository、操作系统 Credential Store、Agent Skills 目录、MCP Client/Supervisor、附件目录、宿主机命令执行、日志、迁移和诊断。外部 MCP 自己持有的业务数据不进入 Client 核心模型。两个内置用户共享 SQLite 文件和表结构，但所有私有数据按 `user_id` 隔离。
 6. **外部能力**包括大模型服务、本地与远程工具以及操作系统能力。它们只能通过 Runtime 中的适配器和权限边界被调用，不能被 Renderer 直接访问。
 
 进程部署与上述职责对应：展示层运行在 Renderer；预加载桥和主进程承担客户端接入；应用服务、Runtime 核心和 SQLite 访问运行在独立 Node Worker；模型、工具和系统资源位于 Client 边界之外。图中的命令服务、查询与订阅服务是统一用例入口，模型管理和 Skill 管理是其内部独立业务组件，具体职责见 8.13 和 8.14。
@@ -166,9 +166,9 @@ Electron 的主要成本是安装包体积、内存和安全面。方案通过�
 | ---------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | 展示与交互层     | 用户切换、会话聊天、执行过程、队列、设置                                               | 展示 Projection、收集用户意图、维护输入草稿等临时 UI 状态                        | 不访问数据库、密钥、模型或工具，不定义 Runtime 状态机                 |
 | 客户端接入层     | View State、Preload、Electron Main                                                     | 安全 IPC、窗口与 Worker 生命周期、当前用户上下文、消息路由                       | 不执行 Agent Loop，不保存会话事实                                     |
-| 应用服务层       | Command、Query、Subscription、Local User Context、Model/Skill/MCP/Memory Management     | 编排 Client 用例、校验 User Scope、管理各类能力生命周期、连接 UI 与 Runtime | 不在 Renderer 保存配置事实，不允许管理模块绕过 Provider/Tool 安全边界 |
+| 应用服务层       | Command、Query、Subscription、Local User Context、Model/Skill/MCP Management     | 编排 Client 用例、校验 User Scope、管理各类能力生命周期、连接 UI 与 Runtime | 不在 Renderer 保存配置事实，不允许管理模块绕过 Provider/Tool 安全边界 |
 | Runtime 核心层   | Admission、Inbox、Driver、Turn/Step、Context、LLM、Tool、Projection、Repair            | 执行单 Agent Runtime 的全部领域语义                                              | 不依赖 React，不直接处理窗口和视图组件                                |
-| 数据与基础设施层 | SQLite、配置 Repository、Credential Store、Skill/附件目录、MCP/Memory、日志、Provider Adapter | 持久化、凭据、受管文件、外部协议、动态工具和诊断实现                          | 不决定 Agent 行为，不成为第二业务事实源                               |
+| 数据与基础设施层 | SQLite、配置 Repository、Credential Store、Skill/附件目录、MCP、日志、Provider Adapter | 持久化、凭据、受管文件、外部协议、动态工具和诊断实现                          | 不决定 Agent 行为，不成为第二业务事实源                               |
 | 外部能力         | 大模型、工具、操作系统能力                                                             | 提供模型推理和实际动作能力                                                       | 必须经过 Adapter、权限、Schema、超时和取消边界                        |
 
 进程职责映射如下：
@@ -606,7 +606,7 @@ Projection 更新必须满足：实时消费事件的结果与从 seq 1 完整�
 - ConversationEvent Context：同一事项的原始问答，或 Summary 加未覆盖 raw tail。
 - Current ExecutionTurn Surface：本 Turn 用户消息、助手消息、Tool Call/Result、当前必需 reasoning replay，以及压力下对已闭合旧区域的可追溯投影。
 - Explicit History Read：通过 `event_read` 或 `turn_read` 显式读取的原始历史证据。
-- User Long-term Memory：当前本地用户跨 Session 的稳定偏好、纠错结论和长期约束，由可替换 Memory Provider 独立持久化。
+- User Long-term Memory：当前用户跨 Session 的稳定偏好、纠错结论和长期约束，默认由随包固定版本的官方 Memory MCP 持久化，也可替换为其他外部记忆 MCP。
 
 业务记忆只在新问题第一 Step 前检查，不在上一轮输出完成后调用摘要模型。达到 80% 时按需生成新的 Session 历史摘要和当前 Event 摘要，首 Step 使用“Session Summary + Event Summary + 最新问题”；允许全局背景与当前事项细节存在受控语义重叠，冲突优先级为“最新问题 > Event Summary > Session Summary”。
 
@@ -614,9 +614,7 @@ Projection 更新必须满足：实时消费事件的结果与从 seq 1 完整�
 
 所有 Summary、ConversationEvent 关系、相关历史搜索和按需读取都必须携带 `userId`。任何自动候选或历史工具都不能把另一个用户的数据带入模型上下文。
 
-用户长期记忆不属于 Session Event、Session Summary 或核心 SQLite 内容模型。Runtime 只依赖稳定 Memory Port；第一稳定版通过 MCP stdio 接入随包的本地文档型 Provider，每个用户维护一份当前有效 `MEMORY.md`。核心 SQLite 仅保存 Provider 选择、启停和配置 revision，不保存长期记忆正文。
-
-默认 `user-memory` Skill 继续使用渐进加载：初始 Prompt 只有名称和描述；明确记忆、纠错、忘记或历史偏好可能相关时才加载 Skill 并调用 `memory_overview`、`memory_read`、`memory_replace`。短文档可由 overview 直接返回，长文档先返回有界摘要与章节，确认相关后再读全文。纠错必须基于 Provider `documentRevision` 替换旧认知，不能在当前记忆中追加互相冲突的条目。
+用户长期记忆不属于 Session Event、Session Summary 或核心 SQLite 内容模型。阶段 4.5 不在 Runtime 内建立 Memory Provider、记忆 Skill 或记忆专用 Tool Contract；默认 Memory MCP 仍通过通用 MCP Bridge 运行，其 JSONL 正文位于用户级 MCP 数据目录。Client 核心 SQLite 只保存通用 MCP 配置、工具审核和运行事实。
 
 ### 8.12 Configuration 与 Credential Service
 
@@ -652,9 +650,10 @@ Skill Management 负责兼容通用 Agent Skills，并管理 Skill 对当前用�
 - 解析 `name`、`description`、`compatibility` 等通用元数据；未知扩展字段保留但不擅自赋予权限。
 - 展示当前用户的 Skill 列表、搜索、启用状态、来源、兼容性、正文和受控资源预览。
 - 初始上下文只提供已启用 Skill 的名称和描述；模型命中后按需加载完整 `SKILL.md`，再按正文显式引用读取资源。
-- Skill 本身不动态注册一块常驻 Runtime。指令需要执行 `scripts/` 时，模型通过 Runtime 已有的通用命令能力调用宿主机 Node.js、Python 或 Shell。
-- 客户端只负责解释器检测、首次执行确认、命令超时与取消、stdout/stderr/退出码采集、受控工作目录、环境变量收敛和审计，不自动安装语言运行时或第三方依赖。
-- Skill 的安装来源、启用状态和执行授权按 `user_id` 隔离；共享宿主机解释器不等于操作系统级用户隔离。
+- Skill 本身不动态注册一块常驻 Runtime。指令需要执行 `scripts/` 时，模型通过 Runtime 已有的通用命令能力调用 Client 内置优先的 Node.js/Python 或宿主 Shell。
+- macOS arm64 首个发行目标随 `.app` 固定交付经摘要校验的 Node/Python Runtime Pack；它们是 `bash` 背后的 Host Capability，不增加模型可见 `node`/`python` Tool。开发模式在 Runtime Pack 未准备时可以回退宿主解释器，正式包缺失或目标架构不匹配则启动失败。
+- 客户端负责版本锁、解释器检测、首次执行确认、命令超时与取消、stdout/stderr/退出码采集、受控工作目录、环境变量收敛和审计；不把第三方依赖预装进全局 Runtime，也不静默执行 npm/pip 安装。
+- Skill 的安装来源、启用状态、执行授权和依赖工作区按 `user_id` 隔离；共享应用内解释器不等于操作系统级用户隔离。
 
 V1 不自定义强制 `skill.json`，也不要求 Skill 作者把脚本另行发布为 Tool Plugin。ModelScope、ClawHub 或本地来源的标准 Skill 可以进入同一目录与加载流程。需要提供模型可调用的外部工具时优先接入阶段 4.5 MCP Tool Bridge；需要修改 Agent Loop、应用生命周期或访问未开放宿主内部服务的代码仍不属于普通 Skill/MCP，应进入未来单独评审的 Plugin 扩展机制。
 
@@ -673,7 +672,18 @@ MCP 是外部工具接入机制，不与 Skill 混为同一概念：Skill 提供
 - Tool 原始结果作为 Event 事实完整保存，模型只获得通过 Schema 校验后的有界 Surface 投影；MCP Server 故障只降级其自身。
 - Client 不自动下载 Server、不自动执行 npm/pip 安装、不实现 OAuth；秘密值只进入 OS Credential Store。
 
-MCP V1 只桥接 Tools，不把 Resources、Prompts、Sampling、Roots、Elicitation、Completions、Tasks 或 Apps 投影给 Agent。内置文档记忆也是一个 MCP stdio Server，但其原始工具标记为 `service-only`，由稳定 Memory Adapter 包装为 `memory_*`，避免模型看到两套重复接口。
+MCP V1 只桥接 Tools，不把 Resources、Prompts、Sampling、Roots、Elicitation、Completions、Tasks 或 Apps 投影给 Agent。阶段 4.5 的记忆 MCP 是普通外部 MCP：其真实工具由 `tools/list` 发现，经用户审核后以 `mcp__<serverName>__<rawName>` 暴露，不由 Client 包装成 `memory_*`。
+
+### 8.16 MCP 与 Pi 参考依据
+
+阶段 4.5 的实现与评审按以下顺序使用参考资料：
+
+1. **协议规范**：以 [Model Context Protocol Specification](https://modelcontextprotocol.io/specification) 确认生命周期、`tools/list`、`tools/call`、通知、取消、错误和 Transport 边界；[MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) 只作为实现依赖参考。
+2. **dp-harness 行为**：以本机 `/Users/codedan/local/project/deepseek-harness/deepseek-harness/packages/mcp/mcp-client/` 的 README、源码和测试复刻通用 MCP Tool Bridge；以 `docs/subsystems/` 和 `packages/*/README*` 补充 Tool Registry、文件、Shell、子进程和结果投影语义。
+3. **Pi Agent 工具体验**：以 [Pi Agent / pi-mono](https://github.com/badlogic/pi-mono) 的 `read`、`write`、`edit`、`bash` 作为第一方工具形态参考；实现前固定上游 commit，不直接复制其宿主权限或运行时抽象。
+4. **本项目不变量**：以本方案、Runtime 设计、阶段 2/4 方案和 `AGENT.md` 决定用户隔离、审批、事件持久化、Snapshot、上下文预算、取消和恢复。
+
+每项实现都要在设计记录或测试 Fixture 中写明“参考来源、固定版本、与本项目的改写点、对应验收证据”。外部记忆 MCP 仅作为真实接入样例，其工具名、Schema、存储格式和业务语义不得从示例反推为 Client Contract。
 
 ## 9. 核心数据和事件模型
 
@@ -734,10 +744,7 @@ app-data/
     user-a/
     user-b/
   skills/         # 标准 Agent Skills 目录或其受管副本；Renderer 仅能通过受控接口预览
-  mcp/            # 随包 MCP Server 资源与可重建缓存；用户配置元数据保存在 SQLite
-  memory/         # Memory Provider 自有数据，按 userId/providerId 分区；不属于核心 SQLite 内容表
-    user-a/
-    user-b/
+  mcp/            # 随包 MCP 资源与可重建缓存；用户配置元数据保存在 SQLite
   staging/        # 来源下载或导入时的可清理暂存区（需要复制/解包时使用）
   logs/           # 可轮转的结构化诊断日志
   cache/          # 可删除重建的缓存
@@ -757,7 +764,7 @@ app-data/
 | Skill、Tool Registry 与授权 | 用户级                 | Agent 只获得当前用户启用的 Tool Schema               |
 | MCP Server、Catalog 与连接  | 用户级                 | 配置同表隔离；连接、Credential、重连和 Tool Snapshot 不跨用户共享 |
 | API Key 与 Skill Credential | 用户级                 | 存在 OS Credential Store，以用户命名空间隔离         |
-| 长期记忆 Provider 与正文    | 用户级                 | 配置在 SQLite；正文由 Provider 按用户独立目录或远端存储管理 |
+| 外部记忆 MCP 与其正文       | 用户级                 | 配置、审核和连接在 Client 隔离；正文由外部 Server 自己管理 |
 | 附件与文件引用              | 用户级                 | SQLite 元数据带 `user_id`，实际文件按用户目录分区    |
 | Runtime 日志                | 应用级文件、用户级字段 | 日志必须带 `userId` 且默认不记录会话敏感正文         |
 
@@ -951,7 +958,7 @@ cancel current Turn
 3. Skill Management 校验目录边界、文件基本安全和必填 frontmatter，计算内容摘要并创建当前用户的安装记录；安装阶段不执行脚本、不自动安装依赖。
 4. 启用后更新该用户的 `skill_revision`。新 Step 获取不可变 SkillCatalogSnapshot，初始上下文只包含名称和描述，不包含全部正文和脚本内容。
 5. 模型判断任务匹配某个 Skill 后，调用统一 Skill loader 加载完整 `SKILL.md`；其中显式引用的资料和资源再按需读取。
-6. 当 Skill 指令要求运行脚本时，模型调用已有命令工具。Runtime Worker 解析 `node`、`python3`、`python` 或 Shell 等宿主机解释器，解释器或依赖缺失时返回明确错误，不进行自动安装。
+6. 当 Skill 指令要求运行脚本时，模型调用已有 `bash` 工具。Runtime Worker 先解析应用内固定版本的 `node`、`python3`、`python`，开发模式才回退宿主解释器；第三方依赖缺失时返回明确错误，不静默安装。
 7. 首次执行脚本前按当前用户和 Skill 内容摘要确认风险；执行统一经过超时、取消、输出限制、工作目录、环境变量收敛和日志审计。敏感凭据只有经明确授权才按名称注入。
 8. 新 Step 固定 SkillCatalogSnapshot；运行中的 Step 不因启停、升级或目录变化而静默替换已加载内容。
 9. 停用后新的 Step 不再看到该 Skill。卸载或更新不得中途删除仍在执行的脚本文件，具体文件保留策略在 Skill 阶段技术落地方案中确定。
@@ -966,18 +973,14 @@ cancel current Turn
 5. 如果默认模型在新 Step 前失效，Driver 明确进入配置错误或等待用户修复，禁止跨用户或静默选择其他服务兜底。
 6. Renderer 收到 `configuration.changed` 后按 revision 更新管理 Snapshot；检测 revision 断档时重新查询完整 Snapshot。
 
-### 10.14 长期记忆写入、纠错与召回
+### 10.14 记忆 MCP 的写入、纠错与召回
 
-1. Provider 启用时，新 Step 只看到 bundled `user-memory` Skill 的名称和描述，不直接获得长期记忆正文。
-2. 用户明确要求记住、纠错或忘记稳定信息，或当前问题明显可能依赖历史偏好时，模型调用 `skill_load` 获取记忆规则。
-3. 模型先调用 `memory_overview`；短文档直接返回全文，长文档只返回有界摘要、章节和 `documentRevision`。
-4. 长文档摘要与当前问题相关时再调用 `memory_read`；无关时禁止为了“以防万一”加载全文。
-5. 写入或纠错前读取最新文档，生成只包含当前有效认知的新文档；纠错删除或替换旧表述，不追加相反条目。
-6. `memory_replace` 携带 `expectedRevision`。Provider 原子提交后返回新 revision；冲突时重新读取并最多重试一次。
-7. 新 Session 的召回只从当前用户 Memory Provider 读取，不复制旧 Session，也不把 Session Summary 当作长期记忆源。
-8. 用户要求清空全部记忆时必须明确确认；清空 Provider 不删除 Session/Event 历史事实。
-9. Provider 切换只影响后续 Step 路由，不删除旧 Provider 数据，也不承诺自动迁移不同数据模型。
-10. Provider 不可用或写入失败时，Agent 必须明确失败，不能声称已经记住。
+1. 首次启动为每个本地用户预置并连接固定版本的官方 Memory MCP；它仍按普通 MCP 完成发现、逐项审核和启用，不创建记忆专用 Provider 或 Skill。
+2. Agent 只在当前用户的 `ToolCatalogSnapshot` 中看到已启用且审核通过的记忆 MCP 工具，工具名使用 `mcp__<serverName>__<rawName>`。
+3. 写入、纠错、删除和检索的具体语义由外部记忆 MCP 的真实 Tool Schema 和工具描述决定，Client 不假设 `memory_*` 名称或固定参数。
+4. 新 Session 通过同一用户的 MCP Tool 召回数据，不复制旧 Session，也不把 Session Summary 自动当作长期记忆事实源。
+5. 外部 MCP 不可用、调用失败或结果未知时，Agent 必须明确说明，不得声称已经写入或召回成功。
+6. 记忆正文和索引由 MCP Server 持有，不进入 Client 核心 SQLite；默认 Server 的 JSONL 文件位于当前用户的受管 MCP 数据目录，Client 只保存 MCP 配置、审核状态和 Tool Event 事实。
 
 ## 11. UI 与交互方案
 
@@ -1005,8 +1008,8 @@ Skill 管理页面包含：
 
 - Skill 搜索、仅显示已启用、安装来源、兼容性、执行授权、启停开关和“添加技能”入口。
 - 安装弹层展示目录校验、`SKILL.md` 元数据、脚本存在情况、来源和风险提示；不使用定时器伪造安装结果。
-- Skill 详情提供 `SKILL.md`、`scripts/`、`references/`、`assets/` 的受控预览，以及 Node/Python/Shell 环境检测结果。
-- 脚本首次执行确认和执行记录；解释器或依赖缺失时给出明确提示，但客户端不自动安装。
+- Skill 详情提供 `SKILL.md`、`scripts/`、`references/`、`assets/` 的受控预览，以及 Node/Python/Shell 的版本、来源与架构检测结果。
+- 脚本首次执行确认和执行记录；正式包内置解释器异常或依赖缺失时给出明确提示，第三方依赖安装仍需显式审批。
 - 启用失败时明确展示格式错误、环境缺失、执行未授权或来源不可用等原因。
 - 切换用户后立即加载该用户的模型与 Skill Snapshot，清除旧用户的筛选结果、选中详情和未提交敏感草稿。
 
@@ -1019,13 +1022,13 @@ MCP 服务页面包含：
 - env/header Credential 只支持设置、替换和清除，不允许读取已保存明文；Client 不提供自动依赖安装按钮。
 - 切换用户后清除上一用户的 Server 详情、Tool diff、Credential 草稿和订阅。
 
-长期记忆页面包含：
+长期记忆不单独建设 Client 专用设置页。阶段 4.5 在“设置 → MCP 服务”中管理记忆 MCP：
 
-- 当前用户的总开关、Provider 名称、运行状态、文档 revision、更新时间、token 估算和摘要状态。
-- 通过白名单 Query/Command 查看和编辑完整记忆；Renderer 不读取真实文件路径，也不控制 MCP executable、cwd 或环境变量。
-- 导出当前有效记忆、清空二次确认、revision 冲突提示和损坏/备份恢复入口。
-- 第一稳定版长期记忆页只展示随包“内置本地记忆（MCP）”；通用 MCP 页可以接入第三方 Server，但不会把其自动识别为 Memory Provider。未来 Provider 切换不得暗示会自动迁移旧数据。
-- 切换用户后清除旧用户记忆正文和编辑草稿，重新订阅当前用户 Provider Snapshot。
+- 展示当前用户配置的记忆 MCP Server、transport、连接状态、工具数量和最近错误。
+- 展示记忆 MCP 实际发现的工具名称、描述、Schema 摘要、上下文成本、审核状态和启用状态。
+- 通过通用连接测试、逐工具审核、启停、重连和删除流程操作，不提供记忆专用 `memory_*` API。
+- 不展示或编辑外部 Server 的真实文件路径、内部数据库、索引、Provider revision 或专用数据模型。
+- 切换用户后清除旧用户的 Server 详情、工具结果和 Credential 草稿，重新加载当前用户的 MCP Snapshot。
 
 已保存密钥只能显示“已配置/未配置”和可选末尾脱敏信息；眼睛按钮只可切换用户当前正在输入但尚未保存的值，不能取回 Credential Store 中的明文。
 
@@ -1077,7 +1080,7 @@ MCP 服务页面包含：
 - 文件工具使用规范化路径和允许范围，拒绝路径穿越。
 - 子进程工具不拼接未经验证的 Shell 字符串。
 - MCP stdio command/args 分字段启动，不经 Shell 插值；新工具默认关闭并按用户审核，Schema 变化使旧审核失效。
-- MCP Streamable HTTP 生产配置只允许 HTTPS，header/env secret 只从当前用户 Credential 引用注入。
+- MCP Streamable HTTP 配置允许 HTTP 或 HTTPS，header/env secret 只从当前用户 Credential 引用注入。
 - 日志、事件和错误信息不记录 API Key、Cookie 和授权头。
 
 ### 12.3 数据安全
@@ -1085,7 +1088,7 @@ MCP 服务页面包含：
 - API Key 使用 OS Credential Store。
 - API Key 和 Skill Credential 使用 `userId + providerId/skillId` 命名空间，禁止跨用户回退或复用，除非用户分别显式配置相同凭据。
 - SQLite 文件和附件根目录权限限制为当前操作系统用户，附件在应用目录内再按 `userId` 分区。
-- 本地 Memory Provider 目录和备份按 `userId/providerId` 分区并限制为当前操作系统用户；MCP 子进程不继承模型凭据。
+- 外部 MCP 的工作目录、数据范围和 Credential 按 `userId/serverId` 隔离；MCP 子进程不继承模型凭据。
 - 诊断导出前对敏感字段执行明确脱敏。
 - 长期记忆正文和摘要默认不进入普通日志或诊断包，只有用户显式选择时才能导出。
 - 两个内置用户属于应用级隔离，不构成对同一操作系统账号的强安全边界。
@@ -1219,7 +1222,7 @@ promptEpoch
 - 建立正式 Main、Preload、Renderer、Runtime Worker 入口和 Worker 监护机制。
 - 实现最终形态的强类型 Bridge、IPC Schema、可信 User Context 和 cursor 订阅通道。
 - 实现 SQLite EventStore、模型与 Skill 配置 Repository、用户配置 revision、迁移、事务追加、单库双用户隔离和 Projection 基础框架。
-- 实现 OS Credential Store、应用数据目录、标准 Agent Skills 目录发现、宿主机解释器检测、附件引用、结构化日志和诊断基础设施。
+- 实现 OS Credential Store、应用数据目录、标准 Agent Skills 目录发现、内置优先解释器检测、附件引用、结构化日志和诊断基础设施；macOS arm64 包含固定 Node/Python Runtime Pack。
 - 建立 Mock LLM、Fake Provider、Scripted Tool、Clock、ID、事件断言和 Headless Runtime Harness。
 - 建立 CI、类型检查、Lint、Contract Test、数据库迁移测试和基础打包验证。
 
@@ -1313,9 +1316,9 @@ promptEpoch
 - 长 Turn 可在 Step 边界压缩已闭合执行区域后继续，原始 Tool Result 不被删改，工具配对、Compaction 恢复和双用户隔离通过。
 - 阶段 1～3 数据库可向前升级，Compaction Projection 可由 Event Log 重建。
 
-### 阶段 4.5：通用 MCP 接入与可插拔长期记忆 V1
+### 阶段 4.5：通用 MCP 接入、默认记忆 MCP 与 Pi 基础工具
 
-目标：完整交付可管理、按用户隔离、上下文有界的 MCP Tool Bridge V1，并在该通用机制上实现第一个随包本地文档 Memory Provider，完成明确记忆、纠错替换和跨 Session 召回。
+目标：先完整复刻 DeepSeek Harness 的 MCP Tool Bridge 业务链路，再以一个外部记忆 MCP 作为第一个可插拔业务接入完成工具发现、使用和跨 Session 召回验证；同时参考 Pi Agent 形成 `read`、`write`、`edit`、`bash` 四个第一方基础工具。
 
 阶段实施文档：
 
@@ -1327,25 +1330,23 @@ promptEpoch
 - 实现 stdio 与 Streamable HTTP MCP Client、初始化协商、分页工具发现、`tools/list_changed`、结构化结果、超时取消和有界重连。
 - 建立用户级 MCP Server/Tool Catalog、稳定名称、Schema digest、两阶段 generation 和不可变 Step `ToolCatalogSnapshot`。
 - 新工具默认关闭；完成连接预览、逐工具审核/启停、审批策略、Schema 变化重审、上下文成本展示和 Credential 引用。
-- MCP V1 只桥接 Tools；不自动安装 Server/依赖，不实现 OAuth，不把其他 MCP primitive 投影进 Runtime。
-- 定义稳定 Memory Port、用户级 Provider Snapshot、配置 revision 和错误边界；核心 SQLite 只保存 Provider 配置，不保存长期记忆正文。
-- 随 Client 打包 `builtin-document-memory` MCP Server；其原始工具仅供 Memory Adapter 使用，模型看到稳定 `memory_*` Tools。
-- 每个用户维护一份当前有效 `MEMORY.md`；短文档直接读取，长文档先返回有界摘要和章节，再按相关性加载全文。
-- 增加 bundled `user-memory` Skill，沿用现有渐进加载；明确记忆、纠错、忘记和召回通过稳定 `memory_*` Tools 完成。
-- 使用 `documentRevision` 和原子整体替换阻止丢失更新；纠错替换旧认知，不建设逐条记忆表。
-- 完成长记忆设置页、启停、状态、编辑、导出、清空、损坏恢复和双用户隔离。
-- 验证 Memory Tool 与阶段 4 Session/Event Summary、Surface Guard、Worker 恢复和多 Session 并发不冲突。
+- MCP V1 只桥接 Tools；除随 Runtime Pack 固定打包的默认 Memory MCP 外，不自动安装 Server/依赖，不实现 OAuth，不把其他 MCP primitive 投影进 Runtime。
+- 参考 Pi Agent 的 `read`、`write`、`edit`、`bash`，完成第一方工具的 Schema、权限、路径/环境、取消、输出和事件接线。
+- 固定打包官方 Memory MCP，按用户预置普通 MCP 配置，并完成发现、逐工具审核、调用和跨 Session 流程。
+- 验证外部记忆 MCP 的真实工具名、Schema、数据模型和更新/删除语义不被 Client 核心写死。
+- 不在 Client 内建立 `MemoryProvider`、`memory_*` 包装工具或 `user-memory` Skill；随包 Memory MCP 仍是独立 stdio Server。
+- 验证外部记忆 MCP 与阶段 4 Session/Event Summary、Surface Guard、Worker 恢复和多 Session 并发不冲突。
 
 阶段验收：
 
 - 两种 transport、动态发现、Tool 审核、generation 切换、结果投影和重连均有确定行为；Server 故障不结束无关会话。
 - 只有当前用户启用且审核通过的 Tool Schema 进入下一 Step，运行中 Step 的定义和路由不漂移。
 - 两个用户的 MCP 配置、Credential、Catalog、连接、进程和 UI 完全隔离。
-- 新 Session 可召回同一用户明确保存的稳定信息，另一用户不可见。
-- 长期记忆正文由 Provider 独立持久化，主 SQLite 不成为记忆内容事实源。
-- 默认 Skill 未命中时不注入正文或记忆；长文档无关时不加载全文。
-- 并发 revision 冲突、MCP/Worker 重启、原子写、损坏与备份恢复有确定结果。
-- Provider 写入失败不产生“已经记住”的虚假确认，秘密和凭据被阻止写入。
+- 默认记忆 MCP 可离线启动，并通过普通 MCP 配置、审核和调用流程完成跨 Session 召回，同一用户之外不可见。
+- 外部记忆正文由外部 Server 独立持久化，主 SQLite 不成为记忆内容事实源。
+- Client 不把外部记忆 MCP 包装成 `MemoryProvider`、`memory_*` 或 `user-memory` Skill。
+- MCP/Worker 重启、外部 Server 故障、调用结果未知和动态 Schema 变化有确定结果。
+- 外部记忆 MCP 的写入失败不产生“已经记住”的虚假确认，秘密和凭据被阻止写入。
 - 阶段 1～4 基线继续通过，阶段 5 已纳入 MCP 配置/Credential 清单和 Provider 数据的打包、备份、诊断和卸载策略。
 
 ### 阶段 5：发布工程与交付
@@ -1375,10 +1376,10 @@ promptEpoch
 | 里程碑                 | 可演示能力                             | 关键交付物                                                                                           |
 | ---------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | M1 Client 运行底座完成 | 最终进程、数据和安全基础设施可验证     | 阶段 1 技术落地方案、工程骨架、Bridge、Worker、EventStore、User Scope、测试 Harness                  |
-| M2 Runtime 完成        | Headless 环境完整执行所有 Agent 场景   | 阶段 2 技术落地方案、完整 Driver、Context、Model/Skill Snapshot、Tools、Memory、Projection、Recovery |
+| M2 Runtime 完成        | Headless 环境完整执行所有 Agent 场景   | 阶段 2 技术落地方案、完整 Driver、Context、Model/Skill Snapshot、Tools、Projection、Recovery |
 | M3 Client 完成         | 用户可通过正式 UI 使用全部 V1 能力     | 阶段 3 技术落地方案、参考 UI 复刻、双用户、会话、运行控制、模型管理、Skill 管理和 Interaction        |
 | M4 模型与上下文完成    | 模型能力可解析，长任务上下文可有界收敛 | 阶段 4 技术落地方案、模型目录、供应商预制、Compaction、迁移和定向测试                                |
-| M4.5 MCP 与长期记忆完成 | 外部 MCP Tool 可受控接入，明确信息可跨 Session 召回并纠错 | 阶段 4.5 技术落地方案、MCP Tool Bridge/管理 UI、Memory Port、默认 Skill、本地文档 Provider 和隔离/恢复测试 |
+| M4.5 MCP 与首个记忆 MCP 完成 | 外部 MCP Tool 可受控接入，记忆 MCP 可跨 Session 召回并完成实际工具调用 | 阶段 4.5 技术落地方案、MCP Tool Bridge/管理 UI、Pi 四个第一方工具、外部记忆 MCP 和隔离/恢复测试 |
 | M5 可发布              | 安装、升级、诊断和回滚就绪             | 阶段 5 技术落地方案、签名安装包、发布检查表、用户与运维文档                                          |
 
 每个里程碑都同时交付该阶段评审通过的技术落地方案、正式实现和验收结果。阶段 1–2 不要求用临时 UI 包装成“可演示 MVP”；阶段 3 形成完整 Client 产品。
@@ -1400,10 +1401,10 @@ promptEpoch
 | 模型配置与执行快照漂移   | 执行中途切换模型、密钥或参数导致行为不可解释     | 用户配置 revision、Step 不可变快照、请求事件记录快照摘要                                              |
 | Skill 来源和脚本风险     | 社区 Skill 可能包含危险指令、脚本或依赖          | 来源提示、目录校验、内容摘要、首次执行确认、受控环境变量、超时/取消和审计；明确宿主机执行不是安全沙箱 |
 | Skill 启停与活动调用竞态 | 脚本执行中目录被更新或新 Step 仍看到已停用 Skill | Skill revision、Step 快照和执行期间文件保留；具体策略在对应阶段方案确认                               |
-| 长期记忆错误或串用户     | 新 Session 使用过时/错误偏好或泄露另一用户信息   | Provider 独立作用域、渐进读取、revision 整体替换、明确写入规则、双用户负向测试和可见管理 UI            |
+| 长期记忆错误或串用户     | 新 Session 使用过时/错误偏好或泄露另一用户信息   | 外部 MCP 按用户/Server 独立作用域、工具审核、结果未知核验、双用户负向测试和可见 MCP 管理 UI            |
 | MCP Server 或连接失效    | 外部工具/记忆不可用或结果不确定                  | 独立故障域、有界指数重连、可靠 dispose、原子 generation、结果未知后核验和禁止假成功                   |
 | MCP Schema 挤占上下文    | 每轮固定输入增大、历史容量下降                   | 全量管理目录与运行目录分离、新工具默认关闭、逐工具启用、token 估算、Step Snapshot 硬预算              |
-| 第三方 MCP 权限过大      | 本地命令、网络或 Credential 泄漏                 | command 数组启动、Credential 隔离、默认关闭/独占/审批、HTTPS、禁止隐式依赖安装                         |
+| 第三方 MCP 权限过大      | 本地命令、网络或 Credential 泄漏                 | command 数组启动、Credential 隔离、默认关闭/独占/审批、URL/DNS/IP 校验、禁止隐式依赖安装            |
 | 参考 UI Mock 逻辑被误用  | 产品行为偏离 Runtime 设计                        | 参考 UI 只读，正式 UI 只调用 typed Command/Projection                                                 |
 | 阶段核心契约遗漏         | 阶段内反复修改 Event、DB、Driver、IPC 和 UI      | 在对应阶段技术落地方案中确认该阶段状态图、Schema、Contract 与测试，不提前铺开后续阶段                 |
 | 详细设计变成过度平台化   | 延迟产品交付并增加无用抽象                       | 每次只设计当前阶段交付范围，保持单包和单 Agent，不设计 Worker/Subagent/通用插件平台                   |
@@ -1421,7 +1422,7 @@ promptEpoch
 - 是否需要全库加密和用户可配置的数据目录。
 - 两个内置用户的默认名称、头像、是否允许重命名，以及未来是否允许新增用户。
 - Skill 来源接入顺序（本地目录、ModelScope、ClawHub）和安装更新方式；基础格式已确定兼容通用 Agent Skills，以 `SKILL.md` 为入口并允许 `scripts/`、`references/`、`assets/`。
-- 第三方 Memory Provider 的 Adapter 顺序、数据迁移与 OAuth 方式；阶段 4.5 已开放通用 MCP Tool Bridge，但只把随包本地文档 Server 适配为 Memory Provider。
+- 第三方记忆 MCP 的选型、数据迁移与 OAuth 方式；阶段 4.5 只通过通用 MCP Tool Bridge 接入一个外部记忆 MCP，不建立 Client 内部 Memory Provider。
 - UI 状态库是否必要；在 Projection 复杂度证明前优先使用简单订阅层。
 
 ## 19. 实施原则总结
@@ -1429,7 +1430,7 @@ promptEpoch
 1. Client 是最终产品，Runtime 是 Client 内核。
 2. 两个内置用户共享单个 SQLite，但所有私有数据、模型、Skill 和运行上下文按 `userId` 严格隔离。
 3. 视觉复刻 `reference_ui`，业务语义重新实现。
-4. Session Event Log 是运行事实来源；模型、Skill、MCP 与 Memory Provider 配置表是用户配置事实来源；外部 MCP 数据和长期记忆正文由各 Provider 持有，UI 与模型上下文只通过正式 Contract 访问。
+4. Session Event Log 是运行事实来源；模型、Skill 与 MCP 配置表是用户配置事实来源；外部 MCP 数据和长期记忆正文由各外部 Server 持有，UI 与模型上下文只通过正式 Contract 访问。
 5. 一个 Step 只有一次主模型调用，不建立隐式第二 Agent Loop。
 6. 同 Session 串行、跨 Session 并行、工具显式安全才并行。
 7. 工具结果完整保存、完整进入当前 Turn，不做 Runtime 事后裁剪。

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Logger } from '../infrastructure/logging/logger';
 import type { SqliteRepositories } from '../infrastructure/sqlite/repositories';
 import { BridgeError } from '../shared/contracts/errors';
@@ -22,7 +23,7 @@ import {
   projectRuntime,
   type RuntimeProjection,
 } from '../client-contracts/projection';
-import type { ToolRegistry } from './tools';
+import type { RuntimeTool, ToolRegistry } from './tools';
 import { ToolScheduler } from './tools';
 import { pruneToolResultText, selectCheckpointMessages } from './surface-compactor';
 
@@ -791,7 +792,7 @@ export class RuntimeService {
           return;
         }
         stepIndex += 1;
-        const availableTools = this.tools.definitions();
+        const availableTools = this.tools.definitions(identity.userId, turnId);
         const stepId = this.ids.newId();
         if (stepIndex === 1) {
           await this.compactBusinessMemoryIfNeeded(
@@ -827,7 +828,7 @@ export class RuntimeService {
             safetyTokens: this.safetyTokens,
             tools: availableTools,
             skills,
-            promptEpoch: 1 + revisions.skillRevision,
+            promptEpoch: 1 + revisions.skillRevision + revisions.mcpRevision,
           });
         } catch (error) {
           const reason =
@@ -854,6 +855,13 @@ export class RuntimeService {
               includedEventIds: context.includedEventIds,
               skillRevision: revisions.skillRevision,
               runtimeRevision: revisions.runtimeRevision,
+              mcpRevision: revisions.mcpRevision,
+              toolSnapshot: availableTools.map((tool) => ({
+                name: tool.name,
+                schemaDigest: tool.name.startsWith('mcp__')
+                  ? toolSchemaDigest(tool.inputSchema)
+                  : null,
+              })),
               skillSnapshot: skills.map((skill) => ({
                 name: skill.skillName,
                 contentDigest: skill.contentDigest,
@@ -989,7 +997,7 @@ export class RuntimeService {
                     safetyTokens: this.safetyTokens,
                     tools: availableTools,
                     skills,
-                    promptEpoch: 1 + revisions.skillRevision,
+                    promptEpoch: 1 + revisions.skillRevision + revisions.mcpRevision,
                   });
                   context = recovered;
                   this.append(
@@ -1008,6 +1016,13 @@ export class RuntimeService {
                         includedEventIds: recovered.includedEventIds,
                         skillRevision: revisions.skillRevision,
                         runtimeRevision: revisions.runtimeRevision,
+                        mcpRevision: revisions.mcpRevision,
+                        toolSnapshot: availableTools.map((tool) => ({
+                          name: tool.name,
+                          schemaDigest: tool.name.startsWith('mcp__')
+                            ? toolSchemaDigest(tool.inputSchema)
+                            : null,
+                        })),
                         skillSnapshot: skills.map((skill) => ({
                           name: skill.skillName,
                           contentDigest: skill.contentDigest,
@@ -1097,7 +1112,12 @@ export class RuntimeService {
               eventId,
               toolName: call.name,
               input: call.arguments ?? null,
-              replaySafe: this.tools.get(call.name)?.replaySafe ?? false,
+              replaySafe: this.tools.get(call.name, identity.userId, turnId)?.replaySafe ?? false,
+              presentation:
+                presentToolCall(
+                  this.tools.get(call.name, identity.userId, turnId),
+                  call.arguments,
+                ) ?? null,
               callIndex,
             }),
           );
@@ -1136,8 +1156,11 @@ export class RuntimeService {
                 turnId,
                 eventId,
                 status: result.status,
-                output: result.output ?? null,
+                output: result.content,
                 errorCode: result.errorCode ?? null,
+                meta: result.meta ?? null,
+                presentation: result.presentation ?? null,
+                executionFacts: result.executionFacts ?? null,
                 callIndex,
               }),
             );
@@ -1209,6 +1232,7 @@ export class RuntimeService {
         return;
       }
     } finally {
+      this.tools.clearTurnToolExposure(identity.userId, turnId);
       const current = this.active.get(key);
       if (current?.turnId === turnId) this.active.delete(key);
     }
@@ -1316,7 +1340,7 @@ export class RuntimeService {
       inputCapability: model.inputCapability,
       reservedOutputTokens: Math.min(this.reservedOutputTokens, model.maxOutputTokens),
       safetyTokens: this.safetyTokens,
-      tools: this.tools.definitions(),
+      tools: this.tools.definitions(identity.userId, turnId),
       skills,
     });
     const trigger = Math.min(
@@ -1433,9 +1457,9 @@ export class RuntimeService {
           inputCapability: model.inputCapability,
           reservedOutputTokens: Math.min(this.reservedOutputTokens, model.maxOutputTokens),
           safetyTokens: this.safetyTokens,
-          tools: this.tools.definitions(),
+          tools: this.tools.definitions(identity.userId, turnId),
           skills: this.repos.skills.listInstallations(identity.userId),
-          promptEpoch: 1 + revisions.skillRevision,
+          promptEpoch: 1 + revisions.skillRevision + revisions.mcpRevision,
         };
         let measurement = this.contextProjector.measureFull({
           projection,
@@ -1943,6 +1967,18 @@ function unresolvedToolCalls(
   return [...calls.values()].filter((call) => !completed.has(call.toolCallId));
 }
 
+function presentToolCall(tool: RuntimeTool | undefined, args: unknown): unknown {
+  try {
+    return tool?.presentCall?.(args);
+  } catch {
+    return undefined;
+  }
+}
+
+function toolSchemaDigest(schema: Record<string, unknown>): string {
+  return createHash('sha256').update(JSON.stringify(schema)).digest('hex');
+}
+
 function redactDiagnosticEvent(event: SessionLogEvent): SessionLogEvent {
   const payload = asRecord(event.payload);
   if (!payload) return event;
@@ -1959,7 +1995,15 @@ function redactDiagnosticEvent(event: SessionLogEvent): SessionLogEvent {
     return { ...event, payload: { ...payload, input: '[redacted]' } };
   }
   if (event.eventType === 'tool.result') {
-    return { ...event, payload: { ...payload, output: '[redacted]' } };
+    return {
+      ...event,
+      payload: {
+        ...payload,
+        output: '[redacted]',
+        meta: '[redacted]',
+        executionFacts: '[redacted]',
+      },
+    };
   }
   if (event.eventType === 'session.created' || event.eventType === 'conversation.event.created') {
     return { ...event, payload: { ...payload, title: '[redacted]' } };

@@ -28,6 +28,11 @@ import {
   modelServiceSaveParamsSchema,
   modelServiceTestParamsSchema,
   modelServiceTestResultSchema,
+  mcpManagementSnapshotSchema,
+  mcpServerSaveParamsSchema,
+  mcpServerTargetParamsSchema,
+  mcpServerTestParamsSchema,
+  mcpToolToggleParamsSchema,
   skillManagementSnapshotSchema,
   skillToggleParamsSchema,
 } from './management';
@@ -59,6 +64,7 @@ export const queryRequestSchema = z
       'model-management.snapshot',
       'model-call-statistics.query',
       'skill-management.snapshot',
+      'mcp-management.snapshot',
     ]),
     params: z.unknown().optional(),
   })
@@ -99,6 +105,11 @@ export const commandRequestSchema = z.discriminatedUnion('method', [
   command('model.discover', modelDiscoverParamsSchema),
   command('skill.enable', skillToggleParamsSchema),
   command('skill.disable', skillToggleParamsSchema),
+  command('mcp-server.save', mcpServerSaveParamsSchema),
+  command('mcp-server.test', mcpServerTestParamsSchema),
+  command('mcp-server.archive', mcpServerTargetParamsSchema),
+  command('mcp-server.refresh', z.object({ id: z.string().min(1).max(128) }).strict()),
+  command('mcp-tool.toggle', mcpToolToggleParamsSchema),
 ]);
 export type CommandRequestSchema = z.infer<typeof commandRequestSchema>;
 
@@ -182,6 +193,24 @@ export function runtimeResponseSchema(method: string): z.ZodTypeAny | undefined 
     case 'skill.enable':
     case 'skill.disable':
       return z.object({ skillName: z.string(), enabled: z.boolean() }).strict();
+    case 'mcp-server.save':
+    case 'mcp-server.archive':
+      return z.object({ id: z.string() }).strict();
+    case 'mcp-server.test':
+      return z
+        .object({
+          status: z.enum(['success', 'network', 'protocol']),
+          toolCount: z.number().int().nonnegative(),
+        })
+        .strict();
+    case 'mcp-server.refresh':
+      return z
+        .object({ id: z.string(), toolCount: z.number().int().nonnegative() })
+        .strict();
+    case 'mcp-tool.toggle':
+      return z
+        .object({ serverId: z.string(), rawName: z.string(), enabled: z.boolean() })
+        .strict();
     case 'session.list':
       return z.array(sessionResultSchema);
     case 'session.snapshot':
@@ -204,6 +233,8 @@ export function runtimeResponseSchema(method: string): z.ZodTypeAny | undefined 
       return modelCallStatisticsSnapshotSchema;
     case 'skill-management.snapshot':
       return skillManagementSnapshotSchema;
+    case 'mcp-management.snapshot':
+      return mcpManagementSnapshotSchema;
     default:
       return undefined;
   }

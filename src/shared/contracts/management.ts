@@ -199,3 +199,115 @@ export const skillManagementSnapshotSchema = z
   })
   .strict();
 export type SkillManagementSnapshot = z.infer<typeof skillManagementSnapshotSchema>;
+
+const mcpStdioConfigSchema = z
+  .object({
+    command: z.string().trim().min(1).max(4096),
+    args: z.array(z.string().max(4096)).max(100).default([]),
+    cwd: z.string().trim().min(1).max(4096).optional(),
+    env: z.record(z.string().max(16_384)).default({}),
+  })
+  .strict();
+
+const mcpHttpConfigSchema = z
+  .object({
+    url: z.string().url().max(4096),
+    local: z.boolean().default(false),
+  })
+  .strict();
+
+export const mcpServerSaveParamsSchema = z.discriminatedUnion('transport', [
+  z
+    .object({
+      id: id.optional(),
+      name: z
+        .string()
+        .trim()
+        .min(1)
+        .max(80)
+        .regex(/^[A-Za-z0-9_-]+$/),
+      summary: z.string().trim().max(300),
+      transport: z.literal('stdio'),
+      config: mcpStdioConfigSchema,
+      enabled: z.boolean(),
+      credential: credentialMutationSchema,
+      expectedRevision: revision,
+    })
+    .strict(),
+  z
+    .object({
+      id: id.optional(),
+      name: z
+        .string()
+        .trim()
+        .min(1)
+        .max(80)
+        .regex(/^[A-Za-z0-9_-]+$/),
+      summary: z.string().trim().max(300),
+      transport: z.literal('streamable-http'),
+      config: mcpHttpConfigSchema,
+      enabled: z.boolean(),
+      credential: credentialMutationSchema,
+      expectedRevision: revision,
+    })
+    .strict(),
+]);
+export type McpServerSaveParams = z.infer<typeof mcpServerSaveParamsSchema>;
+
+export const mcpServerTestParamsSchema = z.discriminatedUnion('transport', [
+  mcpServerSaveParamsSchema.options[0].omit({ expectedRevision: true }),
+  mcpServerSaveParamsSchema.options[1].omit({ expectedRevision: true }),
+]);
+export type McpServerTestParams = z.infer<typeof mcpServerTestParamsSchema>;
+
+export const mcpServerTargetParamsSchema = z.object({ id, expectedRevision: revision }).strict();
+
+export const mcpToolToggleParamsSchema = z
+  .object({
+    serverId: id,
+    rawName: z.string().min(1).max(256),
+    enabled: z.boolean(),
+    expectedRevision: revision,
+  })
+  .strict();
+
+export const mcpManagementSnapshotSchema = z
+  .object({
+    revision,
+    servers: z.array(
+      z
+        .object({
+          id: z.string(),
+          name: z.string(),
+          summary: z.string(),
+          transport: z.enum(['stdio', 'streamable-http']),
+          status: z.enum(['enabled', 'disabled']),
+          config: z.record(z.unknown()),
+          credentialStatus: z.enum(['configured', 'missing']),
+          connectionStatus: z.enum(['disconnected', 'connecting', 'connected', 'error']),
+          generation: z.number().int().nonnegative(),
+          lastError: z.string().nullable(),
+          toolCount: z.number().int().nonnegative(),
+          enabledToolCount: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+    tools: z.array(
+      z
+        .object({
+          serverId: z.string(),
+          rawName: z.string(),
+          publicName: z.string(),
+          description: z.string(),
+          inputSchema: z.record(z.unknown()),
+          outputSchema: z.record(z.unknown()).nullable(),
+          schemaDigest: z.string(),
+          enabled: z.boolean(),
+          reviewStatus: z.enum(['pending', 'approved', 'changed']),
+          generation: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+export type McpManagementSnapshot = z.infer<typeof mcpManagementSnapshotSchema>;

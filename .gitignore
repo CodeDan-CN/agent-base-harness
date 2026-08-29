@@ -38,6 +38,7 @@ lerna-debug.log*
 
 # Tool caches and local state
 .cache/
+.runtime-cache/
 .vite/
 .eslintcache
 *.tsbuildinfo
@@ -57,4 +58,3 @@ reference_ui/
 scripts/
 
 tests/
-

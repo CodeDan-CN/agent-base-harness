@@ -18,6 +18,7 @@ export const userConfigRevisionsSchema = z.object({
   modelRevision: z.number(),
   skillRevision: z.number(),
   runtimeRevision: z.number(),
+  mcpRevision: z.number(),
   updatedAt: z.string(),
 });
 

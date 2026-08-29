@@ -17,6 +17,7 @@ interface RevisionRow {
   model_revision: number;
   skill_revision: number;
   runtime_revision: number;
+  mcp_revision?: number;
   updated_at: string;
 }
 
@@ -50,6 +51,7 @@ export class UserRepository {
       modelRevision: row.model_revision,
       skillRevision: row.skill_revision,
       runtimeRevision: row.runtime_revision,
+      mcpRevision: row.mcp_revision ?? 0,
       updatedAt: row.updated_at,
     };
   }
