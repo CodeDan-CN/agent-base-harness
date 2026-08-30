@@ -1,11 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
-import { Check, Copy, Edit3, Loader2, PanelLeft, RotateCcw, X } from 'lucide-react';
+import {
+  ArrowDown,
+  Check,
+  Copy,
+  Edit3,
+  Loader2,
+  PanelLeft,
+  RotateCcw,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import type { InboxItem, RuntimeProjection } from '@client-contracts';
 import { ExecutionProcess } from './ExecutionProcess';
 import { InputArea } from './InputArea';
 import { MarkdownContent } from './MarkdownContent';
 import { ProducedFiles } from './ProducedFiles';
+import { SelectMenu } from './SelectMenu';
 import { producedFilesForMessage } from '../produced-files';
 import {
   isExecutionProcessAssistant,
@@ -24,6 +35,7 @@ interface ChatAreaProps {
   busyActionId: string | null;
   onToggleSidebar(): void;
   onRename(): void;
+  onNotifyError(message: string): void;
   onSend(text: string, mode: 'queue' | 'steer'): Promise<boolean>;
   onStop(): void;
   onRemove(item: InboxItem): void;
@@ -38,6 +50,8 @@ interface ChatAreaProps {
 
 export function ChatArea(props: ChatAreaProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedToBottom = useRef(true);
+  const [showBackToBottom, setShowBackToBottom] = useState(false);
   const projection = props.projection;
   const allMessages = projection?.messages ?? [];
   const messages = useMemo(
@@ -66,11 +80,23 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
 
   useEffect(() => {
     const target = scrollRef.current;
-    if (target) target.scrollTop = target.scrollHeight;
+    if (!target || !pinnedToBottom.current) return;
+    const frame = requestAnimationFrame(() => {
+      target.scrollTop = target.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
   }, [messages.length, runningStream?.content, projection?.lastSeq]);
 
+  const scrollToBottom = () => {
+    const target = scrollRef.current;
+    if (!target) return;
+    pinnedToBottom.current = true;
+    setShowBackToBottom(false);
+    target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' });
+  };
+
   return (
-    <main className="chat-area">
+    <main className={`chat-area ${props.sidebarOpen ? '' : 'sidebar-collapsed'}`}>
       <header className="chat-header">
         <div className="chat-title-row">
           {!props.sidebarOpen && (
@@ -92,7 +118,16 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
         </div>
       </header>
 
-      <div ref={scrollRef} className="message-scroller custom-scrollbar">
+      <div
+        ref={scrollRef}
+        className="message-scroller custom-scrollbar"
+        onScroll={(event) => {
+          const target = event.currentTarget;
+          const nearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 72;
+          pinnedToBottom.current = nearBottom;
+          setShowBackToBottom(!nearBottom);
+        }}
+      >
         {props.loading ? (
           <div className="center-state">
             <Loader2 className="spin" /> 正在恢复会话...
@@ -119,7 +154,11 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                 >
                   {message.role === 'user' ? (
                     <div className="user-bubble">
-                      <MarkdownContent content={message.content} sessionId={props.sessionId} />
+                      <MarkdownContent
+                        content={message.content}
+                        sessionId={props.sessionId}
+                        onOpenError={props.onNotifyError}
+                      />
                     </div>
                   ) : message.role === 'assistant' ? (
                     <div className="assistant-block">
@@ -129,14 +168,23 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                         executionTurnId: executionTurn?.id ?? null,
                         hasRunningStream: Boolean(runningStream),
                       }) && (
-                        <ExecutionProcess projection={projection} sessionId={props.sessionId} />
+                        <ExecutionProcess
+                          projection={projection}
+                          sessionId={props.sessionId}
+                          onOpenError={props.onNotifyError}
+                        />
                       )}
                       <MarkdownContent
                         content={message.content}
                         sessionId={props.sessionId}
                         producedFiles={producedFiles}
+                        onOpenError={props.onNotifyError}
                       />
-                      <ProducedFiles sessionId={props.sessionId} paths={producedFiles} />
+                      <ProducedFiles
+                        sessionId={props.sessionId}
+                        paths={producedFiles}
+                        onOpenError={props.onNotifyError}
+                      />
                       {message.content && (
                         <div className="message-actions">
                           <button
@@ -161,21 +209,33 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
               executionTurnHasAssistant,
             }) && (
               <div className="assistant-block">
-                <ExecutionProcess projection={projection} sessionId={props.sessionId} />
+                <ExecutionProcess
+                  projection={projection}
+                  sessionId={props.sessionId}
+                  onOpenError={props.onNotifyError}
+                />
               </div>
             )}
             {runningStream && (
               <article className="message assistant streaming" aria-live="polite">
                 <div className="assistant-block">
-                  <ExecutionProcess projection={projection} sessionId={props.sessionId} />
+                  <ExecutionProcess
+                    projection={projection}
+                    sessionId={props.sessionId}
+                    onOpenError={props.onNotifyError}
+                  />
                   {runningStream.content ? (
                     <MarkdownContent
                       content={runningStream.content}
                       className="streaming-markdown"
                       sessionId={props.sessionId}
+                      streaming
+                      onOpenError={props.onNotifyError}
                     />
                   ) : (
-                    <span className="typing-caret" />
+                    <span className="stream-status">
+                      <Sparkles size={14} /> 正在生成回复
+                    </span>
                   )}
                 </div>
               </article>
@@ -187,6 +247,11 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
               />
             )}
           </div>
+        )}
+        {showBackToBottom && (
+          <button className="back-to-bottom" onClick={scrollToBottom} aria-label="回到最新消息">
+            <ArrowDown size={16} />
+          </button>
         )}
       </div>
 
@@ -221,11 +286,12 @@ function InteractionCard({
       <span className="interaction-label">需要你的确认</span>
       <p>{interaction.prompt}</p>
       {!confirmation && interaction.options.length > 0 && (
-        <select value={value} onChange={(event) => setValue(event.target.value)}>
-          {interaction.options.map((option) => (
-            <option key={option}>{option}</option>
-          ))}
-        </select>
+        <SelectMenu
+          value={value}
+          ariaLabel="选择回复"
+          options={interaction.options.map((option) => ({ value: option, label: option }))}
+          onChange={setValue}
+        />
       )}
       {!confirmation && interaction.options.length === 0 && (
         <input

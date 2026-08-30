@@ -23,7 +23,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
     const target = textareaRef.current;
     if (!target) return;
     target.style.height = 'auto';
-    target.style.height = `${Math.max(160, Math.min(target.scrollHeight, 360))}px`;
+    target.style.height = `${Math.max(76, Math.min(target.scrollHeight, 220))}px`;
   }, [text]);
 
   const submit = async (mode: 'queue' | 'steer') => {

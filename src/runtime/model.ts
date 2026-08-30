@@ -22,6 +22,7 @@ export interface ModelSnapshot {
   endpoint: string;
   credentialRef: string | null;
   contextWindow: number;
+  compactionTriggerRatio?: number;
   inputCapability?: number | null;
   maxOutputCapability?: number;
   requestMaxOutputTokens?: number;

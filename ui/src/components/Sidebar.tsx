@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import {
   Archive,
@@ -32,14 +32,62 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   const [search, setSearch] = useState('');
   const [menuId, setMenuId] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  const profileAreaRef = useRef<HTMLDivElement>(null);
+  const sessionMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const sessionMenuRef = useRef<HTMLDivElement>(null);
   const groups = useMemo(() => groupSessions(props.sessions, search), [props.sessions, search]);
   const initials = props.activeUser.displayName.slice(0, 2).toUpperCase();
+
+  useEffect(() => {
+    if (!profileOpen) return;
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !profileAreaRef.current?.contains(target)) {
+        setProfileOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setProfileOpen(false);
+    };
+
+    window.addEventListener('mousedown', closeOnOutsideClick);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('mousedown', closeOnOutsideClick);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [profileOpen]);
+
+  useEffect(() => {
+    if (!menuId) return;
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !sessionMenuButtonRef.current?.contains(target) &&
+        !sessionMenuRef.current?.contains(target)
+      ) {
+        setMenuId(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuId(null);
+    };
+
+    window.addEventListener('mousedown', closeOnOutsideClick);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('mousedown', closeOnOutsideClick);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [menuId]);
 
   return (
     <aside className="sidebar" aria-label="会话导航">
       <div className="sidebar-top">
         <div className="brand-row">
-          <strong className="brand">Aether AI</strong>
           <button className="icon-button" onClick={props.onToggle} aria-label="关闭侧边栏">
             <PanelLeftClose size={19} />
           </button>
@@ -77,14 +125,20 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                   <span>{session.title}</span>
                 </button>
                 <button
+                  ref={menuId === session.id ? sessionMenuButtonRef : undefined}
                   className="session-menu-button"
                   aria-label={`${session.title} 操作`}
-                  onClick={() => setMenuId(menuId === session.id ? null : session.id)}
+                  aria-expanded={menuId === session.id}
+                  aria-haspopup="menu"
+                  onClick={() => {
+                    setProfileOpen(false);
+                    setMenuId((current) => (current === session.id ? null : session.id));
+                  }}
                 >
                   <MoreHorizontal size={16} />
                 </button>
                 {menuId === session.id && (
-                  <div className="session-menu" role="menu">
+                  <div ref={sessionMenuRef} className="session-menu" role="menu">
                     <button
                       onClick={() => {
                         setMenuId(null);
@@ -111,9 +165,9 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         {groups.length === 0 && <div className="sidebar-empty">暂无匹配的对话</div>}
       </div>
 
-      <div className="profile-area">
+      <div ref={profileAreaRef} className="profile-area">
         {profileOpen && (
-          <div className="profile-menu">
+          <div className="profile-menu" role="menu">
             <div className="profile-menu-title">
               <Users size={14} /> 切换本地用户
             </div>
@@ -121,7 +175,10 @@ export function Sidebar(props: SidebarProps): JSX.Element {
               <button
                 key={user.id}
                 disabled={props.switchingUser || user.id === props.activeUser.id}
-                onClick={() => props.onSwitchUser(user.id)}
+                onClick={() => {
+                  setProfileOpen(false);
+                  props.onSwitchUser(user.id);
+                }}
               >
                 <span className="mini-avatar">{user.displayName.slice(0, 2)}</span>
                 <span>{user.displayName}</span>
@@ -129,12 +186,25 @@ export function Sidebar(props: SidebarProps): JSX.Element {
               </button>
             ))}
             <div className="profile-menu-separator" />
-            <button onClick={props.onOpenSettings}>
+            <button
+              onClick={() => {
+                setProfileOpen(false);
+                props.onOpenSettings();
+              }}
+            >
               <Settings size={15} /> 设置
             </button>
           </div>
         )}
-        <button className="profile-button" onClick={() => setProfileOpen(!profileOpen)}>
+        <button
+          className="profile-button"
+          aria-expanded={profileOpen}
+          aria-haspopup="menu"
+          onClick={() => {
+            setMenuId(null);
+            setProfileOpen((current) => !current);
+          }}
+        >
           <span className="avatar">{initials}</span>
           <span className="profile-copy">
             <strong>{props.activeUser.displayName}</strong>

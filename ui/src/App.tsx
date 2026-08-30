@@ -11,10 +11,17 @@ import type {
 } from '@client-contracts';
 import { ClientApiError, command, query, requireClient, userMessage } from './client';
 import { ChatArea } from './components/ChatArea';
+import { ConfirmDialog, TextPromptDialog } from './components/Dialogs';
 import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
 import { applyEventBatch, hydrateProjection } from './projection';
 import { deriveInputSubmissionPolicy, shouldRefreshSessionList } from './runtime-wiring-policy';
+import {
+  applyTheme,
+  persistThemePreference,
+  readThemePreference,
+  type ThemePreference,
+} from './theme';
 import type { BannerState, SessionSnapshotPayload } from './types';
 
 export function App(): JSX.Element {
@@ -26,7 +33,11 @@ export function App(): JSX.Element {
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeWorkerStatus>('starting');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
   const [renameTarget, setRenameTarget] = useState<Session | null>(null);
+  const [archiveTarget, setArchiveTarget] = useState<Session | null>(null);
+  const [queueEditTarget, setQueueEditTarget] = useState<InboxItem | null>(null);
+  const [queueEditContent, setQueueEditContent] = useState('');
   const [renameTitle, setRenameTitle] = useState('');
   const [renaming, setRenaming] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -50,6 +61,17 @@ export function App(): JSX.Element {
     const timer = window.setTimeout(() => setBanner(null), banner.tone === 'error' ? 6500 : 3500);
     return () => window.clearTimeout(timer);
   }, [banner]);
+
+  useEffect(() => {
+    persistThemePreference(themePreference);
+    applyTheme(themePreference);
+    if (themePreference !== 'system') return;
+
+    const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const syncSystemTheme = () => applyTheme('system');
+    systemTheme.addEventListener('change', syncSystemTheme);
+    return () => systemTheme.removeEventListener('change', syncSystemTheme);
+  }, [themePreference]);
 
   const loadSessions = useCallback(async (preferred?: string | null) => {
     const next = await query<Session[]>('session.list');
@@ -334,12 +356,7 @@ export function App(): JSX.Element {
           onSelectSession={setActiveSessionId}
           onNewSession={() => void createSession()}
           onRename={openRename}
-          onArchive={(session) => {
-            if (!window.confirm(`归档会话“${session.title}”？`)) return;
-            void command('session.archive', { sessionId: session.id })
-              .then(() => loadSessions(null))
-              .catch((error) => notify(userMessage(error), 'error'));
-          }}
+          onArchive={setArchiveTarget}
           onToggle={() => setSidebarOpen(false)}
           onOpenSettings={() => setSettingsOpen(true)}
           onSwitchUser={(userId) => {
@@ -370,6 +387,7 @@ export function App(): JSX.Element {
         busyActionId={busyActionId}
         onToggleSidebar={() => setSidebarOpen(true)}
         onRename={() => openRename()}
+        onNotifyError={(message) => notify(message, 'error')}
         onSend={send}
         onStop={() => {
           const turn = projection?.activeTurn;
@@ -384,9 +402,8 @@ export function App(): JSX.Element {
         }}
         onRemove={(item) => void withInbox(item, 'inbox.remove')}
         onReplace={(item) => {
-          const content = window.prompt('修改排队消息', item.content)?.trim();
-          if (content && content !== item.content)
-            void withInbox(item, 'inbox.replace', { content });
+          setQueueEditTarget(item);
+          setQueueEditContent(item.content);
         }}
         onPromote={(item) => {
           const turnId = projection?.activeTurn?.id;
@@ -411,6 +428,8 @@ export function App(): JSX.Element {
       )}
       {settingsOpen && (
         <SettingsModal
+          themePreference={themePreference}
+          onThemePreferenceChange={setThemePreference}
           onClose={() => setSettingsOpen(false)}
           onModelChanged={setModelSnapshot}
           onNotify={(message, tone = 'info') => notify(message, tone)}
@@ -425,6 +444,42 @@ export function App(): JSX.Element {
           onSave={() => void rename()}
         />
       )}
+      <ConfirmDialog
+        open={Boolean(archiveTarget)}
+        title="归档这段对话？"
+        description={
+          archiveTarget ? `“${archiveTarget.title}”会从会话列表中移除，但历史记录仍会保留。` : ''
+        }
+        confirmLabel="归档"
+        tone="danger"
+        onCancel={() => setArchiveTarget(null)}
+        onConfirm={() => {
+          const target = archiveTarget;
+          if (!target) return;
+          setArchiveTarget(null);
+          void command('session.archive', { sessionId: target.id })
+            .then(() => loadSessions(null))
+            .catch((error) => notify(userMessage(error), 'error'));
+        }}
+      />
+      <TextPromptDialog
+        open={Boolean(queueEditTarget)}
+        title="修改排队消息"
+        description="修改后仍会保留原来的队列位置和执行范围。"
+        label="消息内容"
+        value={queueEditContent}
+        multiline
+        onChange={setQueueEditContent}
+        onCancel={() => setQueueEditTarget(null)}
+        onConfirm={() => {
+          const target = queueEditTarget;
+          const content = queueEditContent.trim();
+          setQueueEditTarget(null);
+          if (target && content && content !== target.content) {
+            void withInbox(target, 'inbox.replace', { content });
+          }
+        }}
+      />
     </div>
   );
 }

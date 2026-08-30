@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -8,6 +9,8 @@ interface MarkdownContentProps {
   className?: string;
   sessionId?: string | null;
   producedFiles?: readonly string[];
+  streaming?: boolean;
+  onOpenError?(message: string): void;
 }
 
 /** Markdown 禁用原始 HTML、本地链接与本地图片；文件入口只来自结构化产出位置。 */
@@ -16,13 +19,16 @@ export function MarkdownContent({
   className = '',
   sessionId,
   producedFiles = [],
+  streaming = false,
+  onOpenError,
 }: MarkdownContentProps): JSX.Element {
+  const renderedContent = useStreamingFrame(content, streaming);
   const openFile = (target: string): void => {
     if (!sessionId) return;
     const client = window.agentClient;
     if (!client) return;
     void client.openSessionFile(sessionId, target).then((result) => {
-      if (!result.ok) window.alert(result.error.message || '无法打开文件');
+      if (!result.ok) onOpenError?.(result.error.message || '无法打开文件');
     });
   };
   return (
@@ -66,10 +72,45 @@ export function MarkdownContent({
           },
         }}
       >
-        {content}
+        {renderedContent}
       </ReactMarkdown>
     </div>
   );
+}
+
+/** Coalesces token bursts into animation-sized frames so Markdown does not visibly reflow per chunk. */
+function useStreamingFrame(content: string, streaming: boolean): string {
+  const [visible, setVisible] = useState(content);
+  const latest = useRef(content);
+  const frame = useRef<number | null>(null);
+  latest.current = content;
+  useEffect(() => {
+    if (!streaming) {
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      frame.current = null;
+      setVisible(content);
+      return;
+    }
+    if (frame.current !== null) return;
+    let remaining = 3;
+    const paint = () => {
+      remaining -= 1;
+      if (remaining > 0) {
+        frame.current = requestAnimationFrame(paint);
+        return;
+      }
+      frame.current = null;
+      setVisible(latest.current);
+    };
+    frame.current = requestAnimationFrame(paint);
+  }, [content, streaming]);
+  useEffect(() => {
+    return () => {
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      frame.current = null;
+    };
+  }, []);
+  return visible;
 }
 
 function isExternalLink(href: string | undefined): boolean {

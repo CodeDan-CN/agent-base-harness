@@ -17,9 +17,14 @@ import { MarkdownContent } from './MarkdownContent';
 interface ExecutionProcessProps {
   projection: RuntimeProjection;
   sessionId: string | null;
+  onOpenError?(message: string): void;
 }
 
-export function ExecutionProcess({ projection, sessionId }: ExecutionProcessProps): JSX.Element | null {
+export function ExecutionProcess({
+  projection,
+  sessionId,
+  onOpenError,
+}: ExecutionProcessProps): JSX.Element | null {
   const [expanded, setExpanded] = useState(true);
   const turn = projection.activeTurn ?? [...projection.turns.values()].at(-1);
   if (!turn) return null;
@@ -80,7 +85,12 @@ export function ExecutionProcess({ projection, sessionId }: ExecutionProcessProp
                     )}
                   </div>
                   {stepReasoning?.content ? (
-                    <MarkdownContent content={stepReasoning.content} sessionId={sessionId} />
+                    <MarkdownContent
+                      content={stepReasoning.content}
+                      sessionId={sessionId}
+                      streaming={!stepReasoning.finalized}
+                      onOpenError={onOpenError}
+                    />
                   ) : (
                     <p className="execution-placeholder">
                       {step.status === 'running' ? '正在思考…' : '模型未返回独立思考内容'}
@@ -99,6 +109,7 @@ export function ExecutionProcess({ projection, sessionId }: ExecutionProcessProp
                         key={message.seq}
                         content={message.content}
                         sessionId={sessionId}
+                        onOpenError={onOpenError}
                       />
                     ))}
                   </section>
@@ -111,29 +122,12 @@ export function ExecutionProcess({ projection, sessionId }: ExecutionProcessProp
                       <span>执行内容</span>
                     </div>
                     {stepTools.map((tool) => (
-                      <details className="tool-card" key={tool.id} open={tool.status === 'running'}>
-                        <summary>
-                          <Wrench size={14} />
-                          <span>{tool.name}</span>
-                          <small>{toolStatus(tool.status)}</small>
-                        </summary>
-                        <div className="tool-detail">
-                          <label>输入</label>
-                          <MarkdownContent
-                            content={toolMarkdown(tool.input)}
-                            sessionId={sessionId}
-                          />
-                          {tool.output !== undefined && (
-                            <>
-                              <label>输出</label>
-                              <MarkdownContent
-                                content={toolMarkdown(tool.output)}
-                                sessionId={sessionId}
-                              />
-                            </>
-                          )}
-                        </div>
-                      </details>
+                      <ToolCallCard
+                        key={`${tool.id}-${tool.status}`}
+                        tool={tool}
+                        sessionId={sessionId}
+                        onOpenError={onOpenError}
+                      />
                     ))}
                   </section>
                 )}
@@ -143,6 +137,52 @@ export function ExecutionProcess({ projection, sessionId }: ExecutionProcessProp
         </div>
       )}
     </section>
+  );
+}
+
+type ToolCall = RuntimeProjection['toolCalls'] extends Map<string, infer Item> ? Item : never;
+
+function ToolCallCard({
+  tool,
+  sessionId,
+  onOpenError,
+}: {
+  tool: ToolCall;
+  sessionId: string | null;
+  onOpenError?: (message: string) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(tool.status === 'running');
+
+  return (
+    <details
+      className="tool-card"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>
+        <Wrench size={14} />
+        <span>{tool.name}</span>
+        <small>{toolStatus(tool.status)}</small>
+      </summary>
+      <div className="tool-detail">
+        <label>输入</label>
+        <MarkdownContent
+          content={toolMarkdown(tool.input)}
+          sessionId={sessionId}
+          onOpenError={onOpenError}
+        />
+        {tool.output !== undefined && (
+          <>
+            <label>输出</label>
+            <MarkdownContent
+              content={toolMarkdown(tool.output)}
+              sessionId={sessionId}
+              onOpenError={onOpenError}
+            />
+          </>
+        )}
+      </div>
+    </details>
   );
 }
 

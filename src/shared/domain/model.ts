@@ -34,6 +34,8 @@ export interface Model {
   remoteModelId: string;
   displayName: string;
   contextWindow: number | null;
+  contextWindowOverride: number | null;
+  compactionTriggerRatio: number;
   inputCapability: number | null;
   maxOutputCapability: number | null;
   requestMaxOutputTokens: number | null;

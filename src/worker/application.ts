@@ -359,11 +359,15 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
             remoteModelId: model.remoteModelId,
             displayName: model.displayName,
             contextWindow: capabilities.contextWindow,
+            automaticContextWindow: capabilities.automaticContextWindow,
+            contextWindowOverride: model.contextWindowOverride,
+            compactionTriggerRatio: model.compactionTriggerRatio,
             maxOutputTokens: model.maxOutputTokens,
             inputCapability: capabilities.inputCapability,
             maxOutputCapability: capabilities.maxOutputCapability,
             requestMaxOutputTokens: model.requestMaxOutputTokens,
             metadataSource: capabilities.metadataSource,
+            automaticMetadataSource: capabilities.automaticMetadataSource,
             catalogVersion: capabilities.catalogVersion,
             capabilityProfileRef: model.capabilityProfileRef,
             capabilityMatchKind: capabilities.capabilityMatchKind,
@@ -509,12 +513,31 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
         remoteModelId: input.remoteModelId,
         capabilityProfileRef: input.capabilityProfileRef ?? null,
       });
-      const contextWindow = catalogCapabilities?.context ?? input.contextWindow;
-      const inputCapability = catalogCapabilities?.input ?? input.inputCapability ?? null;
-      const maxOutputCapability = catalogCapabilities?.output ?? input.maxOutputCapability ?? null;
-      const metadataSource = catalogCapabilities ? ('catalog' as const) : input.metadataSource;
-      const catalogVersion = catalogCapabilities ? modelCatalog.generatedAt : input.catalogVersion;
-      const capabilityMatchKind = catalogCapabilities?.matchKind ?? input.capabilityMatchKind;
+      const contextWindow =
+        catalogCapabilities?.context ?? existing?.contextWindow ?? input.contextWindow;
+      const contextWindowOverride =
+        input.contextWindowOverride === undefined
+          ? (existing?.contextWindowOverride ?? null)
+          : input.contextWindowOverride;
+      const compactionTriggerRatio =
+        input.compactionTriggerRatio ?? existing?.compactionTriggerRatio ?? 0.8;
+      const inputCapability =
+        catalogCapabilities?.input ?? existing?.inputCapability ?? input.inputCapability ?? null;
+      const maxOutputCapability =
+        catalogCapabilities?.output ??
+        existing?.maxOutputCapability ??
+        input.maxOutputCapability ??
+        null;
+      const metadataSource = catalogCapabilities
+        ? ('catalog' as const)
+        : (existing?.metadataSource ?? input.metadataSource);
+      const catalogVersion = catalogCapabilities
+        ? modelCatalog.generatedAt
+        : (existing?.catalogVersion ?? input.catalogVersion);
+      const capabilityMatchKind =
+        catalogCapabilities?.matchKind ??
+        existing?.capabilityMatchKind ??
+        input.capabilityMatchKind;
       const requestMaxOutputTokens = Math.min(
         input.requestMaxOutputTokens ?? input.maxOutputTokens,
         maxOutputCapability ?? Number.POSITIVE_INFINITY,
@@ -527,6 +550,8 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
             remoteModelId: input.remoteModelId,
             displayName: input.displayName,
             contextWindow,
+            contextWindowOverride,
+            compactionTriggerRatio,
             maxOutputTokens: requestMaxOutputTokens,
             inputCapability,
             maxOutputCapability,
@@ -551,6 +576,8 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
           remoteModelId: input.remoteModelId,
           displayName: input.displayName,
           contextWindow,
+          contextWindowOverride,
+          compactionTriggerRatio,
           maxOutputTokens: requestMaxOutputTokens,
           inputCapability,
           maxOutputCapability,
@@ -930,6 +957,7 @@ function resolveRuntimeModel(
     endpoint: validateModelEndpoint(service.endpoint),
     credentialRef: service.credentialRef,
     contextWindow: capabilities.contextWindow ?? 32_768,
+    compactionTriggerRatio: model.compactionTriggerRatio,
     inputCapability: capabilities.inputCapability,
     maxOutputCapability: capabilities.maxOutputCapability ?? model.maxOutputTokens ?? 4096,
     requestMaxOutputTokens: model.requestMaxOutputTokens ?? model.maxOutputTokens ?? 4096,
@@ -1030,25 +1058,27 @@ function effectiveModelCapabilities(
   | 'metadataSource'
   | 'catalogVersion'
   | 'capabilityMatchKind'
-> {
+> & {
+  automaticContextWindow: number | null;
+  automaticMetadataSource: Model['metadataSource'];
+} {
   const catalogCapabilities = trustedCatalogCapabilities(catalog, service, model);
-  if (!catalogCapabilities) {
-    return {
-      contextWindow: model.contextWindow,
-      inputCapability: model.inputCapability,
-      maxOutputCapability: model.maxOutputCapability,
-      metadataSource: model.metadataSource,
-      catalogVersion: model.catalogVersion,
-      capabilityMatchKind: model.capabilityMatchKind,
-    };
-  }
+  const automaticContextWindow = catalogCapabilities?.context ?? model.contextWindow;
+  const automaticMetadataSource = catalogCapabilities
+    ? ('catalog' as const)
+    : model.metadataSource;
   return {
-    contextWindow: catalogCapabilities.context,
-    inputCapability: catalogCapabilities.input,
-    maxOutputCapability: catalogCapabilities.output,
-    metadataSource: 'catalog',
-    catalogVersion: catalog.generatedAt,
-    capabilityMatchKind: catalogCapabilities.matchKind,
+    contextWindow: model.contextWindowOverride ?? automaticContextWindow,
+    automaticContextWindow,
+    inputCapability: catalogCapabilities?.input ?? model.inputCapability,
+    maxOutputCapability: catalogCapabilities?.output ?? model.maxOutputCapability,
+    metadataSource: model.contextWindowOverride === null ? automaticMetadataSource : 'manual',
+    automaticMetadataSource,
+    catalogVersion: catalogCapabilities ? catalog.generatedAt : model.catalogVersion,
+    capabilityMatchKind:
+      model.contextWindowOverride === null
+        ? (catalogCapabilities?.matchKind ?? model.capabilityMatchKind)
+        : 'manual',
   };
 }
 

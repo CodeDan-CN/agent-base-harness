@@ -32,6 +32,8 @@ interface ModelRow {
   remote_model_id: string;
   display_name: string;
   context_window: number | null;
+  context_window_override?: number | null;
+  compaction_trigger_ratio?: number | null;
   max_output_tokens: number | null;
   input_capability?: number | null;
   max_output_capability?: number | null;
@@ -59,11 +61,18 @@ interface SettingsRow {
 
 export class ModelRepository {
   private readonly stage4: boolean;
+  private readonly contextPolicy: boolean;
 
   constructor(private readonly db: SqliteDatabase) {
     this.stage4 =
       (this.db
         .prepare("SELECT 1 FROM pragma_table_info('models') WHERE name = 'thinking_mode'")
+        .get() as { 1: number } | undefined) !== undefined;
+    this.contextPolicy =
+      (this.db
+        .prepare(
+          "SELECT 1 FROM pragma_table_info('models') WHERE name = 'compaction_trigger_ratio'",
+        )
         .get() as { 1: number } | undefined) !== undefined;
   }
 
@@ -314,6 +323,8 @@ export class ModelRepository {
     remoteModelId: string;
     displayName: string;
     contextWindow: number | null;
+    contextWindowOverride?: number | null;
+    compactionTriggerRatio?: number;
     maxOutputTokens: number | null;
     inputCapability?: number | null;
     maxOutputCapability?: number | null;
@@ -336,6 +347,8 @@ export class ModelRepository {
       remoteModelId: input.remoteModelId,
       displayName: input.displayName,
       contextWindow: input.contextWindow,
+      contextWindowOverride: input.contextWindowOverride ?? null,
+      compactionTriggerRatio: input.compactionTriggerRatio ?? 0.8,
       maxOutputTokens: input.maxOutputTokens,
       inputCapability: input.inputCapability ?? null,
       maxOutputCapability: input.maxOutputCapability ?? input.maxOutputTokens,
@@ -356,7 +369,17 @@ export class ModelRepository {
     };
     try {
       const txn = this.db.transaction(() => {
-        const statement = this.stage4
+        const statement = this.contextPolicy
+          ? this.db.prepare(
+              `INSERT INTO models
+               (id, user_id, service_id, remote_model_id, display_name, context_window,
+                context_window_override, compaction_trigger_ratio, max_output_tokens,
+                input_capability, max_output_capability, request_max_output_tokens, metadata_source,
+                catalog_version, capability_profile_ref, capability_match_kind, thinking_mode, reasoning_effort,
+                capabilities_json, default_params_json, source, status, created_at, updated_at, archived_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enabled', ?, ?, NULL)`,
+            )
+          : this.stage4
           ? this.db.prepare(
               `INSERT INTO models
                (id, user_id, service_id, remote_model_id, display_name, context_window, max_output_tokens,
@@ -378,7 +401,9 @@ export class ModelRepository {
           model.remoteModelId,
           model.displayName,
           model.contextWindow,
-          model.maxOutputTokens,
+          ...(this.contextPolicy
+            ? [model.contextWindowOverride, model.compactionTriggerRatio, model.maxOutputTokens]
+            : [model.maxOutputTokens]),
           ...(this.stage4
             ? [
                 model.inputCapability,
@@ -432,6 +457,8 @@ export class ModelRepository {
       remoteModelId: string;
       displayName: string;
       contextWindow: number;
+      contextWindowOverride?: number | null;
+      compactionTriggerRatio?: number;
       maxOutputTokens: number;
       inputCapability?: number | null;
       maxOutputCapability?: number | null;
@@ -454,7 +481,19 @@ export class ModelRepository {
           .prepare('SELECT id FROM models WHERE user_id = ? AND id = ?')
           .get(userId, id) as { id: string } | undefined;
         if (!existing) throw new BridgeError('INVALID_REQUEST', 'Model not found');
-        const statement = this.stage4
+        const statement = this.contextPolicy
+          ? this.db.prepare(
+              `UPDATE models
+             SET remote_model_id = ?, display_name = ?, context_window = ?,
+                 context_window_override = ?, compaction_trigger_ratio = ?, max_output_tokens = ?,
+                 input_capability = ?, max_output_capability = ?, request_max_output_tokens = ?,
+                 metadata_source = ?, catalog_version = ?, capability_profile_ref = ?,
+                 capability_match_kind = ?, thinking_mode = ?, reasoning_effort = ?,
+                 capabilities_json = ?, default_params_json = ?, status = ?, archived_at = NULL,
+                 config_version = config_version + 1, updated_at = ?
+             WHERE user_id = ? AND id = ?`,
+            )
+          : this.stage4
           ? this.db.prepare(
               `UPDATE models
              SET remote_model_id = ?, display_name = ?, context_window = ?, max_output_tokens = ?,
@@ -476,7 +515,13 @@ export class ModelRepository {
           patch.remoteModelId,
           patch.displayName,
           patch.contextWindow,
-          patch.maxOutputTokens,
+          ...(this.contextPolicy
+            ? [
+                patch.contextWindowOverride ?? null,
+                patch.compactionTriggerRatio ?? 0.8,
+                patch.maxOutputTokens,
+              ]
+            : [patch.maxOutputTokens]),
           ...(this.stage4
             ? [
                 patch.inputCapability ?? null,
@@ -583,6 +628,8 @@ export class ModelRepository {
       remoteModelId: row.remote_model_id,
       displayName: row.display_name,
       contextWindow: row.context_window,
+      contextWindowOverride: row.context_window_override ?? null,
+      compactionTriggerRatio: row.compaction_trigger_ratio ?? 0.8,
       maxOutputTokens: row.max_output_tokens,
       inputCapability: row.input_capability ?? null,
       maxOutputCapability: row.max_output_capability ?? row.max_output_tokens,

@@ -401,4 +401,14 @@ export const STAGE45_MIGRATIONS: readonly Migration[] = [
     name: 'mcp-server-summary',
     sql: `ALTER TABLE mcp_servers ADD COLUMN summary TEXT NOT NULL DEFAULT '';`,
   },
+  {
+    version: 7,
+    name: 'model-context-policy',
+    sql: `
+ALTER TABLE models ADD COLUMN context_window_override INTEGER
+  CHECK (context_window_override IS NULL OR context_window_override BETWEEN 1024 AND 4000000);
+ALTER TABLE models ADD COLUMN compaction_trigger_ratio REAL NOT NULL DEFAULT 0.8
+  CHECK (compaction_trigger_ratio BETWEEN 0.5 AND 0.95);
+`,
+  },
 ];

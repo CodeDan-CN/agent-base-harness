@@ -17,6 +17,9 @@ import {
   RefreshCw,
   Search,
   Settings2,
+  Monitor,
+  Moon,
+  Sun,
   Trash2,
   Wrench,
   X,
@@ -34,10 +37,15 @@ import type {
   McpServerSaveParams,
 } from '@client-contracts';
 import { command, query, requireClient, unwrap, userMessage } from '../client';
+import type { ThemePreference } from '../theme';
 import type { SettingsTab } from '../types';
+import { useConfirmDialog } from './Dialogs';
+import { SelectMenu } from './SelectMenu';
 
 interface SettingsModalProps {
   initialTab?: SettingsTab;
+  themePreference: ThemePreference;
+  onThemePreferenceChange(preference: ThemePreference): void;
   onClose(): void;
   onModelChanged(snapshot: ModelManagementSnapshot): void;
   onNotify(message: string, tone?: 'success' | 'error' | 'info'): void;
@@ -47,7 +55,11 @@ export function SettingsModal(props: SettingsModalProps): JSX.Element {
   const [tab, setTab] = useState<SettingsTab>(props.initialTab ?? 'models');
 
   useEffect(() => {
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && props.onClose();
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !document.querySelector('.select-popover, .dialog-backdrop')) {
+        props.onClose();
+      }
+    };
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
   }, [props]);
@@ -55,12 +67,17 @@ export function SettingsModal(props: SettingsModalProps): JSX.Element {
   return (
     <div className="settings-shell" role="dialog" aria-modal="true" aria-label="设置">
       <aside className="settings-nav">
-        <div className="settings-title">
-          <button className="icon-button" onClick={props.onClose} aria-label="返回">
-            <ArrowLeft size={17} />
-          </button>
-          <strong>设置</strong>
-        </div>
+        <div className="settings-drag-region" aria-hidden="true" />
+        <button className="settings-return" onClick={props.onClose} aria-label="返回">
+          <ArrowLeft size={15} /> 返回应用
+        </button>
+        <div className="settings-nav-separator" />
+        <button
+          className={tab === 'appearance' ? 'active' : ''}
+          onClick={() => setTab('appearance')}
+        >
+          <Sun size={15} /> 外观
+        </button>
         <button className={tab === 'models' ? 'active' : ''} onClick={() => setTab('models')}>
           <Database size={15} /> 模型配置
         </button>
@@ -78,7 +95,9 @@ export function SettingsModal(props: SettingsModalProps): JSX.Element {
         </button>
       </aside>
       <section className="settings-content">
-        {tab === 'models' ? (
+        {tab === 'appearance' ? (
+          <AppearanceSettings {...props} />
+        ) : tab === 'models' ? (
           <ModelSettings {...props} />
         ) : tab === 'mcp' ? (
           <McpSettings onNotify={props.onNotify} />
@@ -88,6 +107,74 @@ export function SettingsModal(props: SettingsModalProps): JSX.Element {
           <StatisticsSettings onNotify={props.onNotify} />
         )}
       </section>
+    </div>
+  );
+}
+
+const themeOptions: Array<{
+  value: ThemePreference;
+  label: string;
+  description: string;
+  icon: typeof Monitor;
+}> = [
+  { value: 'system', label: '自动', description: '跟随 macOS 外观', icon: Monitor },
+  { value: 'light', label: '浅色', description: '始终使用浅色主题', icon: Sun },
+  { value: 'dark', label: '深色', description: '始终使用深色主题', icon: Moon },
+];
+
+function AppearanceSettings(props: SettingsModalProps): JSX.Element {
+  return (
+    <div className="settings-page appearance-page">
+      <header className="settings-page-header">
+        <div>
+          <h2>外观</h2>
+          <p>选择应用的显示主题。</p>
+        </div>
+        <button className="icon-button" onClick={props.onClose} aria-label="关闭设置">
+          <X size={18} />
+        </button>
+      </header>
+      <div className="appearance-body">
+        <section aria-labelledby="theme-heading">
+          <div className="appearance-section-heading">
+            <h3 id="theme-heading">主题</h3>
+            <p>自动模式会在系统外观变化时同步切换。</p>
+          </div>
+          <div className="theme-options" role="radiogroup" aria-label="主题">
+            {themeOptions.map((option) => {
+              const Icon = option.icon;
+              const selected = props.themePreference === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  className={`theme-option ${selected ? 'selected' : ''}`}
+                  onClick={() => props.onThemePreferenceChange(option.value)}
+                >
+                  <span className={`theme-preview ${option.value}`} aria-hidden="true">
+                    <span className="theme-preview-sidebar" />
+                    <span className="theme-preview-content">
+                      <i />
+                      <i />
+                      <b />
+                    </span>
+                  </span>
+                  <span className="theme-option-copy">
+                    <Icon size={16} />
+                    <span>
+                      <strong>{option.label}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                    <span className="theme-radio" />
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
@@ -112,6 +199,7 @@ const emptyService = (): ModelDraft => ({
 });
 
 function ModelSettings(props: SettingsModalProps): JSX.Element {
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [snapshot, setSnapshot] = useState<ModelManagementSnapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<ModelDraft>(emptyService);
@@ -243,7 +331,16 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
   };
 
   const archiveService = async () => {
-    if (!draft.id || !snapshot || !window.confirm(`删除模型服务“${draft.name}”？`)) return;
+    if (!draft.id || !snapshot) return;
+    if (
+      !(await confirm({
+        title: '删除模型服务？',
+        description: `“${draft.name}”及其关联配置会从当前用户中移除。`,
+        confirmLabel: '删除服务',
+        tone: 'danger',
+      }))
+    )
+      return;
     setBusy('archive');
     try {
       await command('model-service.archive', { id: draft.id, expectedRevision: snapshot.revision });
@@ -425,13 +522,17 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
                 </label>
                 <label>
                   <span>服务类型</span>
-                  <select
+                  <SelectMenu
                     value={draft.providerPresetId ?? 'custom'}
-                    onChange={(event) => {
+                    ariaLabel="服务类型"
+                    options={[
+                      { value: 'custom', label: '自定义 OpenAI 兼容' },
+                      { value: 'deepseek-official', label: 'DeepSeek' },
+                      { value: 'alibaba-bailian', label: '阿里云百炼' },
+                    ]}
+                    onChange={(value) => {
                       const providerPresetId =
-                        event.target.value === 'custom'
-                          ? null
-                          : (event.target.value as ModelDraft['providerPresetId']);
+                        value === 'custom' ? null : (value as ModelDraft['providerPresetId']);
                       const endpoint =
                         providerPresetId === 'deepseek-official'
                           ? 'https://api.deepseek.com/'
@@ -440,11 +541,7 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
                             : draft.endpoint;
                       setDraft({ ...draft, providerPresetId, endpoint });
                     }}
-                  >
-                    <option value="custom">自定义 OpenAI 兼容</option>
-                    <option value="deepseek-official">DeepSeek</option>
-                    <option value="alibaba-bailian">阿里云百炼</option>
-                  </select>
+                  />
                 </label>
               </div>
               <label className="form-field">
@@ -560,6 +657,7 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
             </div>
           )}
         </div>
+        {confirmDialog}
       </div>
     </div>
   );
@@ -621,6 +719,7 @@ function ModelRow({
   onChanged(): Promise<void>;
   onNotify(message: string, tone?: 'success' | 'error' | 'info'): void;
 }): JSX.Element {
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [thinkingMode, setThinkingMode] = useState(model.thinkingMode);
   const [reasoningEffort, setReasoningEffort] = useState(model.reasoningEffort);
   const [savingThinking, setSavingThinking] = useState(false);
@@ -637,9 +736,16 @@ function ModelRow({
           modelId: model.id,
           expectedRevision: snapshot.revision,
         });
-      else if (window.confirm(`删除模型“${model.displayName}”？`))
+      else {
+        const accepted = await confirm({
+          title: '删除模型？',
+          description: `“${model.displayName}”会从这个服务中移除。`,
+          confirmLabel: '删除模型',
+          tone: 'danger',
+        });
+        if (!accepted) return;
         await command('model.archive', { id: model.id, expectedRevision: snapshot.revision });
-      else return;
+      }
       onNotify(kind === 'default' ? '默认模型已切换。' : '模型已删除。', 'success');
       await onChanged();
     } catch (error) {
@@ -692,68 +798,69 @@ function ModelRow({
     }
   };
   return (
-    <div className="model-row">
-      <button
-        className={`default-radio ${snapshot.defaultModelId === model.id ? 'selected' : ''}`}
-        disabled={disabled}
-        onClick={() => void run('default')}
-        aria-label="设为默认模型"
-      />
-      <Database size={15} />
-      <span className="model-copy">
-        <strong>{model.displayName}</strong>
-        <small>{model.remoteModelId}</small>
-      </span>
-      <span className="model-cap">
-        <Settings2 size={12} /> {formatTokens(model.contextWindow)} · {model.metadataSource}
-      </span>
-      {providerPresetId ? (
-        <>
-          <select
-            aria-label="思考模式"
-            disabled={disabled || savingThinking}
-            value={thinkingMode}
-            onChange={(event) =>
-              void saveThinking(
-                event.target.value as 'auto' | 'enabled' | 'disabled',
-                reasoningEffort,
-              )
-            }
-          >
-            <option value="auto">默认思考</option>
-            <option value="disabled">关闭思考</option>
-            <option value="enabled">开启思考</option>
-          </select>
-          {thinkingMode === 'enabled' ? (
-            <select
-              aria-label="思考强度"
+    <>
+      <div className="model-row">
+        <button
+          className={`default-radio ${snapshot.defaultModelId === model.id ? 'selected' : ''}`}
+          disabled={disabled}
+          onClick={() => void run('default')}
+          aria-label="设为默认模型"
+        />
+        <Database size={15} />
+        <span className="model-copy">
+          <strong>{model.displayName}</strong>
+          <small>{model.remoteModelId}</small>
+        </span>
+        <span className="model-cap">
+          <Settings2 size={12} /> {formatTokens(model.contextWindow)} · {model.metadataSource}
+        </span>
+        {providerPresetId ? (
+          <>
+            <SelectMenu
+              ariaLabel="思考模式"
               disabled={disabled || savingThinking}
-              value={reasoningEffort ?? 'medium'}
-              onChange={(event) =>
-                void saveThinking(
-                  'enabled',
-                  event.target.value as 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max',
-                )
+              value={thinkingMode}
+              className="compact"
+              options={[
+                { value: 'auto', label: '默认思考' },
+                { value: 'disabled', label: '关闭思考' },
+                { value: 'enabled', label: '开启思考' },
+              ]}
+              onChange={(value) =>
+                void saveThinking(value as 'auto' | 'enabled' | 'disabled', reasoningEffort)
               }
-            >
-              {model.supportedReasoningEfforts.map((effort) => (
-                <option key={effort} value={effort}>
-                  {reasoningEffortLabel(effort)}
-                </option>
-              ))}
-            </select>
-          ) : null}
-        </>
-      ) : null}
-      <button
-        className="row-delete"
-        disabled={disabled}
-        onClick={() => void run('archive')}
-        aria-label="删除模型"
-      >
-        <Trash2 size={14} />
-      </button>
-    </div>
+            />
+            {thinkingMode === 'enabled' ? (
+              <SelectMenu
+                ariaLabel="思考强度"
+                disabled={disabled || savingThinking}
+                value={reasoningEffort ?? 'medium'}
+                className="compact effort"
+                options={model.supportedReasoningEfforts.map((effort) => ({
+                  value: effort,
+                  label: reasoningEffortLabel(effort),
+                }))}
+                onChange={(value) =>
+                  void saveThinking(
+                    'enabled',
+                    value as 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+                  )
+                }
+              />
+            ) : null}
+          </>
+        ) : null}
+        <button
+          className="row-delete"
+          disabled={disabled}
+          onClick={() => void run('archive')}
+          aria-label="删除模型"
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+      {confirmDialog}
+    </>
   );
 }
 
@@ -831,31 +938,30 @@ function StatisticsSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>):
         >
           <label>
             <span>会话</span>
-            <select
+            <SelectMenu
               value={filter.sessionId}
-              onChange={(event) => setFilter({ ...filter, sessionId: event.target.value })}
-            >
-              <option value="">全部会话</option>
-              {(snapshot?.sessions ?? []).map((session) => (
-                <option key={session.id} value={session.id}>
-                  {session.title}
-                </option>
-              ))}
-            </select>
+              ariaLabel="筛选会话"
+              options={[
+                { value: '', label: '全部会话' },
+                ...(snapshot?.sessions ?? []).map((session) => ({
+                  value: session.id,
+                  label: session.title,
+                })),
+              ]}
+              onChange={(value) => setFilter({ ...filter, sessionId: value })}
+            />
           </label>
           <label>
             <span>模型</span>
-            <input
+            <SelectMenu
               value={filter.modelKeyword}
-              list="statistics-model-options"
-              placeholder="输入模型名称"
-              onChange={(event) => setFilter({ ...filter, modelKeyword: event.target.value })}
+              ariaLabel="筛选模型"
+              options={[
+                { value: '', label: '全部模型' },
+                ...(snapshot?.models ?? []).map((model) => ({ value: model, label: model })),
+              ]}
+              onChange={(value) => setFilter({ ...filter, modelKeyword: value })}
             />
-            <datalist id="statistics-model-options">
-              {(snapshot?.models ?? []).map((model) => (
-                <option key={model} value={model} />
-              ))}
-            </datalist>
           </label>
           <label>
             <span>开始日期</span>
@@ -1088,6 +1194,7 @@ const emptyMcpDraft = (): McpDraft => ({
 });
 
 function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.Element {
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [snapshot, setSnapshot] = useState<McpManagementSnapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<McpDraft>(emptyMcpDraft);
@@ -1247,7 +1354,16 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
   };
 
   const archive = async () => {
-    if (!draft.id || !snapshot || !window.confirm(`删除 MCP Server“${draft.name}”？`)) return;
+    if (!draft.id || !snapshot) return;
+    if (
+      !(await confirm({
+        title: '删除 MCP Server？',
+        description: `“${draft.name}”及其工具授权会从当前用户中移除。`,
+        confirmLabel: '删除 Server',
+        tone: 'danger',
+      }))
+    )
+      return;
     setBusy('archive');
     try {
       await command('mcp-server.archive', {
@@ -1361,19 +1477,21 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
               </label>
               <label>
                 <span>Transport</span>
-                <select
+                <SelectMenu
                   value={draft.transport}
+                  ariaLabel="Transport"
                   disabled={isBundledMemory}
-                  onChange={(event) =>
+                  options={[
+                    { value: 'streamable-http', label: 'Streamable HTTP（推荐）' },
+                    { value: 'stdio', label: 'stdio（本地）' },
+                  ]}
+                  onChange={(value) =>
                     setDraft({
                       ...draft,
-                      transport: event.target.value as McpDraft['transport'],
+                      transport: value as McpDraft['transport'],
                     })
                   }
-                >
-                  <option value="streamable-http">Streamable HTTP（推荐）</option>
-                  <option value="stdio">stdio（本地）</option>
-                </select>
+                />
               </label>
             </div>
             <label className="form-field">
@@ -1530,6 +1648,7 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
             )}
           </div>
         </main>
+        {confirmDialog}
       </div>
     </div>
   );

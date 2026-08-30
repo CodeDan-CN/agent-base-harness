@@ -27,6 +27,12 @@ export function createMainWindow(options: MainWindowOptions): BrowserWindow {
     height: 800,
     show: false,
     backgroundColor: '#141414',
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 14, y: 18 },
+        }
+      : {}),
     webPreferences: {
       preload: options.preloadPath,
       nodeIntegration: false,

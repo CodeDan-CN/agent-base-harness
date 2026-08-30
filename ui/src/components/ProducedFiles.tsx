@@ -5,16 +5,18 @@ import { basename } from '../produced-files';
 export function ProducedFiles({
   sessionId,
   paths,
+  onOpenError,
 }: {
   sessionId: string | null;
   paths: readonly string[];
+  onOpenError?(message: string): void;
 }): JSX.Element | null {
   if (!sessionId || paths.length === 0) return null;
   const open = (path: string): void => {
     const client = window.agentClient;
     if (!client) return;
     void client.openSessionFile(sessionId, path).then((result) => {
-      if (!result.ok) window.alert(result.error.message || '无法打开文件');
+      if (!result.ok) onOpenError?.(result.error.message || '无法打开文件');
     });
   };
   return (
