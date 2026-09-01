@@ -1,4 +1,5 @@
 import type { LocalUserId } from './user';
+import type { ToolApprovalPolicy } from './permission';
 
 export type McpTransport = 'stdio' | 'streamable-http';
 export type McpServerStatus = 'enabled' | 'disabled' | 'archived';
@@ -47,6 +48,7 @@ export interface McpToolCatalogEntry {
   schemaDigest: string;
   enabled: boolean;
   reviewStatus: McpToolReviewStatus;
+  approvalPolicy: ToolApprovalPolicy;
   generation: number;
   discoveredAt: string;
   updatedAt: string;

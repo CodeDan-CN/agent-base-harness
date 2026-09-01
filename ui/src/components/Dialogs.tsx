@@ -6,7 +6,8 @@ interface ConfirmOptions {
   title: string;
   description: string;
   confirmLabel?: string;
-  tone?: 'default' | 'danger';
+  tone?: 'default' | 'warning' | 'danger';
+  acknowledgementLabel?: string;
 }
 
 export function ConfirmDialog({
@@ -15,6 +16,7 @@ export function ConfirmDialog({
   description,
   confirmLabel = '确认',
   tone = 'default',
+  acknowledgementLabel,
   busy = false,
   onCancel,
   onConfirm,
@@ -25,22 +27,28 @@ export function ConfirmDialog({
   onConfirm(): void;
 }): JSX.Element | null {
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   useEffect(() => {
     if (!open) return;
-    confirmRef.current?.focus();
+    setAcknowledged(false);
+    if (!acknowledgementLabel) confirmRef.current?.focus();
     const close = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !busy) onCancel();
     };
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
-  }, [busy, onCancel, open]);
+  }, [acknowledgementLabel, busy, onCancel, open]);
   if (!open) return null;
   return (
     <div
       className="dialog-backdrop"
       onMouseDown={(event) => event.target === event.currentTarget && !busy && onCancel()}
     >
-      <section className="app-dialog confirm-dialog" role="alertdialog" aria-modal="true">
+      <section
+        className={`app-dialog confirm-dialog ${tone}`}
+        role="alertdialog"
+        aria-modal="true"
+      >
         <div className={`dialog-symbol ${tone}`}>
           <AlertTriangle size={18} />
         </div>
@@ -48,6 +56,17 @@ export function ConfirmDialog({
           <h2>{title}</h2>
           <p>{description}</p>
         </div>
+        {acknowledgementLabel && (
+          <label className="dialog-acknowledgement">
+            <input
+              type="checkbox"
+              checked={acknowledged}
+              disabled={busy}
+              onChange={(event) => setAcknowledged(event.target.checked)}
+            />
+            <span>{acknowledgementLabel}</span>
+          </label>
+        )}
         <button
           className="dialog-close icon-button"
           disabled={busy}
@@ -63,7 +82,7 @@ export function ConfirmDialog({
           <button
             ref={confirmRef}
             className={tone === 'danger' ? 'danger-button' : 'dark-button'}
-            disabled={busy}
+            disabled={busy || (Boolean(acknowledgementLabel) && !acknowledged)}
             onClick={onConfirm}
           >
             {busy && <Loader2 className="spin" size={14} />}

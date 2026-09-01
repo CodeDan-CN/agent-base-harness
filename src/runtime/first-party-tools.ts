@@ -77,7 +77,9 @@ function readTool(fileSystem: ScopedFileSystem): RuntimeTool<ReadFileResult> {
     async execute(raw, context) {
       const parsed = input.parse(raw);
       try {
-        return await fileSystem.read(context, parsed.file_path, parsed.offset, parsed.limit);
+        return await fileSystem.read(context, parsed.file_path, parsed.offset, parsed.limit, {
+          allowOutsideWorkspace: true,
+        });
       } catch (error) {
         throw fileError(error);
       }
@@ -136,10 +138,17 @@ function writeTool(fileSystem: ScopedFileSystem): RuntimeTool<WriteFileResult> {
     replaySafe: false,
     exclusive: true,
     timeoutMs: 10_000,
+    resolveApprovalPolicy(raw, context) {
+      const parsed = input.parse(raw);
+      return fileSystem.isOutsideWorkspace(context, parsed.file_path) ? 'always' : 'never';
+    },
     async execute(raw, context) {
       const parsed = input.parse(raw);
       try {
-        return await fileSystem.write(context, parsed.file_path, parsed.content);
+        return await fileSystem.write(context, parsed.file_path, parsed.content, {
+          allowOutsideWorkspace:
+            context.permissionPreset === 'full-access' || Boolean(context.approvalGranted),
+        });
       } catch (error) {
         throw fileError(error);
       }
@@ -203,6 +212,10 @@ function editTool(fileSystem: ScopedFileSystem): RuntimeTool<EditFileResult> {
     replaySafe: false,
     exclusive: true,
     timeoutMs: 10_000,
+    resolveApprovalPolicy(raw, context) {
+      const parsed = input.parse(raw);
+      return fileSystem.isOutsideWorkspace(context, parsed.file_path) ? 'always' : 'never';
+    },
     async execute(raw, context) {
       const parsed = input.parse(raw);
       try {
@@ -212,6 +225,10 @@ function editTool(fileSystem: ScopedFileSystem): RuntimeTool<EditFileResult> {
           parsed.old_string,
           parsed.new_string,
           parsed.replace_all,
+          {
+            allowOutsideWorkspace:
+              context.permissionPreset === 'full-access' || Boolean(context.approvalGranted),
+          },
         );
       } catch (error) {
         throw fileError(error);
@@ -237,6 +254,8 @@ function bashTool(shell: ShellExecutor): RuntimeTool<ShellExecutionResult> {
       description: z.string().min(1).max(500),
       timeoutMs: z.number().int().min(100).max(120_000).default(15_000),
       workdir: z.string().min(1).max(4096).optional(),
+      network_access: z.boolean().default(false),
+      writable_paths: z.array(z.string().min(1).max(4096)).max(20).default([]),
     })
     .strict();
   return {
@@ -250,6 +269,18 @@ function bashTool(shell: ShellExecutor): RuntimeTool<ShellExecutionResult> {
         description: { type: 'string', minLength: 1 },
         timeoutMs: { type: 'integer', minimum: 100, maximum: 120000, default: 15000 },
         workdir: { type: 'string', minLength: 1 },
+        network_access: {
+          type: 'boolean',
+          default: false,
+          description: '命令是否需要访问网络；未声明时受限模式会阻止网络。',
+        },
+        writable_paths: {
+          type: 'array',
+          maxItems: 20,
+          items: { type: 'string', minLength: 1 },
+          default: [],
+          description: '除当前工作区外，命令需要写入的精确文件或目录路径。',
+        },
       },
       required: ['command', 'description'],
       additionalProperties: false,
@@ -283,6 +314,15 @@ function bashTool(shell: ShellExecutor): RuntimeTool<ShellExecutionResult> {
     replaySafe: false,
     exclusive: true,
     timeoutMs: 125_000,
+    resolveApprovalPolicy(raw, context) {
+      const parsed = input.parse(raw);
+      return shell.requiresApproval(context, {
+        networkAccess: parsed.network_access,
+        writablePaths: parsed.writable_paths,
+      })
+        ? 'always'
+        : 'never';
+    },
     async execute(raw, context) {
       const parsed = input.parse(raw);
       try {
@@ -291,6 +331,8 @@ function bashTool(shell: ShellExecutor): RuntimeTool<ShellExecutionResult> {
           command: parsed.command,
           workdir: parsed.workdir,
           timeoutMs: parsed.timeoutMs,
+          networkAccess: parsed.network_access,
+          writablePaths: parsed.writable_paths,
         });
         if (result.cancelled) {
           throw new ToolExecutionError(
@@ -324,7 +366,8 @@ function bashTool(shell: ShellExecutor): RuntimeTool<ShellExecutionResult> {
             kind: 'terminal',
             title: parsed.data.description,
             command: parsed.data.command,
-            detail: parsed.data.workdir,
+            detail: parsed.data.network_access ? '需要网络访问' : parsed.data.workdir,
+            locations: parsed.data.writable_paths.map((path) => ({ path })),
           }
         : undefined;
     },

@@ -150,15 +150,17 @@ Event Compaction 使用一次独立的摘要模型调用，其提示词是固定
 
 Schema 字段不含自由文本的理由注入（不得借 Interaction 向 Prompt 塞内部状态）。Interaction 结果只作为持久 Tool Result / 用户输入进入后续 Step，不走临时前端状态。
 
-## 7. Skill 指令（按需加载）
+## 7. Skill/MCP 统一能力发现与按需加载
 
-Skill 的 `SKILL.md` 是「按需指令」，不属于常驻 Tool Schema：
+Skill 的 `SKILL.md` 与 MCP Tool Schema 都不直接作为完整目录常驻 Prompt：
 
-- Step 初始只投影当前用户启用 Skill 的 `name`、`description` 摘要。
-- 模型明确选择某 Skill 后，统一 loader 读取完整 `SKILL.md` 及其显式引用资源（`scripts/`、`references/`、`assets/`）。
+- 常驻 `capability_search` 一次同时检索当前用户启用的 Skill Catalog 和已审核启用的 MCP Catalog，分别返回有界轻量候选；两类来源在结果中显式同级。
+- Agent 必须基于同一份返回结果判断使用 Skill、MCP、两者或都不使用，不能先搜索其中一类再决定是否查看另一类。
+- 选择 Skill 后调用 `skill_load` 读取完整 `SKILL.md` 及其显式引用资源（`scripts/`、`references/`、`assets/`）。
+- 选择 MCP Server 后调用 `mcp_load`，从下一 Step 暴露该 Server 已审核启用工具的完整 Schema。
 - 普通 Skill 不自动注册原生 Tool Schema，不修改 Agent Loop；脚本通过宿主命令工具执行。
 
-Skill 指令内容由 Skill 提供方决定，运行时只负责受控边界与完整性，不修改其正文。
+统一搜索只读取管理目录中的摘要和 Schema 元信息，不加载 Skill 正文、不调用 MCP 业务工具。Skill 指令内容由 Skill 提供方决定，运行时只负责受控边界与完整性，不修改其正文。
 
 ## 8. 稳定前缀与 prompt epoch
 

@@ -1,23 +1,39 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, JSX } from 'react';
-import { ArrowUp, Edit3, Paperclip, Square, X, Zap } from 'lucide-react';
-import type { InboxItem } from '@client-contracts';
+import { ArrowUp, Check, Edit3, Paperclip, Shield, Square, X, Zap } from 'lucide-react';
+import type { InboxItem, PermissionPreset } from '@client-contracts';
+import { ContextTokenRing, formatCompactToken, formatOptionalToken } from './ContextTokenRing';
 
 interface InputAreaProps {
   processing: boolean;
   disabled: boolean;
   queue: InboxItem[];
   busyActionId: string | null;
+  permissionPreset: PermissionPreset;
+  contextStats: ContextTokenStats | null;
   onSend(text: string, mode: 'queue' | 'steer'): Promise<boolean>;
   onStop(): void;
   onRemove(item: InboxItem): void;
   onReplace(item: InboxItem): void;
   onPromote(item: InboxItem): void;
+  onPermissionPresetChange(preset: PermissionPreset): void;
+}
+
+interface ContextTokenStats {
+  estimatedInputTokens: number;
+  budgetTokens: number | null;
+  exact: boolean;
+  historyTokens: number | null;
+  cumulativeInputTokens: number;
+  cumulativeOutputTokens: number;
+  memoryCompactionCount: number;
 }
 
 export function InputArea(props: InputAreaProps): JSX.Element {
   const [text, setText] = useState('');
+  const [permissionOpen, setPermissionOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const permissionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const target = textareaRef.current;
@@ -25,6 +41,21 @@ export function InputArea(props: InputAreaProps): JSX.Element {
     target.style.height = 'auto';
     target.style.height = `${Math.max(76, Math.min(target.scrollHeight, 220))}px`;
   }, [text]);
+
+  useEffect(() => {
+    if (!permissionOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!permissionRef.current?.contains(event.target as Node)) setPermissionOpen(false);
+    };
+    const escape = (event: globalThis.KeyboardEvent) =>
+      event.key === 'Escape' && setPermissionOpen(false);
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', escape);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', escape);
+    };
+  }, [permissionOpen]);
 
   const submit = async (mode: 'queue' | 'steer') => {
     const content = text.trim();
@@ -102,6 +133,44 @@ export function InputArea(props: InputAreaProps): JSX.Element {
           <button className="icon-button" disabled title="附件将在受控导入功能启用后开放">
             <Paperclip size={19} />
           </button>
+          <div className="permission-picker" ref={permissionRef}>
+            <button
+              className={['permission-trigger', permissionOpen ? 'active' : '']
+                .filter(Boolean)
+                .join(' ')}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={permissionOpen}
+              onClick={() => setPermissionOpen((open) => !open)}
+            >
+              <Shield size={14} />
+              {permissionLabel(props.permissionPreset)}
+            </button>
+            {permissionOpen && (
+              <div className="permission-popover" role="menu">
+                {permissionOptions.map((option) => (
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={props.permissionPreset === option.value}
+                    disabled={props.processing}
+                    key={option.value}
+                    onClick={() => {
+                      props.onPermissionPresetChange(option.value);
+                      setPermissionOpen(false);
+                    }}
+                  >
+                    <span>
+                      <strong>{option.label}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                    {props.permissionPreset === option.value && <Check size={14} />}
+                  </button>
+                ))}
+                {props.processing && <p>停止当前任务后可切换访问范围。</p>}
+              </div>
+            )}
+          </div>
           {props.processing && (
             <button className="icon-button stop" onClick={props.onStop} title="停止处理">
               <Square size={15} fill="currentColor" />
@@ -116,6 +185,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
               <Zap size={13} /> 补充当前任务
             </button>
           )}
+          <SessionContextTokenIndicator stats={props.contextStats} />
           <button
             className="send-button"
             disabled={!text.trim() || props.disabled}
@@ -128,4 +198,75 @@ export function InputArea(props: InputAreaProps): JSX.Element {
       <p className="composer-hint">Enter 发送 · Shift + Enter 换行</p>
     </div>
   );
+}
+
+function SessionContextTokenIndicator({ stats }: { stats: ContextTokenStats | null }): JSX.Element {
+  const budget = stats?.budgetTokens ?? null;
+  const used = stats?.estimatedInputTokens ?? 0;
+  const memoryCompressed = Boolean(stats && stats.memoryCompactionCount > 0);
+
+  return (
+    <ContextTokenRing
+      name="会话 QA 上下文"
+      used={stats?.historyTokens ?? null}
+      budget={budget}
+      compressed={memoryCompressed}
+      popoverLabel="会话 Token 统计"
+    >
+      <div className="context-token-title">
+        <strong>会话 QA 上下文</strong>
+        <span>{stats?.exact ? '实际测量' : '尚未请求'}</span>
+      </div>
+      <div className="context-token-value">
+        <strong>{formatOptionalToken(stats?.historyTokens ?? null)}</strong>
+        <span>/ {budget ? formatCompactToken(budget) : '未知'} Token</span>
+      </div>
+      <dl>
+        <div>
+          <dt>会话记忆压缩</dt>
+          <dd>{memoryCompressed ? `已压缩 ${stats?.memoryCompactionCount ?? 0} 次` : '未压缩'}</dd>
+        </div>
+        <div>
+          <dt>最近请求总上下文</dt>
+          <dd>{formatCompactToken(used)}</dd>
+        </div>
+        <div>
+          <dt>累计调用</dt>
+          <dd>
+            入 {formatCompactToken(stats?.cumulativeInputTokens ?? 0)} · 出{' '}
+            {formatCompactToken(stats?.cumulativeOutputTokens ?? 0)}
+          </dd>
+        </div>
+      </dl>
+      {(!stats?.exact || stats.historyTokens === null) && (
+        <p>下一次模型请求后显示精确的会话 QA 占用。</p>
+      )}
+    </ContextTokenRing>
+  );
+}
+
+const permissionOptions: Array<{
+  value: PermissionPreset;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'approval-required',
+    label: '请求批准',
+    description: '工作区自动读写；外部写入、联网和 MCP 默认询问',
+  },
+  {
+    value: 'guarded',
+    label: '受控自动',
+    description: '低风险自动执行；高风险操作请求批准',
+  },
+  {
+    value: 'full-access',
+    label: '完全访问',
+    description: '按当前系统用户权限执行，不再逐次询问',
+  },
+];
+
+function permissionLabel(value: PermissionPreset): string {
+  return permissionOptions.find((option) => option.value === value)?.label ?? '受控自动';
 }

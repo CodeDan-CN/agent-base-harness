@@ -1,5 +1,10 @@
 import Ajv, { type ValidateFunction } from 'ajv';
 import type { ModelToolDefinition } from './model';
+import type {
+  ApprovalResolution,
+  PermissionPreset,
+  ToolApprovalPolicy,
+} from '../shared/domain/permission';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -36,7 +41,15 @@ export interface InteractionRequest {
   prompt: string;
   kind: 'text' | 'confirm' | 'select' | 'approval' | 'selection' | 'form';
   options?: readonly string[];
+  questions?: readonly InteractionQuestion[];
   schema?: Record<string, unknown>;
+}
+
+export interface InteractionQuestion {
+  id: string;
+  header?: string;
+  question: string;
+  options: readonly string[];
 }
 
 export interface ToolResult {
@@ -54,7 +67,10 @@ export interface ToolExecutionContext {
   sessionId: string;
   eventId: string;
   turnId: string;
+  stepId: string;
   toolCallId: string;
+  permissionPreset: PermissionPreset;
+  approvalGranted?: boolean;
   signal: AbortSignal;
 }
 
@@ -79,6 +95,13 @@ export interface RuntimeTool<Value = unknown> extends RuntimeToolDefinition<Valu
   readonly replaySafe?: boolean;
   readonly exclusive?: boolean;
   readonly timeoutMs?: number;
+  readonly approvalPolicy?: ToolApprovalPolicy;
+  readonly approvalScope?: 'local' | 'external';
+  resolveApprovalPolicy?(
+    input: unknown,
+    context: Omit<ToolExecutionContext, 'toolCallId'>,
+  ): ToolApprovalPolicy;
+  readonly permissionIdentity?: string;
   isConcurrencySafe?(input: unknown): boolean;
 }
 
@@ -111,6 +134,12 @@ export interface ScheduledToolResult {
   call: ScheduledToolCall;
   result: ToolResult;
 }
+
+export type ToolPreExecute = (
+  call: ScheduledToolCall,
+  tool: RuntimeTool<unknown>,
+  context: Omit<ToolExecutionContext, 'toolCallId'>,
+) => Promise<ApprovalResolution | 'not-required'>;
 
 export class ToolRegistry {
   private readonly globalTools = new Map<string, RuntimeTool<unknown>>();
@@ -198,6 +227,7 @@ export class ToolScheduler {
   constructor(
     private readonly registry: ToolRegistry,
     private readonly parallelism = 4,
+    private readonly preExecute?: ToolPreExecute,
   ) {}
 
   async execute(
@@ -255,8 +285,30 @@ export class ToolScheduler {
         result: withPresentation(tool, call.arguments, failure('INVALID_TOOL_INPUT')),
       };
     }
+    let approvalGranted = false;
+    if (this.preExecute) {
+      let resolution: ApprovalResolution | 'not-required';
+      try {
+        resolution = await this.preExecute(call, tool, context);
+      } catch {
+        resolution = 'unavailable';
+      }
+      if (resolution === 'rejected' || resolution === 'cancelled' || resolution === 'unavailable') {
+        const code =
+          resolution === 'rejected'
+            ? 'APPROVAL_REJECTED'
+            : resolution === 'cancelled'
+              ? 'APPROVAL_CANCELLED'
+              : 'APPROVAL_UNAVAILABLE';
+        return {
+          call,
+          result: withPresentation(tool, call.arguments, failure(code)),
+        };
+      }
+      approvalGranted = resolution === 'allowed-once' || resolution === 'session-granted';
+    }
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const result = await executeWithTimeout(tool, call, context);
+      const result = await executeWithTimeout(tool, call, { ...context, approvalGranted });
       const presented = withPresentation(tool, call.arguments, result);
       if (result.status !== 'retryable_error' || attempt === 2) return { call, result: presented };
     }
@@ -291,7 +343,9 @@ async function executeWithTimeout(
   try {
     const value = await tool.execute(call.arguments, {
       ...context,
+      stepId: context.stepId ?? 'unknown-step',
       toolCallId: call.id,
+      permissionPreset: context.permissionPreset ?? 'guarded',
       signal: controller.signal,
     });
     if (controller.signal.aborted) {

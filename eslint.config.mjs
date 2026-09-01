@@ -12,6 +12,8 @@ export default tseslint.config(
       'coverage/**',
       'test-results/**',
       'playwright-report/**',
+      '.runtime-cache/**',
+      'release/**',
       '*.config.js',
       '*.config.mjs',
     ],
@@ -32,7 +34,7 @@ export default tseslint.config(
     files: ['**/*.ts', '**/*.tsx'],
     languageOptions: {
       parserOptions: {
-        project: ['./tsconfig.json', './tsconfig.ui.json'],
+        project: ['./tsconfig.eslint.json'],
       },
     },
     rules: {

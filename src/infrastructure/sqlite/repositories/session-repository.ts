@@ -8,12 +8,19 @@ import type {
 } from '../../../shared/domain/session';
 import type { LocalUserId } from '../../../shared/domain/user';
 import { BridgeError } from '../../../shared/contracts/errors';
+import {
+  permissionPresetFromStorage,
+  permissionPresetToStorage,
+  type PermissionPreset,
+  type StoredPermissionPreset,
+} from '../../../shared/domain/permission';
 
 interface SessionRow {
   id: string;
   user_id: string;
   title: string;
   status: 'active' | 'archived';
+  permission_preset?: StoredPermissionPreset;
   next_seq: number;
   version: number;
   created_at: string;
@@ -37,32 +44,65 @@ interface EventRow {
 
 export class SessionRepository {
   private readonly hasRuntimeColumns: boolean;
+  private readonly hasPermissionPresetColumn: boolean;
+  private readonly hasUserPermissionPresetColumn: boolean;
 
   constructor(private readonly db: SqliteDatabase) {
-    const columns = this.db.prepare('PRAGMA table_info(session_events)').all() as Array<{
+    const eventColumns = this.db.prepare('PRAGMA table_info(session_events)').all() as Array<{
       name: string;
     }>;
-    this.hasRuntimeColumns = columns.some((column) => column.name === 'idempotency_key');
+    const sessionColumns = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{
+      name: string;
+    }>;
+    const userColumns = this.db.prepare('PRAGMA table_info(local_users)').all() as Array<{
+      name: string;
+    }>;
+    this.hasRuntimeColumns = eventColumns.some((column) => column.name === 'idempotency_key');
+    this.hasPermissionPresetColumn = sessionColumns.some(
+      (column) => column.name === 'permission_preset',
+    );
+    this.hasUserPermissionPresetColumn = userColumns.some(
+      (column) => column.name === 'session_permission_preset',
+    );
   }
 
   createSession(input: { id: string; userId: LocalUserId; title: string; now: string }): Session {
+    const permissionPreset = this.getUserPermissionPreset(input.userId);
     const session: Session = {
       id: input.id,
       userId: input.userId,
       title: input.title,
       status: 'active',
+      permissionPreset,
       nextSeq: 1,
       version: 0,
       createdAt: input.now,
       updatedAt: input.now,
     };
     try {
-      this.db
-        .prepare(
-          `INSERT INTO sessions (id, user_id, title, status, next_seq, version, created_at, updated_at)
-           VALUES (?, ?, ?, 'active', 1, 0, ?, ?)`,
-        )
-        .run(session.id, session.userId, session.title, session.createdAt, session.updatedAt);
+      if (this.hasPermissionPresetColumn) {
+        this.db
+          .prepare(
+            `INSERT INTO sessions
+               (id, user_id, title, status, permission_preset, next_seq, version, created_at, updated_at)
+             VALUES (?, ?, ?, 'active', ?, 1, 0, ?, ?)`,
+          )
+          .run(
+            session.id,
+            session.userId,
+            session.title,
+            permissionPresetToStorage(session.permissionPreset),
+            session.createdAt,
+            session.updatedAt,
+          );
+      } else {
+        this.db
+          .prepare(
+            `INSERT INTO sessions (id, user_id, title, status, next_seq, version, created_at, updated_at)
+             VALUES (?, ?, ?, 'active', 1, 0, ?, ?)`,
+          )
+          .run(session.id, session.userId, session.title, session.createdAt, session.updatedAt);
+      }
     } catch (err) {
       throw mapSqliteError(err);
     }
@@ -148,11 +188,38 @@ export class SessionRepository {
         const newNextSeq = seq;
         const newVersion = session.version + events.length;
         const now = events[events.length - 1]?.occurredAt ?? session.updated_at;
-        this.db
-          .prepare(
-            'UPDATE sessions SET next_seq = ?, version = ?, updated_at = ? WHERE user_id = ? AND id = ?',
-          )
-          .run(newNextSeq, newVersion, now, userId, sessionId);
+        const permissionPreset = this.permissionPresetFrom(events);
+        if (this.hasPermissionPresetColumn && permissionPreset) {
+          this.db
+            .prepare(
+              `UPDATE sessions
+               SET next_seq = ?, version = ?, updated_at = ?, permission_preset = ?
+               WHERE user_id = ? AND id = ?`,
+            )
+            .run(
+              newNextSeq,
+              newVersion,
+              now,
+              permissionPresetToStorage(permissionPreset),
+              userId,
+              sessionId,
+            );
+          if (this.hasUserPermissionPresetColumn) {
+            this.db
+              .prepare(
+                `UPDATE local_users
+                 SET session_permission_preset = ?, updated_at = ?
+                 WHERE id = ?`,
+              )
+              .run(permissionPresetToStorage(permissionPreset), now, userId);
+          }
+        } else {
+          this.db
+            .prepare(
+              'UPDATE sessions SET next_seq = ?, version = ?, updated_at = ? WHERE user_id = ? AND id = ?',
+            )
+            .run(newNextSeq, newVersion, now, userId, sessionId);
+        }
 
         return {
           version: newVersion,
@@ -302,12 +369,34 @@ export class SessionRepository {
     }
   }
 
+  private permissionPresetFrom(events: AppendCommand['events']): PermissionPreset | undefined {
+    let preset: PermissionPreset | undefined;
+    for (const event of events) {
+      if (event.eventType !== 'permission.preset.changed') continue;
+      const payload = event.payload as { to?: unknown } | null;
+      const next = payload && typeof payload === 'object' ? payload.to : undefined;
+      if (next === 'approval-required' || next === 'guarded' || next === 'full-access') {
+        preset = next;
+      }
+    }
+    return preset;
+  }
+
+  private getUserPermissionPreset(userId: LocalUserId): PermissionPreset {
+    if (!this.hasUserPermissionPresetColumn) return 'guarded';
+    const row = this.db
+      .prepare('SELECT session_permission_preset FROM local_users WHERE id = ?')
+      .get(userId) as { session_permission_preset?: StoredPermissionPreset } | undefined;
+    return permissionPresetFromStorage(row?.session_permission_preset);
+  }
+
   private mapSession(row: SessionRow): Session {
     return {
       id: row.id,
       userId: row.user_id,
       title: row.title,
       status: row.status,
+      permissionPreset: permissionPresetFromStorage(row.permission_preset),
       nextSeq: row.next_seq,
       version: row.version,
       createdAt: row.created_at,

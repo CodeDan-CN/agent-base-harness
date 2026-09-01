@@ -50,9 +50,32 @@ export interface ProjectedInteraction {
   prompt: string;
   kind: string;
   options: string[];
+  questions: ProjectedInteractionQuestion[];
   schema: Record<string, unknown> | null;
   resolution?: string;
   value?: unknown;
+}
+
+export interface ProjectedInteractionQuestion {
+  id: string;
+  header?: string;
+  question: string;
+  options: string[];
+}
+
+export interface ProjectedApproval {
+  id: string;
+  toolCallId: string;
+  toolName: string;
+  toolIdentity: string;
+  argumentsDigest: string;
+  eventId: string;
+  turnId: string;
+  stepId: string;
+  policy: 'first-use' | 'always';
+  presentation: unknown;
+  status: 'pending' | 'resolved';
+  resolution?: string;
 }
 
 export interface ProjectedStep {
@@ -70,6 +93,11 @@ export interface ProjectedStep {
     promptEpoch: number;
     estimatedInputTokens: number;
     budgetTokens: number;
+    tokenBreakdown: {
+      fixedTokens: number;
+      historyTokens: number;
+      currentTurnTokens: number;
+    } | null;
     includedEventIds: string[];
     skillRevision: number;
     runtimeRevision: number;
@@ -153,6 +181,8 @@ export interface RuntimeProjection {
   turns: Map<string, ProjectedTurn>;
   messages: ProjectedMessage[];
   interactions: Map<string, ProjectedInteraction>;
+  approvals: Map<string, ProjectedApproval>;
+  permissionGrants: Set<string>;
   steps: Map<string, ProjectedStep>;
   toolCalls: Map<string, ProjectedToolCall>;
   streams: Map<string, ProjectedStream>;
@@ -179,6 +209,8 @@ export function projectRuntime(events: readonly SessionLogEvent[]): RuntimeProje
     turns: new Map(),
     messages: [],
     interactions: new Map(),
+    approvals: new Map(),
+    permissionGrants: new Set(),
     steps: new Map(),
     toolCalls: new Map(),
     streams: new Map(),
@@ -215,11 +247,17 @@ export function cloneRuntimeProjection(source: RuntimeProjection): RuntimeProjec
             {
               ...value,
               options: [...value.options],
+              questions: value.questions.map((question) => ({
+                ...question,
+                options: [...question.options],
+              })),
               schema: value.schema ? { ...value.schema } : null,
             },
           ] as const,
       ),
     ),
+    approvals: new Map([...source.approvals].map(([key, value]) => [key, { ...value }] as const)),
+    permissionGrants: new Set(source.permissionGrants),
     steps: new Map(
       [...source.steps].map(
         ([key, value]) =>
@@ -231,6 +269,9 @@ export function cloneRuntimeProjection(source: RuntimeProjection): RuntimeProjec
                 ? {
                     ...value.requestContext,
                     includedEventIds: [...value.requestContext.includedEventIds],
+                    tokenBreakdown: value.requestContext.tokenBreakdown
+                      ? { ...value.requestContext.tokenBreakdown }
+                      : null,
                   }
                 : null,
             },
@@ -474,6 +515,7 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
           promptEpoch: numberAt(payload, 'promptEpoch') ?? 0,
           estimatedInputTokens: numberAt(payload, 'estimatedInputTokens') ?? 0,
           budgetTokens: numberAt(payload, 'budgetTokens') ?? 0,
+          tokenBreakdown: contextTokenBreakdownAt(payload, 'tokenBreakdown'),
           includedEventIds: stringArrayAt(payload, 'includedEventIds'),
           skillRevision: numberAt(payload, 'skillRevision') ?? 0,
           runtimeRevision: numberAt(payload, 'runtimeRevision') ?? 0,
@@ -663,6 +705,7 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
         prompt: stringAt(payload, 'prompt') ?? '',
         kind: stringAt(payload, 'kind') ?? 'text',
         options: stringArrayAt(payload, 'options'),
+        questions: interactionQuestionsAt(payload, 'questions'),
         schema: asRecord(payload?.schema) ?? null,
       });
       break;
@@ -675,6 +718,57 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
         target.value = payload?.value;
         target.resolution = stringAt(payload, 'resolution') ?? 'submitted';
       }
+      break;
+    }
+    case 'approval.requested': {
+      const approvalId = stringAt(payload, 'approvalId');
+      const toolCallId = stringAt(payload, 'toolCallId');
+      const toolName = stringAt(payload, 'toolName');
+      const toolIdentity = stringAt(payload, 'toolIdentity');
+      const argumentsDigest = stringAt(payload, 'argumentsDigest');
+      const eventId = stringAt(payload, 'eventId');
+      const turnId = stringAt(payload, 'turnId');
+      const stepId = stringAt(payload, 'stepId');
+      const policy = stringAt(payload, 'policy');
+      if (
+        !approvalId ||
+        !toolCallId ||
+        !toolName ||
+        !toolIdentity ||
+        !argumentsDigest ||
+        !eventId ||
+        !turnId ||
+        !stepId ||
+        (policy !== 'first-use' && policy !== 'always')
+      )
+        break;
+      state.approvals.set(approvalId, {
+        id: approvalId,
+        toolCallId,
+        toolName,
+        toolIdentity,
+        argumentsDigest,
+        eventId,
+        turnId,
+        stepId,
+        policy,
+        presentation: payload?.presentation ?? null,
+        status: 'pending',
+      });
+      break;
+    }
+    case 'approval.resolved': {
+      const approvalId = stringAt(payload, 'approvalId');
+      const approval = approvalId ? state.approvals.get(approvalId) : undefined;
+      if (approval) {
+        approval.status = 'resolved';
+        approval.resolution = stringAt(payload, 'resolution');
+      }
+      break;
+    }
+    case 'permission.grant.created': {
+      const toolIdentity = stringAt(payload, 'toolIdentity');
+      if (toolIdentity) state.permissionGrants.add(toolIdentity);
       break;
     }
   }
@@ -727,6 +821,43 @@ function stringArrayAt(value: Record<string, unknown> | undefined, key: string):
   return Array.isArray(found)
     ? found.filter((item): item is string => typeof item === 'string')
     : [];
+}
+
+function interactionQuestionsAt(
+  value: Record<string, unknown> | undefined,
+  key: string,
+): ProjectedInteractionQuestion[] {
+  const found = value?.[key];
+  if (!Array.isArray(found)) return [];
+  return found.flatMap((candidate) => {
+    const question = asRecord(candidate);
+    const id = stringAt(question, 'id');
+    const text = stringAt(question, 'question');
+    if (!id || !text) return [];
+    const header = stringAt(question, 'header');
+    return [
+      {
+        id,
+        ...(header ? { header } : {}),
+        question: text,
+        options: stringArrayAt(question, 'options'),
+      },
+    ];
+  });
+}
+
+function contextTokenBreakdownAt(
+  value: Record<string, unknown> | undefined,
+  key: string,
+): { fixedTokens: number; historyTokens: number; currentTurnTokens: number } | null {
+  const breakdown = asRecord(value?.[key]);
+  const fixedTokens = numberAt(breakdown, 'fixedTokens');
+  const historyTokens = numberAt(breakdown, 'historyTokens');
+  const currentTurnTokens = numberAt(breakdown, 'currentTurnTokens');
+  if (fixedTokens === undefined || historyTokens === undefined || currentTurnTokens === undefined) {
+    return null;
+  }
+  return { fixedTokens, historyTokens, currentTurnTokens };
 }
 
 function numberArrayAt(value: Record<string, unknown> | undefined, key: string): number[] {

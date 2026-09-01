@@ -194,8 +194,8 @@ Electron 的主要成本是安装包体积、内存和安全面。方案通过�
 3. **事件投影流**：Runtime 事实写入 SQLite → Projection Service 按 seq 更新 Chat、Trajectory、Inbox 和 usage → Query/Subscription Service 发送 Snapshot 与增量 → Renderer 更新界面。
 4. **用户隔离流**：Main 注入可信 `userId` → Local User Context 生成 `(userId, sessionId)` Scope → Repository、Model Registry、Tool Registry、Credential Reference 和历史检索都使用相同 Scope。
 5. **模型配置流**：用户维护模型服务 → Credential Service 分离保存密钥 → Model Management 校验、测试连接并发现或手工维护模型 → 事务更新用户配置版本 → Model Registry 在下一个安全边界加载新快照。
-6. **Skill 生命周期流**：用户导入或安装标准 Agent Skill → Skill Management 校验 `SKILL.md` 和目录边界并登记来源 → 当前用户确认后启用 → Runtime 在下一个安全边界更新 Skill 目录摘要 → 模型按需加载正文与资源；若指令要求执行脚本，则通过宿主机命令执行能力运行。
-7. **MCP 能力流**：用户配置并测试 Server → MCP Client 分页发现工具 → 管理目录保存 Schema 与 digest → 用户逐项审核启用 → 下一 Step ToolCatalogSnapshot 暴露稳定 Tool → 调用结果作为事件事实保存并有界投影。
+6. **Skill 生命周期流**：用户导入或安装标准 Agent Skill → Skill Management 校验 `SKILL.md` 和目录边界并登记来源 → 当前用户确认后启用 → Runtime 在下一个安全边界更新 Skill Catalog → `capability_search` 与 MCP Catalog 同级返回轻量候选 → 模型选中后按需加载正文与资源；若指令要求执行脚本，则通过宿主机命令执行能力运行。
+7. **MCP 能力流**：用户配置并测试 Server → MCP Client 分页发现工具 → 管理目录保存 Schema 与 digest → 用户逐项审核启用 → `capability_search` 与 Skill Catalog 同级返回 Server/工具轻量候选 → 模型选中后调用 `mcp_load`，下一 Step ToolCatalogSnapshot 暴露稳定完整 Tool Schema → 调用结果作为事件事实保存并有界投影。
 8. **外部能力流**：Context/LLM Adapter 调用大模型；Tool Scheduler 调用当前用户已启用的本地、远程或 MCP 工具；审批、选择和表单通过 Interaction Event 返回展示层。
 
 数据流的核心闭环是：
@@ -475,7 +475,7 @@ Tool Registry 保存：
 - 并发安全分类函数。
 - 是否可恢复重放、幂等要求和可选 Interaction 能力。
 
-每个用户拥有独立的 Skill 安装/启用状态、执行授权和 SkillCatalogSnapshot。Skill 通过指令指导模型使用 Runtime 已有工具，不因安装而自动注册新的原生 Tool Schema；Tool Registry 由 Client 内置工具与当前用户已审核启用的 MCP Tools 构建，并在 Step 开始时冻结为不可变 ToolCatalogSnapshot。
+每个用户拥有独立的 Skill 安装/启用状态、执行授权和 SkillCatalogSnapshot。Skill 通过指令指导模型使用 Runtime 已有工具，不因安装而自动注册新的原生 Tool Schema；MCP 管理目录保存审核后的完整 Schema，但不默认全部进入 Prompt。常驻 `capability_search` 一次同时检索 Skill/MCP 两类轻量目录并显式标记同级，Agent 选择后分别通过 `skill_load` 或 `mcp_load` 展开。Tool Registry 由 Client 内置工具与当前 Turn 已加载的 MCP Tools 构建，并在 Step 开始时冻结为不可变 ToolCatalogSnapshot。
 
 Tool Scheduler 负责：
 
@@ -649,7 +649,7 @@ Skill Management 负责兼容通用 Agent Skills，并管理 Skill 对当前用�
 - 识别以 `SKILL.md` 为入口的 Skill 目录，并允许可选的 `scripts/`、`references/`、`assets/` 及其他辅助文件。
 - 解析 `name`、`description`、`compatibility` 等通用元数据；未知扩展字段保留但不擅自赋予权限。
 - 展示当前用户的 Skill 列表、搜索、启用状态、来源、兼容性、正文和受控资源预览。
-- 初始上下文只提供已启用 Skill 的名称和描述；模型命中后按需加载完整 `SKILL.md`，再按正文显式引用读取资源。
+- 初始上下文不常驻投影完整 Skill 列表；模型需要专门流程或外部能力时调用统一 `capability_search`，一次获得 Skill/MCP 两类同级轻量候选，命中 Skill 后再按需加载完整 `SKILL.md` 并按正文显式引用读取资源。
 - Skill 本身不动态注册一块常驻 Runtime。指令需要执行 `scripts/` 时，模型通过 Runtime 已有的通用命令能力调用 Client 内置优先的 Node.js/Python 或宿主 Shell。
 - macOS arm64 首个发行目标随 `.app` 固定交付经摘要校验的 Node/Python Runtime Pack；它们是 `bash` 背后的 Host Capability，不增加模型可见 `node`/`python` Tool。开发模式在 Runtime Pack 未准备时可以回退宿主解释器，正式包缺失或目标架构不匹配则启动失败。
 - 客户端负责版本锁、解释器检测、首次执行确认、命令超时与取消、stdout/stderr/退出码采集、受控工作目录、环境变量收敛和审计；不把第三方依赖预装进全局 Runtime，也不静默执行 npm/pip 安装。
@@ -956,8 +956,8 @@ cancel current Turn
 1. UI 读取当前用户的 SkillManagementSnapshot，展示搜索、启用状态、来源、兼容性、环境提示和详情入口。
 2. Skill 来源适配器把本地目录或后续 ModelScope/ClawHub 下载结果转换为标准 Agent Skill 目录；目录必须包含合法 `SKILL.md`，可选包含 `scripts/`、`references/` 和 `assets/`。
 3. Skill Management 校验目录边界、文件基本安全和必填 frontmatter，计算内容摘要并创建当前用户的安装记录；安装阶段不执行脚本、不自动安装依赖。
-4. 启用后更新该用户的 `skill_revision`。新 Step 获取不可变 SkillCatalogSnapshot，初始上下文只包含名称和描述，不包含全部正文和脚本内容。
-5. 模型判断任务匹配某个 Skill 后，调用统一 Skill loader 加载完整 `SKILL.md`；其中显式引用的资料和资源再按需读取。
+4. 启用后更新该用户的 `skill_revision`。新 Step 获取不可变 SkillCatalogSnapshot；常驻 Prompt 不展开 Skill 列表或正文，`capability_search` 按查询从 Skill/MCP 两类目录分别返回有界轻量候选。
+5. 模型在同一份能力搜索结果中判断使用 Skill、MCP、两者或都不使用；选择 Skill 后调用统一 Skill loader 加载完整 `SKILL.md`，其中显式引用的资料和资源再按需读取。
 6. 当 Skill 指令要求运行脚本时，模型调用已有 `bash` 工具。Runtime Worker 先解析应用内固定版本的 `node`、`python3`、`python`，开发模式才回退宿主解释器；第三方依赖缺失时返回明确错误，不静默安装。
 7. 首次执行脚本前按当前用户和 Skill 内容摘要确认风险；执行统一经过超时、取消、输出限制、工作目录、环境变量收敛和日志审计。敏感凭据只有经明确授权才按名称注入。
 8. 新 Step 固定 SkillCatalogSnapshot；运行中的 Step 不因启停、升级或目录变化而静默替换已加载内容。
@@ -1349,6 +1349,33 @@ promptEpoch
 - 外部记忆 MCP 的写入失败不产生“已经记住”的虚假确认，秘密和凭据被阻止写入。
 - 阶段 1～4 基线继续通过，阶段 5 已纳入 MCP 配置/Credential 清单和 Provider 数据的打包、备份、诊断和卸载策略。
 
+### 阶段 4.5.5：权限系统与执行沙箱
+
+目标：在阶段 4.5 已有的工作区文件约束、Skill/MCP 加入链路和 Credential 隔离之上，建立可执行、可审计、可恢复的运行权限体系；明确区分执行沙箱、单次调用审批和模型业务问答，不新增重复的能力授权层。
+
+阶段实施文档：
+
+- `docs/阶段方案/阶段4.5.5-权限系统与执行沙箱开发架构设计.md`
+
+主要工作：
+
+- 用户只看到“请求批准 / 受控自动 / 完全访问”三档统一信任模式，新 Session 默认受控自动；Runtime 再解析文件沙箱、网络和 MCP 审批策略。
+- 在 Runtime ToolScheduler 执行前建立统一权限门；工作区内自动读写，工作区外写入按精确路径审批，MCP Tool 根据当前信任模式与工具策略进入审批。
+- 为 Bash 和 stdio MCP 子进程建立操作系统级文件沙箱、最小环境和临时 HOME；受限 Bash 默认禁网，声明联网并批准后仅放行当前 Tool Call；取消/超时时终止整个进程组。
+- Skill/MCP 点击加入后即进入能力目录；MCP 工具行只保留加入/移除，调用审批由三档信任模式与 Runtime 的 `never / always` 风险结果统一决定；Schema digest 变化后旧身份自然失效。
+- 实现同一 Tool Call 原地等待和恢复的执行审批、当前 Session Grant，以及崩溃后不自动重放。
+- 将系统审批与模型 User Question 分离，建立独立事件、Projection、Bridge Contract 和可信 UI。
+- 完成 SQLite V8、事件审计、脱敏以及普通 Popover、危险模式 Modal、审批卡和输入焦点规范。
+
+阶段验收：
+
+- 受限模式下 Bash 和 stdio MCP 不再仅依赖 cwd，而由真实平台沙箱约束；提供器不可用时不静默退化。
+- 未审核、已变化、跨用户、参数/Schema 不一致的 Tool Call 不能被用户审批绕过。
+- 审批事实必须先提交再执行；取消、拒绝、不可用、重复响应和 Worker 崩溃均有确定结果。
+- Session Grant 不跨 Session，沙箱拒绝不自动提升权限，具有副作用的未知调用不会自动重放。
+- 用户问答不产生系统权限；权限预设、调用审批和既有 Skill/MCP 加入状态在领域、事件和 UI 中保持独立。
+- 阶段 1～4.5 基线继续通过，阶段 5 纳入权限迁移、沙箱限制、诊断、隐私和发布检查。
+
 ### 阶段 5：发布工程与交付
 
 目标：形成可安装、升级、诊断和回滚的第一稳定版。
@@ -1380,6 +1407,7 @@ promptEpoch
 | M3 Client 完成         | 用户可通过正式 UI 使用全部 V1 能力     | 阶段 3 技术落地方案、参考 UI 复刻、双用户、会话、运行控制、模型管理、Skill 管理和 Interaction        |
 | M4 模型与上下文完成    | 模型能力可解析，长任务上下文可有界收敛 | 阶段 4 技术落地方案、模型目录、供应商预制、Compaction、迁移和定向测试                                |
 | M4.5 MCP 与首个记忆 MCP 完成 | 外部 MCP Tool 可受控接入，记忆 MCP 可跨 Session 召回并完成实际工具调用 | 阶段 4.5 技术落地方案、MCP Tool Bridge/管理 UI、Pi 四个第一方工具、外部记忆 MCP 和隔离/恢复测试 |
+| M4.5.5 权限边界完成    | Tool 能力、单次审批和执行沙箱可解释、可审计且可恢复 | 阶段 4.5.5 技术落地方案、统一权限门、平台沙箱、审批 UI、V8 migration 与安全测试                    |
 | M5 可发布              | 安装、升级、诊断和回滚就绪             | 阶段 5 技术落地方案、签名安装包、发布检查表、用户与运维文档                                          |
 
 每个里程碑都同时交付该阶段评审通过的技术落地方案、正式实现和验收结果。阶段 1–2 不要求用临时 UI 包装成“可演示 MVP”；阶段 3 形成完整 Client 产品。

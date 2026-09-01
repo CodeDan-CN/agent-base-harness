@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src", "ui/src", "tests", "vite.config.ts", "playwright.config.ts"],
+  "exclude": ["node_modules", "dist", "dist-*", "out", "reference_ui", ".runtime-cache", "release"]
+}

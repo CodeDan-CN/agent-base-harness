@@ -35,6 +35,7 @@ import type { ToolRegistry } from '../tools';
 import {
   BUNDLED_MEMORY_DATA_FILE,
   BUNDLED_MEMORY_ENTRYPOINT,
+  BUNDLED_MEMORY_SERVER_ID,
   BUNDLED_NODE_COMMAND,
 } from './bundled-memory';
 
@@ -58,13 +59,6 @@ interface McpCatalog {
   servers: ReadonlyMap<string, McpServer>;
   tools: McpCatalogEntry[];
 }
-
-const mcpSearchInput = z
-  .object({
-    query: z.string().max(500).default(''),
-    limit: z.number().int().min(1).max(10).default(6),
-  })
-  .strict();
 
 const mcpLoadInput = z.object({ serverName: z.string().min(1).max(200) }).strict();
 
@@ -141,13 +135,12 @@ export class McpManager {
     const catalog = this.availableCatalog(userId);
     this.deps.tools.replaceUserTools(
       userId,
-      catalog.tools.length === 0
-        ? []
-        : [this.createSearchTool(userId, catalog), this.createLoadTool(userId)],
+      catalog.tools.length === 0 ? [] : [this.createLoadTool(userId)],
     );
   }
 
   async close(): Promise<void> {
+    if (this.disposed) return;
     this.disposed = true;
     for (const user of this.deps.repos.users.listUsers()) {
       this.deps.tools.clearUserTools(user.id);
@@ -270,11 +263,22 @@ export class McpManager {
           value === BUNDLED_MEMORY_DATA_FILE ? path.join(base, 'memory.jsonl') : value,
         ]),
       );
+      const home = path.join(base, 'home');
+      const temporary = path.join(base, 'tmp');
+      await Promise.all([mkdir(home, { recursive: true }), mkdir(temporary, { recursive: true })]);
+      const launch = stdioSandboxCommand(command, args, base);
       return new StdioClientTransport({
-        command,
-        args,
+        command: launch.command,
+        args: launch.args,
         cwd,
-        env: { ...getDefaultEnvironment(), ...configuredEnv },
+        env: {
+          ...getDefaultEnvironment(),
+          HOME: home,
+          TMPDIR: temporary,
+          TEMP: temporary,
+          TMP: temporary,
+          ...configuredEnv,
+        },
         stderr: 'pipe',
       });
     }
@@ -318,6 +322,7 @@ export class McpManager {
           inputSchema,
           outputSchema,
         }),
+        defaultApprovalPolicy: defaultMcpApprovalPolicy(server, tool.name),
       };
     });
     const generation =
@@ -367,6 +372,9 @@ export class McpManager {
       },
       concurrencySafe: false,
       replaySafe: false,
+      approvalPolicy: tool.approvalPolicy,
+      approvalScope: 'external',
+      permissionIdentity: `mcp:${server.id}:${tool.rawName}:${tool.schemaDigest}`,
       timeoutMs: 65_000,
       execute: async (raw, context) => {
         const current = this.availableCatalog(context.userId).tools.find(
@@ -396,11 +404,11 @@ export class McpManager {
         }
         return normalized.result;
       },
-      presentCall() {
+      presentCall(args) {
         return {
           kind: 'generic',
-          title: tool.description || tool.rawName,
-          detail: server.name,
+          title: mcpActionTitle(tool.rawName),
+          detail: summarizeMcpArguments(args) ?? `服务：${server.name}`,
         };
       },
       presentResult(_args, result) {
@@ -408,47 +416,6 @@ export class McpManager {
           kind: 'generic',
           title: tool.description || tool.rawName,
           detail: server.name,
-          status: result.status === 'success' ? 'success' : 'error',
-        };
-      },
-    };
-  }
-
-  private createSearchTool(userId: LocalUserId, initialCatalog: McpCatalog): RuntimeTool<unknown> {
-    return {
-      name: 'mcp_search',
-      description:
-        '搜索当前用户已启用并审核通过的 MCP Server；只返回 Server 与工具的精简摘要，需要使用时再调用 mcp_load 暴露该 Server 的全部可用工具 Schema。' +
-        ` ${catalogSummary(initialCatalog)}`,
-      parameters: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            maxLength: 500,
-            description: '能力、Server、工具或操作关键词；省略时浏览最相关 Server。',
-          },
-          limit: { type: 'integer', minimum: 1, maximum: 10, default: 6 },
-        },
-        additionalProperties: false,
-      },
-      output: { schema: {}, render: (_args, value) => textContent(value) },
-      concurrencySafe: true,
-      replaySafe: true,
-      timeoutMs: 5_000,
-      execute: async (raw, context) => {
-        if (context.userId !== userId) throw new ToolExecutionError('MCP_CATALOG_NOT_AVAILABLE');
-        const input = mcpSearchInput.parse(raw);
-        const catalog = this.availableCatalog(userId);
-        return searchCatalog(catalog, input.query, input.limit);
-      },
-      presentCall() {
-        return { kind: 'generic', title: '搜索 MCP 能力' };
-      },
-      presentResult(_args, result) {
-        return {
-          kind: 'generic',
-          title: '搜索 MCP 能力',
           status: result.status === 'success' ? 'success' : 'error',
         };
       },
@@ -459,7 +426,7 @@ export class McpManager {
     return {
       name: 'mcp_load',
       description:
-        'MCP Server 的连接由应用启动和重连机制管理；此工具不负责启动或连接 Server，只将 mcp_search 返回的指定 Server 下全部已启用且审核通过的工具完整 Schema 暴露到当前 Turn，并从下一模型步骤开始可用。',
+        'MCP Server 的连接由应用启动和重连机制管理；此工具不负责启动或连接 Server，只将 capability_search 返回的指定 MCP Server 下全部已启用且审核通过的工具完整 Schema 暴露到当前 Turn，并从下一模型步骤开始可用。',
       parameters: {
         type: 'object',
         properties: {
@@ -467,7 +434,7 @@ export class McpManager {
             type: 'string',
             minLength: 1,
             maxLength: 200,
-            description: 'mcp_search 返回的精确 serverName。',
+            description: 'capability_search 返回的 MCP 候选精确 name。',
           },
         },
         required: ['serverName'],
@@ -600,127 +567,72 @@ export class McpManager {
   }
 }
 
-function catalogSummary(catalog: McpCatalog): string {
-  const grouped = new Map<string, McpCatalogEntry[]>();
-  for (const entry of catalog.tools) {
-    const entries = grouped.get(entry.server.id) ?? [];
-    entries.push(entry);
-    grouped.set(entry.server.id, entries);
-  }
-  const summaries = [...grouped.values()].slice(0, 8).map((entries) => {
-    const server = entries[0]!.server;
-    const operations = entries
-      .slice(0, 4)
-      .map(({ tool }) => tool.rawName)
-      .join('、');
-    const more = entries.length > 4 ? ` 等 ${entries.length} 个工具` : '';
-    const summary = server.summary ? `：${conciseDescription(server.summary)}` : '';
-    return `${server.name}${summary}（${operations}${more}）`;
-  });
-  return summaries.length > 0 ? `可用 MCP 摘要：${summaries.join('；').slice(0, 1500)}。` : '';
+function mcpActionTitle(rawName: string): string {
+  const normalized = rawName.toLowerCase();
+  if (/web[_-]?search|search[_-]?web|search[_-]?exa/.test(normalized)) return '联网搜索';
+  if (/web[_-]?fetch|fetch[_-]?url|read[_-]?url/.test(normalized)) return '读取网页';
+  if (/\bdelete\b|[_-]delete|remove/.test(normalized)) return '删除外部数据';
+  if (/\bsend\b|[_-]send|message|email/.test(normalized)) return '发送外部内容';
+  if (/\bwrite\b|[_-]write|create|update|edit/.test(normalized)) return '修改外部数据';
+  if (/\bread\b|[_-]read|list|get|search/.test(normalized)) return '读取外部数据';
+  return rawName.replace(/[_-]+/g, ' ').trim() || '外部工具调用';
 }
 
-function searchCatalog(catalog: McpCatalog, rawQuery: string, limit: number): unknown {
-  const query = rawQuery.trim().toLocaleLowerCase();
-  const terms = query.split(/\s+/).filter(Boolean);
-  const grouped = new Map<
-    string,
-    {
-      server: McpServer;
-      tools: Array<{ entry: McpCatalogEntry; score: number }>;
-      bestScore: number;
-      totalScore: number;
+function summarizeMcpArguments(value: unknown): string | undefined {
+  const args = asRecord(value);
+  if (!args) return undefined;
+  const preferred: Array<[string, string]> = [
+    ['query', '搜索内容'],
+    ['url', '访问地址'],
+    ['prompt', '请求内容'],
+    ['path', '目标'],
+    ['name', '对象'],
+  ];
+  for (const [key, label] of preferred) {
+    const candidate = args[key];
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return `${label}：${truncatePresentation(candidate.trim())}`;
     }
-  >();
-  for (const entry of catalog.tools) {
-    const score = catalogScore(entry, query, terms);
-    const group = grouped.get(entry.server.id) ?? {
-      server: entry.server,
-      tools: [],
-      bestScore: 0,
-      totalScore: 0,
-    };
-    group.tools.push({ entry, score });
-    group.bestScore = Math.max(group.bestScore, score);
-    group.totalScore += score;
-    grouped.set(entry.server.id, group);
   }
-  const scored = [...grouped.values()]
-    .map((group) => ({
-      ...group,
-      tools: group.tools.sort(
-        (left, right) =>
-          right.score - left.score ||
-          left.entry.tool.publicName.localeCompare(right.entry.tool.publicName),
-      ),
-    }))
-    .sort(
-      (left, right) =>
-        right.bestScore - left.bestScore ||
-        right.totalScore - left.totalScore ||
-        left.server.name.localeCompare(right.server.name),
-    );
-  const lexical = scored.filter(({ bestScore }) => query.length === 0 || bestScore > 0);
-  const fallback = query.length > 0 && lexical.length === 0;
-  const matches = (fallback ? scored : lexical).slice(0, limit).map((group) => ({
-    serverName: group.server.name,
-    summary: conciseDescription(group.server.summary),
-    toolCount: group.tools.length,
-    matchedTools: group.tools
-      .filter(({ score }) => fallback || query.length === 0 || score > 0)
-      .slice(0, 5)
-      .map(({ entry }) => ({
-        toolName: entry.tool.publicName,
-        description: conciseDescription(entry.tool.description),
-        parameters: parameterNames(entry.tool.inputSchema),
-        required: requiredParameterNames(entry.tool.inputSchema),
-      })),
-  }));
+  const compact = JSON.stringify(args);
+  return compact && compact !== '{}' ? `调用参数：${truncatePresentation(compact)}` : undefined;
+}
+
+function truncatePresentation(value: string): string {
+  return value.length > 240 ? `${value.slice(0, 237)}…` : value;
+}
+
+const BUNDLED_MEMORY_READ_TOOLS = new Set(['open_nodes', 'read_graph', 'search_nodes']);
+
+function defaultMcpApprovalPolicy(
+  server: McpServer,
+  rawName: string,
+): McpToolCatalogEntry['approvalPolicy'] {
+  if (server.id === BUNDLED_MEMORY_SERVER_ID && BUNDLED_MEMORY_READ_TOOLS.has(rawName)) {
+    return 'never';
+  }
+  return 'always';
+}
+
+function stdioSandboxCommand(
+  command: string,
+  args: string[],
+  writableRoot: string,
+): { command: string; args: string[] } {
+  if (process.platform !== 'darwin') {
+    throw new Error('Restricted MCP stdio sandbox is unavailable on this platform');
+  }
+  const profile = [
+    '(version 1)',
+    '(allow default)',
+    '(deny file-write*)',
+    '(allow file-write* (literal "/dev/null"))',
+    '(allow file-write* (subpath ' + JSON.stringify(writableRoot) + '))',
+  ].join('\n');
   return {
-    query: rawQuery,
-    matches,
-    usage:
-      matches.length > 0 && !fallback
-        ? '选择所需 serverName 调用 mcp_load；它会暴露该 Server 的全部可用工具 Schema。'
-        : fallback
-          ? '没有直接关键词匹配，已返回目录浏览结果；选择合适 serverName 调用 mcp_load，或换更具体关键词搜索。'
-          : '当前没有包含可用工具的 MCP Server。',
+    command: '/usr/bin/sandbox-exec',
+    args: ['-p', profile, command, ...args],
   };
-}
-
-function conciseDescription(description: string): string {
-  const normalized = description.replace(/\s+/g, ' ').trim();
-  return normalized.length <= 300 ? normalized : `${normalized.slice(0, 297)}...`;
-}
-
-function catalogScore(entry: McpCatalogEntry, query: string, terms: readonly string[]): number {
-  if (!query) return 1;
-  const toolName = entry.tool.publicName.toLocaleLowerCase();
-  const rawName = entry.tool.rawName.toLocaleLowerCase();
-  const serverName = entry.server.name.toLocaleLowerCase();
-  const serverSummary = entry.server.summary.toLocaleLowerCase();
-  const description = entry.tool.description.toLocaleLowerCase();
-  if (toolName === query || rawName === query) return 1_000;
-  let score = 0;
-  for (const term of terms) {
-    if (toolName.includes(term)) score += 100;
-    if (rawName.includes(term)) score += 80;
-    if (serverName.includes(term)) score += 50;
-    if (serverSummary.includes(term)) score += 40;
-    if (description.includes(term)) score += 20;
-  }
-  return score;
-}
-
-function parameterNames(schema: Record<string, unknown>): string[] {
-  const properties = asRecord(schema.properties);
-  return properties ? Object.keys(properties).slice(0, 20) : [];
-}
-
-function requiredParameterNames(schema: Record<string, unknown>): string[] {
-  return Array.isArray(schema.required)
-    ? schema.required.filter((value): value is string => typeof value === 'string').slice(0, 20)
-    : [];
 }
 
 export function publicToolName(serverName: string, rawName: string): string {

@@ -8,6 +8,8 @@ import {
   inboxReplaceParamsSchema,
   inputSubmitParamsSchema,
   interactionResolveParamsSchema,
+  approvalResolveParamsSchema,
+  permissionPresetSetParamsSchema,
   sessionArchiveParamsSchema,
   sessionCreateParamsSchema,
   sessionRenameParamsSchema,
@@ -106,6 +108,14 @@ export async function dispatch(
     case 'interaction.resolve': {
       const value = parse(interactionResolveParamsSchema, params);
       return app.runtime.resolveInteraction(userId, value);
+    }
+    case 'approval.resolve': {
+      const value = parse(approvalResolveParamsSchema, params);
+      return app.runtime.resolveApproval(userId, value);
+    }
+    case 'permission.preset.set': {
+      const value = parse(permissionPresetSetParamsSchema, params);
+      return app.runtime.setPermissionPreset(userId, value.sessionId, value.preset);
     }
     case 'model-service.save':
       return app.saveModelService(userId, parse(modelServiceSaveParamsSchema, params));

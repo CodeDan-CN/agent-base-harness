@@ -22,6 +22,9 @@ const SESSION_LIST_REFRESH_EVENTS = new Set<SessionLogEvent['eventType']>([
   'turn.ended',
   'interaction.requested',
   'interaction.resolved',
+  'approval.requested',
+  'approval.resolved',
+  'permission.preset.changed',
 ]);
 
 /** 流式 chunk 和 Step 细节只更新当前 Projection，不应逐条重查 session.list。 */

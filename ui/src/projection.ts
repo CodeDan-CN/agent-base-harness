@@ -13,6 +13,8 @@ export function hydrateProjection(snapshot: SessionSnapshotPayload): RuntimeProj
     interactions: new Map(
       snapshot.interactions.map((interaction) => [interaction.id, interaction]),
     ),
+    approvals: new Map((snapshot.approvals ?? []).map((approval) => [approval.id, approval])),
+    permissionGrants: new Set(snapshot.permissionGrants ?? []),
     steps: new Map(snapshot.trajectory.steps.map((step) => [step.id, step])),
     toolCalls: new Map(snapshot.trajectory.toolCalls.map((call) => [call.id, call])),
     streams: new Map(snapshot.streaming.map((stream) => [stream.requestId, stream])),

@@ -351,8 +351,12 @@ export class ModelRepository {
       compactionTriggerRatio: input.compactionTriggerRatio ?? 0.8,
       maxOutputTokens: input.maxOutputTokens,
       inputCapability: input.inputCapability ?? null,
-      maxOutputCapability: input.maxOutputCapability ?? input.maxOutputTokens,
-      requestMaxOutputTokens: input.requestMaxOutputTokens ?? input.maxOutputTokens,
+      maxOutputCapability:
+        input.maxOutputCapability === undefined ? input.maxOutputTokens : input.maxOutputCapability,
+      requestMaxOutputTokens:
+        input.requestMaxOutputTokens === undefined
+          ? input.maxOutputTokens
+          : input.requestMaxOutputTokens,
       metadataSource: input.metadataSource ?? 'manual',
       catalogVersion: input.catalogVersion ?? null,
       capabilityProfileRef: input.capabilityProfileRef ?? null,
@@ -380,20 +384,20 @@ export class ModelRepository {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enabled', ?, ?, NULL)`,
             )
           : this.stage4
-          ? this.db.prepare(
-              `INSERT INTO models
+            ? this.db.prepare(
+                `INSERT INTO models
                (id, user_id, service_id, remote_model_id, display_name, context_window, max_output_tokens,
                 input_capability, max_output_capability, request_max_output_tokens, metadata_source,
                 catalog_version, capability_profile_ref, capability_match_kind, thinking_mode, reasoning_effort,
                 capabilities_json, default_params_json, source, status, created_at, updated_at, archived_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enabled', ?, ?, NULL)`,
-            )
-          : this.db.prepare(
-              `INSERT INTO models
+              )
+            : this.db.prepare(
+                `INSERT INTO models
                  (id, user_id, service_id, remote_model_id, display_name, context_window, max_output_tokens,
                   capabilities_json, default_params_json, source, status, created_at, updated_at, archived_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'enabled', ?, ?, NULL)`,
-            );
+              );
         statement.run(
           model.id,
           model.userId,
@@ -494,8 +498,8 @@ export class ModelRepository {
              WHERE user_id = ? AND id = ?`,
             )
           : this.stage4
-          ? this.db.prepare(
-              `UPDATE models
+            ? this.db.prepare(
+                `UPDATE models
              SET remote_model_id = ?, display_name = ?, context_window = ?, max_output_tokens = ?,
                  input_capability = ?, max_output_capability = ?, request_max_output_tokens = ?,
                  metadata_source = ?, catalog_version = ?, capability_profile_ref = ?,
@@ -503,14 +507,14 @@ export class ModelRepository {
                  capabilities_json = ?, default_params_json = ?, status = ?, archived_at = NULL,
                  config_version = config_version + 1, updated_at = ?
              WHERE user_id = ? AND id = ?`,
-            )
-          : this.db.prepare(
-              `UPDATE models
+              )
+            : this.db.prepare(
+                `UPDATE models
                SET remote_model_id = ?, display_name = ?, context_window = ?, max_output_tokens = ?,
                    capabilities_json = ?, default_params_json = ?, status = ?, archived_at = NULL,
                    config_version = config_version + 1, updated_at = ?
                WHERE user_id = ? AND id = ?`,
-            );
+              );
         statement.run(
           patch.remoteModelId,
           patch.displayName,
@@ -525,8 +529,12 @@ export class ModelRepository {
           ...(this.stage4
             ? [
                 patch.inputCapability ?? null,
-                patch.maxOutputCapability ?? patch.maxOutputTokens,
-                patch.requestMaxOutputTokens ?? patch.maxOutputTokens,
+                patch.maxOutputCapability === undefined
+                  ? patch.maxOutputTokens
+                  : patch.maxOutputCapability,
+                patch.requestMaxOutputTokens === undefined
+                  ? patch.maxOutputTokens
+                  : patch.requestMaxOutputTokens,
                 patch.metadataSource ?? 'manual',
                 patch.catalogVersion ?? null,
                 patch.capabilityProfileRef ?? null,
@@ -632,8 +640,12 @@ export class ModelRepository {
       compactionTriggerRatio: row.compaction_trigger_ratio ?? 0.8,
       maxOutputTokens: row.max_output_tokens,
       inputCapability: row.input_capability ?? null,
-      maxOutputCapability: row.max_output_capability ?? row.max_output_tokens,
-      requestMaxOutputTokens: row.request_max_output_tokens ?? row.max_output_tokens,
+      maxOutputCapability:
+        row.max_output_capability === undefined ? row.max_output_tokens : row.max_output_capability,
+      requestMaxOutputTokens:
+        row.request_max_output_tokens === undefined
+          ? row.max_output_tokens
+          : row.request_max_output_tokens,
       metadataSource: row.metadata_source ?? 'legacy',
       catalogVersion: row.catalog_version ?? null,
       capabilityProfileRef: row.capability_profile_ref ?? null,

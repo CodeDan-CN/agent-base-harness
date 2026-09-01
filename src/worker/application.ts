@@ -71,6 +71,10 @@ import type {
   ModelCallStatisticsSnapshot,
 } from '../shared/contracts/statistics';
 import { buildModelCallStatistics } from './model-call-statistics';
+import {
+  maximumManualOutputBudget,
+  recommendedOutputBudget,
+} from '../client-contracts/model-output-policy';
 
 export interface CreateWorkerAppDeps {
   appDataDir: string;
@@ -353,6 +357,12 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
             (service ? inferProviderPresetFromEndpoint(service.endpoint)?.id : null) ??
             null;
           const capabilities = effectiveModelCapabilities(modelCatalog, service, model);
+          const effectiveContextWindow = capabilities.contextWindow ?? 32_768;
+          const recommendedMaxOutputTokens = recommendedOutputBudget({
+            contextWindow: effectiveContextWindow,
+            compactionTriggerRatio: model.compactionTriggerRatio,
+            maxOutputCapability: capabilities.maxOutputCapability,
+          });
           return {
             id: model.id,
             serviceId: model.serviceId,
@@ -362,7 +372,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
             automaticContextWindow: capabilities.automaticContextWindow,
             contextWindowOverride: model.contextWindowOverride,
             compactionTriggerRatio: model.compactionTriggerRatio,
-            maxOutputTokens: model.maxOutputTokens,
+            maxOutputTokens: model.requestMaxOutputTokens ?? recommendedMaxOutputTokens,
             inputCapability: capabilities.inputCapability,
             maxOutputCapability: capabilities.maxOutputCapability,
             requestMaxOutputTokens: model.requestMaxOutputTokens,
@@ -538,10 +548,30 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
         catalogCapabilities?.matchKind ??
         existing?.capabilityMatchKind ??
         input.capabilityMatchKind;
-      const requestMaxOutputTokens = Math.min(
-        input.requestMaxOutputTokens ?? input.maxOutputTokens,
-        maxOutputCapability ?? Number.POSITIVE_INFINITY,
-      );
+      const requestedOutputOverride =
+        input.requestMaxOutputTokens === undefined
+          ? existing
+            ? existing.requestMaxOutputTokens
+            : input.maxOutputTokens
+          : input.requestMaxOutputTokens;
+      const effectiveContextWindow = contextWindowOverride ?? contextWindow;
+      const requestMaxOutputTokens =
+        requestedOutputOverride === null
+          ? null
+          : Math.min(
+              requestedOutputOverride,
+              maximumManualOutputBudget({
+                contextWindow: effectiveContextWindow,
+                maxOutputCapability,
+              }),
+            );
+      const maxOutputTokens =
+        requestMaxOutputTokens ??
+        recommendedOutputBudget({
+          contextWindow: effectiveContextWindow,
+          compactionTriggerRatio,
+          maxOutputCapability,
+        });
       if (existing) {
         repos.models.updateModel(
           userId,
@@ -552,7 +582,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
             contextWindow,
             contextWindowOverride,
             compactionTriggerRatio,
-            maxOutputTokens: requestMaxOutputTokens,
+            maxOutputTokens,
             inputCapability,
             maxOutputCapability,
             requestMaxOutputTokens,
@@ -578,7 +608,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
           contextWindow,
           contextWindowOverride,
           compactionTriggerRatio,
-          maxOutputTokens: requestMaxOutputTokens,
+          maxOutputTokens,
           inputCapability,
           maxOutputCapability,
           requestMaxOutputTokens,
@@ -726,6 +756,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
           schemaDigest: tool.schemaDigest,
           enabled: tool.enabled,
           reviewStatus: tool.reviewStatus,
+          approvalPolicy: tool.approvalPolicy,
           generation: tool.generation,
         })),
       };
@@ -949,6 +980,15 @@ function resolveRuntimeModel(
     throw new BridgeError('MODEL_NOT_CONFIGURED', 'Model service is unavailable');
   }
   const capabilities = effectiveModelCapabilities(modelCatalog, service, model);
+  const contextWindow = capabilities.contextWindow ?? 32_768;
+  const maxOutputCapability = capabilities.maxOutputCapability ?? model.maxOutputTokens ?? 4096;
+  const maxOutputTokens =
+    model.requestMaxOutputTokens ??
+    recommendedOutputBudget({
+      contextWindow,
+      compactionTriggerRatio: model.compactionTriggerRatio,
+      maxOutputCapability,
+    });
   return {
     serviceId: service.id,
     modelId: model.id,
@@ -956,12 +996,14 @@ function resolveRuntimeModel(
     remoteModelId: model.remoteModelId,
     endpoint: validateModelEndpoint(service.endpoint),
     credentialRef: service.credentialRef,
-    contextWindow: capabilities.contextWindow ?? 32_768,
+    contextWindow,
     compactionTriggerRatio: model.compactionTriggerRatio,
     inputCapability: capabilities.inputCapability,
-    maxOutputCapability: capabilities.maxOutputCapability ?? model.maxOutputTokens ?? 4096,
-    requestMaxOutputTokens: model.requestMaxOutputTokens ?? model.maxOutputTokens ?? 4096,
-    maxOutputTokens: model.requestMaxOutputTokens ?? model.maxOutputTokens ?? 4096,
+    maxOutputCapability,
+    ...(model.requestMaxOutputTokens === null
+      ? {}
+      : { requestMaxOutputTokens: model.requestMaxOutputTokens }),
+    maxOutputTokens,
     metadataSource: capabilities.metadataSource,
     catalogVersion: capabilities.catalogVersion,
     capabilityMatchKind: capabilities.capabilityMatchKind,
@@ -1064,9 +1106,7 @@ function effectiveModelCapabilities(
 } {
   const catalogCapabilities = trustedCatalogCapabilities(catalog, service, model);
   const automaticContextWindow = catalogCapabilities?.context ?? model.contextWindow;
-  const automaticMetadataSource = catalogCapabilities
-    ? ('catalog' as const)
-    : model.metadataSource;
+  const automaticMetadataSource = catalogCapabilities ? ('catalog' as const) : model.metadataSource;
   return {
     contextWindow: model.contextWindowOverride ?? automaticContextWindow,
     automaticContextWindow,

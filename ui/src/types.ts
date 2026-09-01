@@ -8,6 +8,8 @@ export interface SessionSnapshotPayload {
   turns: Array<RuntimeProjection['turns'] extends Map<string, infer T> ? T : never>;
   messages: RuntimeProjection['messages'];
   interactions: Array<RuntimeProjection['interactions'] extends Map<string, infer T> ? T : never>;
+  approvals?: Array<RuntimeProjection['approvals'] extends Map<string, infer T> ? T : never>;
+  permissionGrants?: string[];
   trajectory: {
     steps: Array<RuntimeProjection['steps'] extends Map<string, infer T> ? T : never>;
     toolCalls: Array<RuntimeProjection['toolCalls'] extends Map<string, infer T> ? T : never>;

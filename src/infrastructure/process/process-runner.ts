@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
+import type { SandboxMode } from '../../shared/domain/permission';
 
 export class ProcessRunError extends Error {
   constructor(message: string) {
@@ -17,6 +18,11 @@ export interface ProcessRunOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   maxOutputBytes?: number;
+  sandbox?: {
+    mode: SandboxMode;
+    writableRoots: string[];
+    allowNetwork?: boolean;
+  };
 }
 
 export interface ProcessResult {
@@ -107,11 +113,13 @@ export class ProcessRunner {
     const maxOutputBytes = opts.maxOutputBytes ?? this.defaultMaxOutputBytes;
 
     return new Promise<ProcessResult>((resolve, reject) => {
-      const child = spawn(opts.cmd, opts.args, {
+      const sandboxed = sandboxCommand(opts);
+      const child = spawn(sandboxed.cmd, sandboxed.args, {
         cwd,
         env,
         shell: false,
         windowsHide: true,
+        detached: process.platform !== 'win32',
       });
 
       let stdout = '';
@@ -122,14 +130,26 @@ export class ProcessRunner {
       let cancelled = false;
       let settled = false;
 
+      const killTree = () => {
+        if (child.pid && process.platform !== 'win32') {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+            return;
+          } catch {
+            // Fall back to the direct child below.
+          }
+        }
+        child.kill('SIGKILL');
+      };
+
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill('SIGKILL');
+        killTree();
       }, timeoutMs);
 
       const onAbort = () => {
         cancelled = true;
-        child.kill('SIGKILL');
+        killTree();
       };
       if (opts.signal) {
         if (opts.signal.aborted) {
@@ -191,4 +211,35 @@ export class ProcessRunner {
       });
     });
   }
+}
+
+function sandboxCommand(opts: ProcessRunOptions): { cmd: string; args: string[] } {
+  if (!opts.sandbox || opts.sandbox.mode === 'danger-full-access') {
+    return { cmd: opts.cmd, args: opts.args };
+  }
+  if (process.platform !== 'darwin') {
+    throw new ProcessRunError('Restricted sandbox is unavailable on this platform');
+  }
+  const writable = opts.sandbox.writableRoots
+    .map((root) => '(allow file-write* (subpath ' + seatbeltString(realPathOf(root)) + '))')
+    .join('\n');
+  const profile = [
+    '(version 1)',
+    '(allow default)',
+    opts.sandbox.allowNetwork === false ? '(deny network*)' : '',
+    '(deny file-write*)',
+    '(allow file-write* (literal "/dev/null"))',
+    '(allow file-write* (literal "/dev/dtracehelper"))',
+    writable,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return {
+    cmd: '/usr/bin/sandbox-exec',
+    args: ['-p', profile, opts.cmd, ...opts.args],
+  };
+}
+
+function seatbeltString(value: string): string {
+  return JSON.stringify(value);
 }

@@ -1,6 +1,7 @@
 /** Session 容器与仅追加 EventStore 的领域类型。 */
 
 import type { LocalUserId } from './user';
+import type { PermissionPreset } from './permission';
 
 export type SessionStatus = 'active' | 'archived';
 
@@ -9,6 +10,7 @@ export interface Session {
   userId: LocalUserId;
   title: string;
   status: SessionStatus;
+  permissionPreset: PermissionPreset;
   nextSeq: number;
   version: number;
   createdAt: string;

@@ -54,6 +54,8 @@ export type CommandMethod =
   | 'turn.cancel'
   | 'turn.cancel-and-queue'
   | 'interaction.resolve'
+  | 'approval.resolve'
+  | 'permission.preset.set'
   | 'model-service.save'
   | 'model-service.test'
   | 'model-service.archive'

@@ -1,25 +1,33 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import {
-  ArrowDown,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Edit3,
   Loader2,
   PanelLeft,
   RotateCcw,
+  ShieldAlert,
   Sparkles,
   X,
 } from 'lucide-react';
-import type { InboxItem, RuntimeProjection } from '@client-contracts';
+import type {
+  ApprovalResolution,
+  InboxItem,
+  PermissionPreset,
+  RuntimeProjection,
+} from '@client-contracts';
 import { ExecutionProcess } from './ExecutionProcess';
 import { InputArea } from './InputArea';
 import { MarkdownContent } from './MarkdownContent';
 import { ProducedFiles } from './ProducedFiles';
-import { SelectMenu } from './SelectMenu';
 import { producedFilesForMessage } from '../produced-files';
+import { approvalDisplay } from '../approval-presentation';
 import {
   isExecutionProcessAssistant,
+  selectTemporaryAssistantMessage,
   shouldRenderExecutionForMessage,
   shouldRenderStandaloneExecution,
 } from '../chat-layout-policy';
@@ -28,11 +36,13 @@ interface ChatAreaProps {
   sessionId: string | null;
   title: string;
   modelLabel: string;
+  modelContextLimit: number | null;
   sidebarOpen: boolean;
   loading: boolean;
   runtimeReady: boolean;
   projection: RuntimeProjection | null;
   busyActionId: string | null;
+  permissionPreset: PermissionPreset;
   onToggleSidebar(): void;
   onRename(): void;
   onNotifyError(message: string): void;
@@ -46,22 +56,25 @@ interface ChatAreaProps {
     value: unknown,
     resolution?: 'submitted' | 'cancelled' | 'rejected',
   ): void;
+  onResolveApproval(id: string, resolution: ApprovalResolution): void;
+  onPermissionPresetChange(preset: PermissionPreset): void;
 }
 
 export function ChatArea(props: ChatAreaProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
-  const [showBackToBottom, setShowBackToBottom] = useState(false);
   const projection = props.projection;
   const allMessages = projection?.messages ?? [];
   const messages = useMemo(
     () =>
       allMessages.filter(
         (message) =>
-          !isExecutionProcessAssistant({
-            role: message.role,
-            toolCallCount: message.toolCalls?.length ?? 0,
-          }),
+          message.role === 'user' ||
+          (message.role === 'assistant' &&
+            !isExecutionProcessAssistant({
+              role: message.role,
+              toolCallCount: message.toolCalls?.length ?? 0,
+            })),
       ),
     [allMessages],
   );
@@ -71,29 +84,75 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
     () => [...(projection?.streams.values() ?? [])].reverse().find((stream) => !stream.finalized),
     [projection],
   );
+  const streamingTurnId = runningStream ? (active?.id ?? executionTurn?.id ?? null) : null;
   const executionTurnHasAssistant = messages.some(
     (message) => message.role === 'assistant' && message.turnId === executionTurn?.id,
   );
+  const executionTurnHasFinalAnswer = messages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      message.turnId === executionTurn?.id &&
+      Boolean(message.content.trim()),
+  );
+  const temporaryAssistantMessage = selectTemporaryAssistantMessage({
+    messages: allMessages,
+    executionTurnId: executionTurn?.id ?? null,
+    hasRunningStream: Boolean(runningStream),
+    hasFinalAssistant: executionTurnHasFinalAnswer,
+  });
   const pendingInteraction = [...(projection?.interactions.values() ?? [])]
     .reverse()
     .find((interaction) => interaction.status === 'pending');
+  const pendingApproval = [...(projection?.approvals.values() ?? [])]
+    .reverse()
+    .find((approval) => approval.status === 'pending');
+  const latestMeasuredStep = [...(projection?.steps.values() ?? [])]
+    .reverse()
+    .find((step) => step.requestContext);
+  const latestRequestContext = latestMeasuredStep?.requestContext;
+  const turnNumber = latestMeasuredStep
+    ? [...(projection?.turns.values() ?? [])].findIndex(
+        (turn) => turn.id === latestMeasuredStep.turnId,
+      ) + 1
+    : 0;
+  const compactedTokens =
+    projection?.surfaceReplacements.reduce(
+      (total, replacement) =>
+        total + Math.max(0, replacement.tokensBefore - replacement.tokensAfter),
+      0,
+    ) ?? 0;
+  const contextStats = projection
+    ? {
+        estimatedInputTokens: latestRequestContext?.estimatedInputTokens ?? 0,
+        budgetTokens: latestRequestContext?.budgetTokens ?? props.modelContextLimit,
+        exact: Boolean(latestRequestContext),
+        fixedTokens: latestRequestContext?.tokenBreakdown?.fixedTokens ?? null,
+        historyTokens: latestRequestContext?.tokenBreakdown?.historyTokens ?? null,
+        currentTurnTokens: latestRequestContext?.tokenBreakdown?.currentTurnTokens ?? null,
+        stepLabel: latestMeasuredStep
+          ? `Turn ${turnNumber} · Step ${latestMeasuredStep.stepIndex}`
+          : null,
+        cumulativeInputTokens: projection.usage.inputTokens,
+        cumulativeOutputTokens: projection.usage.outputTokens,
+        memoryCompactionCount: projection.usage.compactionRequests,
+        surfaceCompactionCount: projection.surfaceReplacements.length,
+        compactedTokens,
+      }
+    : null;
 
   useEffect(() => {
     const target = scrollRef.current;
-    if (!target || !pinnedToBottom.current) return;
+    const hasStreamingBody = Boolean(runningStream?.content);
+    if (!target || (!hasStreamingBody && !pinnedToBottom.current)) return;
+
+    // 思考过程只滚动自己的面板；正文一旦开始流式输出，主内容区持续跟随。
+    if (hasStreamingBody) pinnedToBottom.current = true;
+
     const frame = requestAnimationFrame(() => {
       target.scrollTop = target.scrollHeight;
     });
     return () => cancelAnimationFrame(frame);
-  }, [messages.length, runningStream?.content, projection?.lastSeq]);
-
-  const scrollToBottom = () => {
-    const target = scrollRef.current;
-    if (!target) return;
-    pinnedToBottom.current = true;
-    setShowBackToBottom(false);
-    target.scrollTo({ top: target.scrollHeight, behavior: 'smooth' });
-  };
+  }, [messages.length, runningStream?.requestId, runningStream?.content]);
 
   return (
     <main className={`chat-area ${props.sidebarOpen ? '' : 'sidebar-collapsed'}`}>
@@ -123,9 +182,8 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
         className="message-scroller custom-scrollbar"
         onScroll={(event) => {
           const target = event.currentTarget;
-          const nearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 72;
+          const nearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 16;
           pinnedToBottom.current = nearBottom;
-          setShowBackToBottom(!nearBottom);
         }}
       >
         {props.loading ? (
@@ -139,10 +197,7 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
           </div>
         ) : (
           <div className="message-column">
-            {messages.map((message, index) => {
-              const isLastAssistant =
-                message.role === 'assistant' &&
-                !messages.slice(index + 1).some((candidate) => candidate.role === 'assistant');
+            {messages.map((message) => {
               const producedFiles =
                 message.role === 'assistant'
                   ? producedFilesForMessage(projection, message.turnId, message.seq)
@@ -163,19 +218,19 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                   ) : message.role === 'assistant' ? (
                     <div className="assistant-block">
                       {shouldRenderExecutionForMessage({
-                        isLastAssistant,
                         messageTurnId: message.turnId,
-                        executionTurnId: executionTurn?.id ?? null,
-                        hasRunningStream: Boolean(runningStream),
+                        streamingTurnId,
                       }) && (
                         <ExecutionProcess
                           projection={projection}
+                          turnId={message.turnId}
                           sessionId={props.sessionId}
                           onOpenError={props.onNotifyError}
                         />
                       )}
                       <MarkdownContent
                         content={message.content}
+                        className="assistant-response"
                         sessionId={props.sessionId}
                         producedFiles={producedFiles}
                         onOpenError={props.onNotifyError}
@@ -203,69 +258,91 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                 </article>
               );
             })}
-            {shouldRenderStandaloneExecution({
-              executionTurnId: executionTurn?.id ?? null,
-              hasRunningStream: Boolean(runningStream),
-              executionTurnHasAssistant,
-            }) && (
-              <div className="assistant-block">
-                <ExecutionProcess
-                  projection={projection}
-                  sessionId={props.sessionId}
-                  onOpenError={props.onNotifyError}
-                />
-              </div>
-            )}
-            {runningStream && (
+            {executionTurn &&
+              shouldRenderStandaloneExecution({
+                executionTurnId: executionTurn.id,
+                hasRunningStream: Boolean(runningStream),
+                executionTurnHasAssistant,
+              }) && (
+                <div className="assistant-block">
+                  <ExecutionProcess
+                    projection={projection}
+                    turnId={executionTurn.id}
+                    sessionId={props.sessionId}
+                    onOpenError={props.onNotifyError}
+                  />
+                  {temporaryAssistantMessage && (
+                    <MarkdownContent
+                      content={temporaryAssistantMessage.content}
+                      className="temporary-assistant-response"
+                      sessionId={props.sessionId}
+                      onOpenError={props.onNotifyError}
+                    />
+                  )}
+                </div>
+              )}
+            {runningStream && executionTurn && (
               <article className="message assistant streaming" aria-live="polite">
                 <div className="assistant-block">
                   <ExecutionProcess
                     projection={projection}
+                    turnId={executionTurn.id}
                     sessionId={props.sessionId}
                     onOpenError={props.onNotifyError}
                   />
-                  {runningStream.content ? (
-                    <MarkdownContent
-                      content={runningStream.content}
-                      className="streaming-markdown"
-                      sessionId={props.sessionId}
-                      streaming
-                      onOpenError={props.onNotifyError}
-                    />
-                  ) : (
-                    <span className="stream-status">
-                      <Sparkles size={14} /> 正在生成回复
-                    </span>
-                  )}
+                  <div className="streaming-output">
+                    {runningStream.content ? (
+                      <MarkdownContent
+                        content={runningStream.content}
+                        className="streaming-markdown"
+                        sessionId={props.sessionId}
+                        streaming
+                        onOpenError={props.onNotifyError}
+                      />
+                    ) : (
+                      <span className="stream-status">
+                        <Sparkles size={14} /> 正在生成回复
+                      </span>
+                    )}
+                  </div>
                 </div>
               </article>
             )}
+          </div>
+        )}
+      </div>
+
+      <div className="input-gradient">
+        {(pendingInteraction || pendingApproval) && (
+          <div className="pending-action-dock">
             {pendingInteraction && (
               <InteractionCard
                 interaction={pendingInteraction}
                 onResolve={props.onResolveInteraction}
               />
             )}
+            {pendingApproval && (
+              <ApprovalCard
+                approval={pendingApproval}
+                argumentsValue={projection?.toolCalls.get(pendingApproval.toolCallId)?.input}
+                onResolve={props.onResolveApproval}
+              />
+            )}
           </div>
         )}
-        {showBackToBottom && (
-          <button className="back-to-bottom" onClick={scrollToBottom} aria-label="回到最新消息">
-            <ArrowDown size={16} />
-          </button>
-        )}
-      </div>
-
-      <div className="input-gradient">
         <InputArea
           processing={Boolean(active)}
           disabled={!projection || !props.runtimeReady}
           queue={projection?.inbox ?? []}
           busyActionId={props.busyActionId}
+          permissionPreset={props.permissionPreset}
+          contextStats={contextStats}
           onSend={props.onSend}
           onStop={props.onStop}
           onRemove={props.onRemove}
           onReplace={props.onReplace}
           onPromote={props.onPromote}
+          onPermissionPresetChange={props.onPermissionPresetChange}
         />
       </div>
     </main>
@@ -279,21 +356,122 @@ function InteractionCard({
   interaction: RuntimeProjection['interactions'] extends Map<string, infer T> ? T : never;
   onResolve(id: string, value: unknown, resolution?: 'submitted' | 'cancelled' | 'rejected'): void;
 }): JSX.Element {
-  const [value, setValue] = useState(interaction.options[0] ?? '');
+  const [value, setValue] = useState('');
+  const [singleOther, setSingleOther] = useState('');
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [otherAnswers, setOtherAnswers] = useState<Record<string, string>>({});
+  const [questionIndex, setQuestionIndex] = useState(0);
   const confirmation = interaction.kind === 'confirm' || interaction.kind === 'approval';
+  const questions = interaction.questions ?? [];
+  const hasQuestions = questions.length > 0;
+  const activeQuestion = questions[questionIndex];
+  const activeAnswer = activeQuestion ? answers[activeQuestion.id] : undefined;
+  const activeQuestionAnswered = Boolean(
+    activeQuestion &&
+    activeAnswer &&
+    (activeAnswer !== OTHER_CHOICE || (otherAnswers[activeQuestion.id] ?? '').trim()),
+  );
+  const lastQuestion = questionIndex === questions.length - 1;
+  const submittedValue = hasQuestions
+    ? Object.fromEntries(
+        questions.map((question) => [
+          question.id,
+          answers[question.id] === OTHER_CHOICE
+            ? (otherAnswers[question.id] ?? '').trim()
+            : (answers[question.id] ?? ''),
+        ]),
+      )
+    : value === OTHER_CHOICE
+      ? singleOther.trim()
+      : value;
+  const canSubmit = confirmation
+    ? true
+    : hasQuestions
+      ? questions.every((question) => {
+          const selected = answers[question.id];
+          return Boolean(
+            selected && (selected !== OTHER_CHOICE || (otherAnswers[question.id] ?? '').trim()),
+          );
+        })
+      : typeof submittedValue === 'string' && Boolean(submittedValue.trim());
+
+  useEffect(() => {
+    setValue('');
+    setSingleOther('');
+    setAnswers({});
+    setOtherAnswers({});
+    setQuestionIndex(0);
+  }, [interaction.id]);
+
   return (
     <section className="interaction-card">
-      <span className="interaction-label">需要你的确认</span>
+      <span className="interaction-label">需要你的回答</span>
       <p>{interaction.prompt}</p>
-      {!confirmation && interaction.options.length > 0 && (
-        <SelectMenu
-          value={value}
-          ariaLabel="选择回复"
-          options={interaction.options.map((option) => ({ value: option, label: option }))}
-          onChange={setValue}
-        />
+      {!confirmation && activeQuestion && (
+        <div className="interaction-questions">
+          <div className="interaction-pagination" aria-label="问题进度">
+            <span>
+              {questionIndex + 1} / {questions.length}
+            </span>
+            <div aria-hidden="true">
+              {questions.map((question, index) => (
+                <i
+                  className={`${index === questionIndex ? 'active' : ''} ${answers[question.id] ? 'answered' : ''}`}
+                  key={question.id}
+                />
+              ))}
+            </div>
+          </div>
+          <fieldset className="interaction-question" key={activeQuestion.id}>
+            <legend>
+              <small>{activeQuestion.header ?? `问题 ${questionIndex + 1}`}</small>
+              <span>{activeQuestion.question}</span>
+            </legend>
+            <ChoiceOptions
+              name={`${interaction.id}-${activeQuestion.id}`}
+              options={activeQuestion.options}
+              value={answers[activeQuestion.id] ?? ''}
+              onChange={(nextValue) =>
+                setAnswers((current) => ({ ...current, [activeQuestion.id]: nextValue }))
+              }
+            />
+            {answers[activeQuestion.id] === OTHER_CHOICE && (
+              <input
+                className="interaction-other-input"
+                value={otherAnswers[activeQuestion.id] ?? ''}
+                onChange={(event) =>
+                  setOtherAnswers((current) => ({
+                    ...current,
+                    [activeQuestion.id]: event.target.value,
+                  }))
+                }
+                placeholder="请输入其他想法"
+                autoFocus
+              />
+            )}
+          </fieldset>
+        </div>
       )}
-      {!confirmation && interaction.options.length === 0 && (
+      {!confirmation && !hasQuestions && interaction.options.length > 0 && (
+        <>
+          <ChoiceOptions
+            name={interaction.id}
+            options={interaction.options}
+            value={value}
+            onChange={setValue}
+          />
+          {value === OTHER_CHOICE && (
+            <input
+              className="interaction-other-input"
+              value={singleOther}
+              onChange={(event) => setSingleOther(event.target.value)}
+              placeholder="请输入其他想法"
+              autoFocus
+            />
+          )}
+        </>
+      )}
+      {!confirmation && !hasQuestions && interaction.options.length === 0 && (
         <input
           value={value}
           onChange={(event) => setValue(event.target.value)}
@@ -312,11 +490,98 @@ function InteractionCard({
             拒绝
           </button>
         )}
-        <button
-          className="primary"
-          onClick={() => onResolve(interaction.id, confirmation ? true : value)}
-        >
-          <Check size={14} /> 提交
+        {hasQuestions && questionIndex > 0 && (
+          <button className="secondary" onClick={() => setQuestionIndex((index) => index - 1)}>
+            <ChevronLeft size={14} /> 上一题
+          </button>
+        )}
+        {hasQuestions && !lastQuestion && (
+          <button
+            className="primary"
+            disabled={!activeQuestionAnswered}
+            onClick={() => setQuestionIndex((index) => index + 1)}
+          >
+            下一题 <ChevronRight size={14} />
+          </button>
+        )}
+        {(!hasQuestions || lastQuestion) && (
+          <button
+            className="primary"
+            disabled={!canSubmit}
+            onClick={() => onResolve(interaction.id, confirmation ? true : submittedValue)}
+          >
+            <Check size={14} /> 提交
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+const OTHER_CHOICE = '__other__';
+
+function ChoiceOptions({
+  name,
+  options,
+  value,
+  onChange,
+}: {
+  name: string;
+  options: string[];
+  value: string;
+  onChange(value: string): void;
+}): JSX.Element {
+  const choices = options.filter((option) => option.trim() && option.trim() !== '其他');
+  return (
+    <div className="interaction-choices" role="radiogroup">
+      {[...choices, OTHER_CHOICE].map((option) => {
+        const label = option === OTHER_CHOICE ? '其他' : option;
+        return (
+          <label className="interaction-choice" key={option}>
+            <input
+              type="radio"
+              name={name}
+              value={option}
+              checked={value === option}
+              onChange={() => onChange(option)}
+            />
+            <span>{label}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+function ApprovalCard({
+  approval,
+  argumentsValue,
+  onResolve,
+}: {
+  approval: RuntimeProjection['approvals'] extends Map<string, infer T> ? T : never;
+  argumentsValue?: unknown;
+  onResolve(id: string, resolution: ApprovalResolution): void;
+}): JSX.Element {
+  const display = approvalDisplay(approval.toolName, approval.presentation, argumentsValue);
+  return (
+    <section className="approval-card" aria-live="polite">
+      <div className="approval-heading">
+        <span className="approval-symbol">
+          <ShieldAlert size={16} />
+        </span>
+        <div>
+          <span className="interaction-label">需要你的批准</span>
+          <strong>{display.title}</strong>
+          <code className="approval-tool-name">{approval.toolName}</code>
+        </div>
+      </div>
+      <p className={display.technicalDetail ? 'technical' : undefined}>{display.detail}</p>
+      <div className="interaction-actions">
+        <button className="secondary danger" onClick={() => onResolve(approval.id, 'rejected')}>
+          拒绝
+        </button>
+        <button className="secondary" onClick={() => onResolve(approval.id, 'allowed-once')}>
+          允许一次
         </button>
       </div>
     </section>

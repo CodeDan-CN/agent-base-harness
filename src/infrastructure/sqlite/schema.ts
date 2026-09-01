@@ -411,4 +411,38 @@ ALTER TABLE models ADD COLUMN compaction_trigger_ratio REAL NOT NULL DEFAULT 0.8
   CHECK (compaction_trigger_ratio BETWEEN 0.5 AND 0.95);
 `,
   },
+  {
+    version: 8,
+    name: 'execution-permissions-and-approvals',
+    sql: `
+ALTER TABLE sessions ADD COLUMN permission_preset TEXT NOT NULL DEFAULT 'workspace-write'
+  CHECK (permission_preset IN ('read-only', 'workspace-write', 'danger-full-access'));
+ALTER TABLE mcp_tools ADD COLUMN approval_policy TEXT NOT NULL DEFAULT 'first-use'
+  CHECK (approval_policy IN ('never', 'first-use', 'always'));
+`,
+  },
+  {
+    version: 9,
+    name: 'user-session-permission-default',
+    sql: `
+ALTER TABLE local_users ADD COLUMN session_permission_preset TEXT NOT NULL DEFAULT 'workspace-write'
+  CHECK (session_permission_preset IN ('read-only', 'workspace-write', 'danger-full-access'));
+`,
+  },
+  {
+    version: 10,
+    name: 'automatic-model-output-budget',
+    sql: `
+UPDATE models
+SET request_max_output_tokens = NULL,
+    max_output_tokens = MIN(
+      COALESCE(max_output_capability, 1000000),
+      1000000,
+      COALESCE(context_window_override, context_window, 32768)
+        - CAST(COALESCE(context_window_override, context_window, 32768) * compaction_trigger_ratio AS INTEGER)
+    )
+WHERE request_max_output_tokens = 4096
+  AND max_output_tokens = 4096;
+`,
+  },
 ];

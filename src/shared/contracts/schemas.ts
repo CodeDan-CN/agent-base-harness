@@ -9,6 +9,8 @@ import {
   inboxReplaceParamsSchema,
   inputSubmitParamsSchema,
   interactionResolveParamsSchema,
+  approvalResolveParamsSchema,
+  permissionPresetSetParamsSchema,
   sessionArchiveParamsSchema,
   sessionCreateParamsSchema,
   sessionRenameParamsSchema,
@@ -96,6 +98,8 @@ export const commandRequestSchema = z.discriminatedUnion('method', [
   command('turn.cancel', turnCancelParamsSchema),
   command('turn.cancel-and-queue', turnCancelAndQueueParamsSchema),
   command('interaction.resolve', interactionResolveParamsSchema),
+  command('approval.resolve', approvalResolveParamsSchema),
+  command('permission.preset.set', permissionPresetSetParamsSchema),
   command('model-service.save', modelServiceSaveParamsSchema),
   command('model-service.test', modelServiceTestParamsSchema),
   command('model-service.archive', modelServiceArchiveParamsSchema),
@@ -179,6 +183,26 @@ export function runtimeResponseSchema(method: string): z.ZodTypeAny | undefined 
       return z
         .object({ interactionId: z.string(), inboxItemId: z.string().nullable() })
         .passthrough();
+    case 'approval.resolve':
+      return z
+        .object({
+          approvalId: z.string(),
+          resolution: z.enum([
+            'allowed-once',
+            'session-granted',
+            'rejected',
+            'cancelled',
+            'unavailable',
+          ]),
+        })
+        .strict();
+    case 'permission.preset.set':
+      return z
+        .object({
+          sessionId: z.string(),
+          permissionPreset: z.enum(['approval-required', 'guarded', 'full-access']),
+        })
+        .strict();
     case 'model-service.save':
     case 'model-service.archive':
     case 'model.save':

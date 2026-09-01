@@ -210,6 +210,9 @@ AppShell
 - ConversationEvent 作为同一事项分组；Exchange 表示每次用户问答。
 - `assistant.chunk` 只做临时流式展示，最终以 `assistant.message` 校准。
 - `assistant.reasoning.chunk/reasoning` 独立投影到“Think · 思考过程”，不得混入最终回答；工具调用输入和结果投影到“执行内容”。
+- 思考流只在自己的面板内跟随；正文开始流式输出后，聊天主内容区持续跟随到底部，不提供额外的“回到最新消息”悬浮按钮。
+- 流式思考区域按实际内容自适应高度，达到最大高度后才转为内部滚动，不以固定高度预留空白。
+- 已完成回答按各自 Turn 保留模型实际返回的思考与工具轨迹；没有思考或工具的已完成 Turn 不渲染空执行框。
 - 每个 Step 展示思考区域；“执行内容”只在该 Step 已产生 Tool Call 时渲染，不显示“等待工具调用”或“本步骤未调用工具”等空区域。
 - 思考、工具输入输出和最终回答统一使用安全 Markdown 实时渲染，禁用原始 HTML，远程资源继续受 CSP 限制。
 - interrupted/failed/cancelled/max_output/context_budget 都有不同状态，不统一显示成功。
@@ -221,7 +224,7 @@ AppShell
 - Queue 行提供“立刻介入”按钮，调用 `inbox.promote(sessionId, inboxItemId, expectedTurnId)`；它只把已有 Queue Item 提升到当前 Turn 的 `next-step`，不重复发送、不取消模型或工具。
 - 如产品同时提供直接“补充当前任务”，它使用 `input.submit(mode='steer')`，与“先排队、后介入”共享相同 next-step 安全边界，但来源和轨迹应可区分。
 - 本地输入草稿不是已接纳事实；Command 返回 accepted 后等待 Projection。
-- 附件先通过系统选择器和 `attachment.import` 变为受控引用，再随输入提交引用 ID。
+- 附件先通过系统选择器和 `attachment.import` 变为受控引用，再随输入提交引用 ID。具体采用稳定摄取主链路与可插拔 Loader Registry，默认只会话化保留派生内容，见 `../设计文档/09-附件摄取与可插拔加载器设计.md`。
 
 ### 5.4 M04 执行与控制
 

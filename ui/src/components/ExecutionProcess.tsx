@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import {
   Brain,
@@ -7,26 +7,29 @@ import {
   ChevronRight,
   CircleDashed,
   Loader2,
-  MessageSquareText,
   Wrench,
   XCircle,
 } from 'lucide-react';
 import type { RuntimeProjection } from '@client-contracts';
+import { groupExecutionPhases } from '../execution-process-policy';
+import { ContextTokenRing, formatCompactToken, formatOptionalToken } from './ContextTokenRing';
 import { MarkdownContent } from './MarkdownContent';
 
 interface ExecutionProcessProps {
   projection: RuntimeProjection;
+  turnId: string;
   sessionId: string | null;
   onOpenError?(message: string): void;
 }
 
 export function ExecutionProcess({
   projection,
+  turnId,
   sessionId,
   onOpenError,
 }: ExecutionProcessProps): JSX.Element | null {
   const [expanded, setExpanded] = useState(true);
-  const turn = projection.activeTurn ?? [...projection.turns.values()].at(-1);
+  const turn = projection.turns.get(turnId);
   if (!turn) return null;
   const steps = [...projection.steps.values()]
     .filter((step) => step.turnId === turn.id)
@@ -34,14 +37,8 @@ export function ExecutionProcess({
   if (steps.length === 0) return null;
   const tools = [...projection.toolCalls.values()].filter((tool) => tool.turnId === turn.id);
   const reasoning = [...projection.reasoning.values()].filter((item) => item.turnId === turn.id);
-  const processMessages = projection.messages.filter(
-    (message) =>
-      message.role === 'assistant' &&
-      message.turnId === turn.id &&
-      Boolean(message.toolCalls?.length) &&
-      Boolean(message.content.trim()),
-  );
-
+  const phases = groupExecutionPhases({ steps, tools, reasoning });
+  if (phases.length === 0) return null;
   return (
     <section className="execution-card" aria-label="执行过程">
       <button className="execution-header" onClick={() => setExpanded(!expanded)}>
@@ -58,70 +55,42 @@ export function ExecutionProcess({
       </button>
       {expanded && (
         <div className="execution-body">
-          {steps.map((step) => {
-            const stepTools = tools
-              .filter((tool) => tool.stepId === step.id)
-              .sort((left, right) => left.callIndex - right.callIndex);
-            const stepReasoning = reasoning.find((item) => item.stepId === step.id);
-            const stepMessages = processMessages.filter((message) => message.stepId === step.id);
+          {phases.map((phase) => {
+            const firstStep = phase.steps[0];
+            const latestStep = phase.steps.at(-1) ?? firstStep;
+            if (!firstStep || !latestStep) return null;
+            const stepLabel =
+              firstStep.stepIndex === latestStep.stepIndex
+                ? `步骤 ${firstStep.stepIndex}`
+                : `步骤 ${firstStep.stepIndex}–${latestStep.stepIndex}`;
             return (
-              <div className="execution-step" key={step.id}>
+              <div className="execution-step" key={firstStep.id}>
                 <div className="step-heading">
-                  <StatusIcon status={step.status} />
-                  <span>步骤 {step.stepIndex}</span>
+                  <StatusIcon status={latestStep.status} />
+                  <span>{stepLabel}</span>
                   <small>
-                    {step.requestContext
-                      ? `上下文约 ${step.requestContext.estimatedInputTokens} Token`
+                    {latestStep.requestContext
+                      ? `上下文约 ${latestStep.requestContext.estimatedInputTokens} Token`
                       : '准备模型请求'}
                   </small>
                 </div>
 
-                <section className="reasoning-panel" aria-label="思考过程">
-                  <div className="execution-section-title">
-                    <Brain size={13} />
-                    <span>Think · 思考过程</span>
-                    {stepReasoning && !stepReasoning.finalized && (
-                      <Loader2 className="spin" size={12} />
-                    )}
-                  </div>
-                  {stepReasoning?.content ? (
-                    <MarkdownContent
-                      content={stepReasoning.content}
-                      sessionId={sessionId}
-                      streaming={!stepReasoning.finalized}
-                      onOpenError={onOpenError}
-                    />
-                  ) : (
-                    <p className="execution-placeholder">
-                      {step.status === 'running' ? '正在思考…' : '模型未返回独立思考内容'}
-                    </p>
-                  )}
-                </section>
-
-                {stepMessages.length > 0 && (
-                  <section className="execution-narrative-panel" aria-label="步骤说明">
-                    <div className="execution-section-title">
-                      <MessageSquareText size={13} />
-                      <span>步骤说明</span>
-                    </div>
-                    {stepMessages.map((message) => (
-                      <MarkdownContent
-                        key={message.seq}
-                        content={message.content}
-                        sessionId={sessionId}
-                        onOpenError={onOpenError}
-                      />
-                    ))}
-                  </section>
+                {phase.reasoning && (
+                  <ReasoningPanel
+                    content={phase.reasoning.content}
+                    finalized={phase.reasoning.finalized}
+                    sessionId={sessionId}
+                    onOpenError={onOpenError}
+                  />
                 )}
 
-                {stepTools.length > 0 && (
+                {phase.tools.length > 0 && (
                   <section className="tool-execution-panel" aria-label="执行内容">
                     <div className="execution-section-title">
                       <Wrench size={13} />
                       <span>执行内容</span>
                     </div>
-                    {stepTools.map((tool) => (
+                    {phase.tools.map((tool) => (
                       <ToolCallCard
                         key={`${tool.id}-${tool.status}`}
                         tool={tool}
@@ -134,9 +103,127 @@ export function ExecutionProcess({
               </div>
             );
           })}
+          <ExecutionContextTokenIndicator projection={projection} turnId={turn.id} steps={steps} />
         </div>
       )}
     </section>
+  );
+}
+
+function ReasoningPanel({
+  content,
+  finalized,
+  sessionId,
+  onOpenError,
+}: {
+  content: string;
+  finalized: boolean;
+  sessionId: string | null;
+  onOpenError?: (message: string) => void;
+}): JSX.Element {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedToBottom = useRef(true);
+
+  useEffect(() => {
+    const target = scrollRef.current;
+    if (!target || !pinnedToBottom.current) return;
+    const frame = requestAnimationFrame(() => {
+      target.scrollTop = target.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [content]);
+
+  return (
+    <section
+      className={`reasoning-panel ${finalized ? 'finalized' : 'streaming'}`}
+      aria-label="思考过程"
+    >
+      <div className="execution-section-title">
+        <Brain size={13} />
+        <span>Think · 思考过程</span>
+        {!finalized && <Loader2 className="spin" size={12} />}
+      </div>
+      <div
+        className="reasoning-scroll custom-scrollbar"
+        ref={scrollRef}
+        onScroll={(event) => {
+          const target = event.currentTarget;
+          pinnedToBottom.current =
+            target.scrollHeight - target.scrollTop - target.clientHeight < 12;
+        }}
+      >
+        <MarkdownContent
+          content={content}
+          className="reasoning-markdown"
+          sessionId={sessionId}
+          streaming={!finalized}
+          onOpenError={onOpenError}
+        />
+      </div>
+    </section>
+  );
+}
+
+function ExecutionContextTokenIndicator({
+  projection,
+  turnId,
+  steps,
+}: {
+  projection: RuntimeProjection;
+  turnId: string;
+  steps: Array<RuntimeProjection['steps'] extends Map<string, infer Item> ? Item : never>;
+}): JSX.Element {
+  const latestStep = [...steps].reverse().find((step) => step.requestContext);
+  const context = latestStep?.requestContext;
+  const replacements = projection.surfaceReplacements.filter(
+    (replacement) => replacement.turnId === turnId,
+  );
+  const compressedTokens = replacements.reduce(
+    (total, replacement) => total + Math.max(0, replacement.tokensBefore - replacement.tokensAfter),
+    0,
+  );
+  const used = context?.tokenBreakdown?.currentTurnTokens ?? null;
+  const budget = context?.budgetTokens ?? null;
+  const compressed = replacements.length > 0;
+
+  return (
+    <div className="execution-context-footer">
+      <ContextTokenRing
+        name="当前 Turn 步骤上下文"
+        used={used}
+        budget={budget}
+        compressed={compressed}
+        popoverLabel="步骤 Token 统计"
+      >
+        <div className="context-token-title">
+          <strong>执行步骤上下文</strong>
+          <span>{latestStep ? `Step ${latestStep.stepIndex}` : '尚未请求'}</span>
+        </div>
+        <div className="context-token-value">
+          <strong>{formatOptionalToken(used)}</strong>
+          <span>/ {budget ? formatCompactToken(budget) : '未知'} Token</span>
+        </div>
+        <dl>
+          <div>
+            <dt>运行表面压缩</dt>
+            <dd>
+              {compressed
+                ? `已压缩 ${replacements.length} 次，节省 ${formatCompactToken(compressedTokens)}`
+                : '未压缩'}
+            </dd>
+          </div>
+          <div>
+            <dt>本次请求总上下文</dt>
+            <dd>{formatCompactToken(context?.estimatedInputTokens ?? 0)}</dd>
+          </div>
+          <div>
+            <dt>系统与工具固定开销</dt>
+            <dd>{formatOptionalToken(context?.tokenBreakdown?.fixedTokens ?? null)}</dd>
+          </div>
+        </dl>
+        {!context?.tokenBreakdown && <p>下一个 Step 后显示精确的执行占用。</p>}
+      </ContextTokenRing>
+    </div>
   );
 }
 

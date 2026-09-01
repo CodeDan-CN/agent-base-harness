@@ -5,6 +5,7 @@ import type {
   BootstrapResult,
   InboxItem,
   ModelManagementSnapshot,
+  PermissionPreset,
   RuntimeProjection,
   RuntimeWorkerStatus,
   Session,
@@ -14,6 +15,7 @@ import { ChatArea } from './components/ChatArea';
 import { ConfirmDialog, TextPromptDialog } from './components/Dialogs';
 import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
+import { hasAcknowledgedFullAccess, rememberFullAccessAcknowledgement } from './permission-consent';
 import { applyEventBatch, hydrateProjection } from './projection';
 import { deriveInputSubmissionPolicy, shouldRefreshSessionList } from './runtime-wiring-policy';
 import {
@@ -43,6 +45,10 @@ export function App(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [switchingUser, setSwitchingUser] = useState(false);
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
+  const [pendingPermissionPreset, setPendingPermissionPreset] = useState<PermissionPreset | null>(
+    null,
+  );
+  const [permissionBusy, setPermissionBusy] = useState(false);
   const [banner, setBanner] = useState<BannerState | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [retryingRuntime, setRetryingRuntime] = useState(false);
@@ -247,10 +253,18 @@ export function App(): JSX.Element {
   }, [notify]);
 
   const activeSession = sessions.find((session) => session.id === activeSessionId) ?? null;
+  const activeModel = useMemo(
+    () => modelSnapshot?.models.find((item) => item.id === modelSnapshot.defaultModelId) ?? null,
+    [modelSnapshot],
+  );
   const modelLabel = useMemo(() => {
-    const model = modelSnapshot?.models.find((item) => item.id === modelSnapshot.defaultModelId);
-    return model?.displayName ?? '未配置模型';
-  }, [modelSnapshot]);
+    return activeModel?.displayName ?? '未配置模型';
+  }, [activeModel]);
+  const modelContextLimit = useMemo(() => {
+    const contextWindow = activeModel?.contextWindow;
+    if (!contextWindow) return null;
+    return Math.min(contextWindow, activeModel.inputCapability ?? Number.POSITIVE_INFINITY);
+  }, [activeModel]);
 
   const send = async (content: string, mode: 'queue' | 'steer'): Promise<boolean> => {
     let sessionId = activeSessionId;
@@ -284,6 +298,31 @@ export function App(): JSX.Element {
       notify(userMessage(error), 'error');
     } finally {
       setBusyActionId(null);
+    }
+  };
+
+  const changePermissionPreset = async (preset: PermissionPreset) => {
+    if (!activeSessionId) return;
+    setPermissionBusy(true);
+    try {
+      await command('permission.preset.set', { sessionId: activeSessionId, preset });
+      if (preset === 'full-access' && bootstrap?.activeUser.id) {
+        rememberFullAccessAcknowledgement(bootstrap.activeUser.id);
+      }
+      await loadSessions(activeSessionId);
+      notify(
+        preset === 'approval-required'
+          ? '已切换为请求批准。'
+          : preset === 'guarded'
+            ? '已切换为受控自动。'
+            : '已开启完全访问。',
+        'success',
+      );
+    } catch (error) {
+      notify(userMessage(error), 'error');
+    } finally {
+      setPermissionBusy(false);
+      setPendingPermissionPreset(null);
     }
   };
 
@@ -380,11 +419,13 @@ export function App(): JSX.Element {
         sessionId={activeSessionId}
         title={activeSession?.title ?? '新对话'}
         modelLabel={modelLabel}
+        modelContextLimit={modelContextLimit}
         sidebarOpen={sidebarOpen}
         loading={loading}
         runtimeReady={runtimeStatus === 'ready'}
         projection={projection}
         busyActionId={busyActionId}
+        permissionPreset={activeSession?.permissionPreset ?? 'guarded'}
         onToggleSidebar={() => setSidebarOpen(true)}
         onRename={() => openRename()}
         onNotifyError={(message) => notify(message, 'error')}
@@ -419,6 +460,26 @@ export function App(): JSX.Element {
             idempotencyKey: crypto.randomUUID(),
           }).catch((error) => notify(userMessage(error), 'error'));
         }}
+        onResolveApproval={(approvalId, resolution) => {
+          if (!activeSessionId) return;
+          void command('approval.resolve', {
+            sessionId: activeSessionId,
+            approvalId,
+            resolution,
+            idempotencyKey: crypto.randomUUID(),
+          }).catch((error) => notify(userMessage(error), 'error'));
+        }}
+        onPermissionPresetChange={(preset) => {
+          if (preset === activeSession?.permissionPreset) return;
+          if (
+            preset === 'full-access' &&
+            (!bootstrap?.activeUser.id || !hasAcknowledgedFullAccess(bootstrap.activeUser.id))
+          ) {
+            setPendingPermissionPreset(preset);
+            return;
+          }
+          void changePermissionPreset(preset);
+        }}
       />
       {banner && <Banner banner={banner} onClose={() => setBanner(null)} />}
       {switchingUser && (
@@ -444,6 +505,17 @@ export function App(): JSX.Element {
           onSave={() => void rename()}
         />
       )}
+      <ConfirmDialog
+        open={pendingPermissionPreset === 'full-access'}
+        title="开启完全访问？"
+        description="Agent 将能以当前登录用户权限访问工作区外文件，并且工具调用不再逐次询问。此本地用户只需确认一次。"
+        acknowledgementLabel="我理解这可能修改工作区外的文件"
+        confirmLabel="开启完全访问"
+        tone="warning"
+        busy={permissionBusy}
+        onCancel={() => !permissionBusy && setPendingPermissionPreset(null)}
+        onConfirm={() => void changePermissionPreset('full-access')}
+      />
       <ConfirmDialog
         open={Boolean(archiveTarget)}
         title="归档这段对话？"

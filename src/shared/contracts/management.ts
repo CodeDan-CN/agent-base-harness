@@ -45,7 +45,7 @@ export const modelSaveParamsSchema = z
     compactionTriggerRatio: z.number().min(0.5).max(0.95).optional(),
     inputCapability: z.number().int().min(1).max(4_000_000).nullable().optional(),
     maxOutputCapability: z.number().int().min(1).max(1_000_000).nullable().optional(),
-    requestMaxOutputTokens: z.number().int().min(1).max(1_000_000).optional(),
+    requestMaxOutputTokens: z.number().int().min(1).max(1_000_000).nullable().optional(),
     maxOutputTokens: z.number().int().min(1).max(1_000_000),
     metadataSource: z.enum(['manual', 'endpoint', 'catalog', 'fallback', 'legacy']).optional(),
     catalogVersion: z.string().nullable().optional(),
@@ -122,13 +122,7 @@ export const modelManagementSnapshotSchema = z
           maxOutputCapability: z.number().int().positive().nullable(),
           requestMaxOutputTokens: z.number().int().positive().nullable(),
           metadataSource: z.enum(['manual', 'endpoint', 'catalog', 'fallback', 'legacy']),
-          automaticMetadataSource: z.enum([
-            'manual',
-            'endpoint',
-            'catalog',
-            'fallback',
-            'legacy',
-          ]),
+          automaticMetadataSource: z.enum(['manual', 'endpoint', 'catalog', 'fallback', 'legacy']),
           catalogVersion: z.string().nullable(),
           capabilityProfileRef: z.string().nullable(),
           capabilityMatchKind: z.enum([
@@ -316,6 +310,7 @@ export const mcpManagementSnapshotSchema = z
           schemaDigest: z.string(),
           enabled: z.boolean(),
           reviewStatus: z.enum(['pending', 'approved', 'changed']),
+          approvalPolicy: z.enum(['never', 'always']),
           generation: z.number().int().nonnegative(),
         })
         .strict(),

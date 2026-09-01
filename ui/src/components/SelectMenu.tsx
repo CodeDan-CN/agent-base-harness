@@ -16,6 +16,7 @@ interface SelectMenuProps {
   ariaLabel?: string;
   disabled?: boolean;
   className?: string;
+  popoverClassName?: string;
 }
 
 /** App-owned select popover so dropdowns look and behave consistently on every OS. */
@@ -26,6 +27,7 @@ export function SelectMenu({
   ariaLabel,
   disabled = false,
   className = '',
+  popoverClassName = '',
 }: SelectMenuProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -107,7 +109,7 @@ export function SelectMenu({
           <div
             ref={popoverRef}
             id={listId}
-            className="select-popover custom-scrollbar"
+            className={`select-popover custom-scrollbar ${popoverClassName}`.trim()}
             data-above={position.above || undefined}
             role="listbox"
             style={{

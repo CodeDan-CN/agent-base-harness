@@ -8,6 +8,10 @@ import type {
 } from '../../../shared/domain/mcp';
 import type { LocalUserId } from '../../../shared/domain/user';
 import { BridgeError } from '../../../shared/contracts/errors';
+import {
+  toolApprovalPolicyFromStorage,
+  type StoredToolApprovalPolicy,
+} from '../../../shared/domain/permission';
 
 interface ServerRow {
   id: string;
@@ -37,6 +41,7 @@ interface ToolRow {
   schema_digest: string;
   enabled: number;
   review_status: McpToolCatalogEntry['reviewStatus'];
+  approval_policy?: StoredToolApprovalPolicy;
   generation: number;
   discovered_at: string;
   updated_at: string;
@@ -228,16 +233,17 @@ export class McpRepository {
     userId: LocalUserId,
     serverId: string,
     generation: number,
-    tools: readonly Omit<
+    tools: readonly (Omit<
       McpToolCatalogEntry,
       | 'userId'
       | 'serverId'
       | 'enabled'
       | 'reviewStatus'
+      | 'approvalPolicy'
       | 'generation'
       | 'discoveredAt'
       | 'updatedAt'
-    >[],
+    > & { defaultApprovalPolicy?: McpToolCatalogEntry['approvalPolicy'] })[],
     now: string,
   ): void {
     try {
@@ -249,9 +255,9 @@ export class McpRepository {
         const upsert = this.db.prepare(
           `INSERT INTO mcp_tools
            (user_id, server_id, raw_name, public_name, description, input_schema_json,
-            output_schema_json, schema_digest, enabled, review_status, generation,
+            output_schema_json, schema_digest, enabled, review_status, approval_policy, generation,
             discovered_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?)
            ON CONFLICT(user_id, server_id, raw_name) DO UPDATE SET
              public_name = excluded.public_name,
              description = excluded.description,
@@ -265,6 +271,10 @@ export class McpRepository {
              review_status = CASE
                WHEN mcp_tools.schema_digest = excluded.schema_digest THEN mcp_tools.review_status
                ELSE 'changed'
+             END,
+             approval_policy = CASE
+               WHEN mcp_tools.approval_policy = 'first-use' THEN excluded.approval_policy
+               ELSE mcp_tools.approval_policy
              END,
              generation = excluded.generation,
              discovered_at = excluded.discovered_at,
@@ -281,6 +291,7 @@ export class McpRepository {
             JSON.stringify(tool.inputSchema),
             tool.outputSchema ? JSON.stringify(tool.outputSchema) : null,
             tool.schemaDigest,
+            tool.defaultApprovalPolicy ?? 'always',
             generation,
             now,
             now,
@@ -370,6 +381,7 @@ function mapTool(row: ToolRow): McpToolCatalogEntry {
     schemaDigest: row.schema_digest,
     enabled: row.enabled === 1,
     reviewStatus: row.review_status,
+    approvalPolicy: toolApprovalPolicyFromStorage(row.approval_policy),
     generation: row.generation,
     discoveredAt: row.discovered_at,
     updatedAt: row.updated_at,

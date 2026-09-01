@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import {
   ArrowLeft,
@@ -36,6 +36,7 @@ import type {
   McpManagementSnapshot,
   McpServerSaveParams,
 } from '@client-contracts';
+import { maximumManualOutputBudget, recommendedOutputBudget } from '@client-contracts';
 import { command, query, requireClient, unwrap, userMessage } from '../client';
 import type { ThemePreference } from '../theme';
 import type { SettingsTab } from '../types';
@@ -202,22 +203,50 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [snapshot, setSnapshot] = useState<ModelManagementSnapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
   const [draft, setDraft] = useState<ModelDraft>(emptyService);
   const [serviceSearch, setServiceSearch] = useState('');
   const [showKey, setShowKey] = useState(false);
-  const [busy, setBusy] = useState<string | null>('load');
-  const [discovered, setDiscovered] = useState<string[]>([]);
-  const [discoveredDetails, setDiscoveredDetails] = useState<ModelDiscoveryResult['models']>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [busyByService, setBusyByService] = useState<Record<string, string>>({});
+  const [discoveryByService, setDiscoveryByService] = useState<
+    Record<string, ModelDiscoveryResult>
+  >({});
   const [manualOpen, setManualOpen] = useState(false);
 
-  const reload = async (preferred?: string) => {
-    setBusy('load');
+  const selectId = (id: string | null) => {
+    selectedIdRef.current = id;
+    setSelectedId(id);
+  };
+
+  const markBusy = (serviceKey: string, action: string | null) => {
+    setBusyByService((current) => {
+      const next = { ...current };
+      if (action) next[serviceKey] = action;
+      else delete next[serviceKey];
+      return next;
+    });
+  };
+
+  const reload = async (
+    options: {
+      preferredId?: string | null;
+      originId?: string | null;
+      initial?: boolean;
+    } = {},
+  ) => {
+    if (options.initial) setInitialLoading(true);
     try {
       const next = await query<ModelManagementSnapshot>('model-management.snapshot');
       setSnapshot(next);
       props.onModelChanged(next);
-      const target = preferred ?? selectedId ?? next.services[0]?.id ?? null;
-      setSelectedId(target);
+      const currentId = selectedIdRef.current;
+      if (options.originId !== undefined && currentId !== options.originId) return;
+      const target =
+        options.preferredId !== undefined
+          ? options.preferredId
+          : (currentId ?? next.services[0]?.id ?? null);
+      selectId(target);
       const service = next.services.find((item) => item.id === target);
       setDraft(
         service
@@ -239,19 +268,20 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
     } catch (error) {
       props.onNotify(userMessage(error), 'error');
     } finally {
-      setBusy(null);
+      if (options.initial) setInitialLoading(false);
     }
   };
 
   useEffect(() => {
-    void reload();
+    void reload({ initial: true });
   }, []);
 
   const selectService = (id: string) => {
     const service = snapshot?.services.find((item) => item.id === id);
     if (!service) return;
-    setSelectedId(id);
-    setDiscovered([]);
+    selectId(id);
+    setManualOpen(false);
+    setShowKey(false);
     setDraft({
       id: service.id,
       name: service.name,
@@ -290,15 +320,18 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
       props.onNotify('请填写服务名称和 API 地址。', 'error');
       return;
     }
-    setBusy('save');
+    const originId = draft.id ?? null;
+    const serviceKey = draft.id ?? '__new__';
+    const saveParams = serviceParams();
+    markBusy(serviceKey, 'save');
     try {
-      const result = await command<{ id: string }>('model-service.save', serviceParams());
+      const result = await command<{ id: string }>('model-service.save', saveParams);
       props.onNotify('模型服务已保存。', 'success');
-      await reload(result.id);
+      await reload({ preferredId: result.id, originId });
     } catch (error) {
       props.onNotify(userMessage(error), 'error');
     } finally {
-      setBusy(null);
+      markBusy(serviceKey, null);
     }
   };
 
@@ -307,10 +340,11 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
       props.onNotify('请先填写完整的服务配置。', 'error');
       return;
     }
-    setBusy('test');
+    const serviceKey = draft.id ?? '__new__';
+    const { expectedRevision, ...params } = serviceParams();
+    void expectedRevision;
+    markBusy(serviceKey, 'test');
     try {
-      const { expectedRevision, ...params } = serviceParams();
-      void expectedRevision;
       const result = await command<{ status: string }>('model-service.test', params);
       const labels: Record<string, string> = {
         success: '连接成功。',
@@ -326,7 +360,7 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
     } catch (error) {
       props.onNotify(userMessage(error), 'error');
     } finally {
-      setBusy(null);
+      markBusy(serviceKey, null);
     }
   };
 
@@ -341,16 +375,17 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
       }))
     )
       return;
-    setBusy('archive');
+    const serviceId = draft.id;
+    const expectedRevision = snapshot.revision;
+    markBusy(serviceId, 'archive');
     try {
-      await command('model-service.archive', { id: draft.id, expectedRevision: snapshot.revision });
-      setSelectedId(null);
+      await command('model-service.archive', { id: serviceId, expectedRevision });
       props.onNotify('模型服务已删除。', 'success');
-      await reload('');
+      await reload({ preferredId: null, originId: serviceId });
     } catch (error) {
       props.onNotify(userMessage(error), 'error');
     } finally {
-      setBusy(null);
+      markBusy(serviceId, null);
     }
   };
 
@@ -359,35 +394,43 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
       props.onNotify('请先保存模型服务。', 'info');
       return;
     }
-    setBusy('discover');
+    const serviceId = draft.id;
+    markBusy(serviceId, 'discover');
     try {
-      const result = await command<ModelDiscoveryResult>('model.discover', { serviceId: draft.id });
-      setDiscovered(result.remoteModelIds);
-      setDiscoveredDetails(result.models);
+      const result = await command<ModelDiscoveryResult>('model.discover', { serviceId });
+      setDiscoveryByService((current) => ({ ...current, [serviceId]: result }));
       props.onNotify(`已获取 ${result.remoteModelIds.length} 个远程模型。`, 'success');
     } catch (error) {
       props.onNotify(userMessage(error), 'error');
     } finally {
-      setBusy(null);
+      markBusy(serviceId, null);
     }
   };
 
   const saveModel = async (remoteModelId: string, displayName = remoteModelId) => {
     if (!snapshot || !draft.id) return;
-    setBusy(`model:${remoteModelId}`);
+    const serviceId = draft.id;
+    const expectedRevision = snapshot.revision;
+    const discovery = discoveryByService[serviceId];
+    markBusy(serviceId, `model:${remoteModelId}`);
     try {
-      const discoveredModel = discoveredDetails.find((model) => model.id === remoteModelId);
+      const discoveredModel = discovery?.models.find((model) => model.id === remoteModelId);
       const contextWindow = discoveredModel?.contextWindow ?? 32768;
-      const maxOutputCapability = discoveredModel?.maxOutputCapability ?? 4096;
+      const maxOutputCapability = discoveredModel?.maxOutputCapability ?? null;
+      const maxOutputTokens = recommendedOutputBudget({
+        contextWindow,
+        compactionTriggerRatio: 0.8,
+        maxOutputCapability,
+      });
       const params: ModelSaveParams = {
-        serviceId: draft.id,
+        serviceId,
         remoteModelId,
         displayName,
         contextWindow,
         inputCapability: discoveredModel?.inputCapability ?? null,
         maxOutputCapability,
-        requestMaxOutputTokens: Math.min(4096, maxOutputCapability),
-        maxOutputTokens: Math.min(4096, maxOutputCapability),
+        requestMaxOutputTokens: null,
+        maxOutputTokens,
         metadataSource: discoveredModel?.metadataSource ?? 'manual',
         catalogVersion: discoveredModel ? 'bundled' : null,
         capabilityProfileRef: null,
@@ -397,19 +440,37 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
         capabilities: { tools: true, streaming: true, vision: false },
         defaultParams: {},
         enabled: true,
-        expectedRevision: snapshot.revision,
+        expectedRevision,
       };
       await command('model.save', params);
-      setDiscovered((items) => items.filter((item) => item !== remoteModelId));
+      setDiscoveryByService((current) => {
+        const currentDiscovery = current[serviceId];
+        if (!currentDiscovery) return current;
+        return {
+          ...current,
+          [serviceId]: {
+            ...currentDiscovery,
+            remoteModelIds: currentDiscovery.remoteModelIds.filter(
+              (item) => item !== remoteModelId,
+            ),
+            models: currentDiscovery.models.filter((item) => item.id !== remoteModelId),
+          },
+        };
+      });
       props.onNotify(`模型 ${displayName} 已添加。`, 'success');
-      await reload(draft.id);
+      await reload({ preferredId: serviceId, originId: serviceId });
     } catch (error) {
       props.onNotify(userMessage(error), 'error');
     } finally {
-      setBusy(null);
+      markBusy(serviceId, null);
     }
   };
 
+  const serviceKey = draft.id ?? '__new__';
+  const busy = busyByService[serviceKey] ?? null;
+  const discovery = draft.id ? discoveryByService[draft.id] : undefined;
+  const discovered = discovery?.remoteModelIds ?? [];
+  const discoveredDetails = discovery?.models ?? [];
   const serviceModels = snapshot?.models.filter((model) => model.serviceId === draft.id) ?? [];
   const filteredServices =
     snapshot?.services.filter((service) =>
@@ -440,9 +501,10 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
           <button
             className="dashed-button"
             onClick={() => {
-              setSelectedId(null);
+              selectId(null);
               setDraft(emptyService());
-              setDiscovered([]);
+              setManualOpen(false);
+              setShowKey(false);
             }}
           >
             <Plus size={14} /> 添加模型服务
@@ -467,7 +529,7 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
           </div>
         </aside>
         <div className="service-editor custom-scrollbar">
-          {busy === 'load' && !snapshot ? (
+          {initialLoading && !snapshot ? (
             <div className="center-state">
               <RefreshCw className="spin" /> 加载模型配置...
             </div>
@@ -639,7 +701,9 @@ function ModelSettings(props: SettingsModalProps): JSX.Element {
                     model={model}
                     snapshot={snapshot!}
                     disabled={Boolean(busy)}
-                    onChanged={() => reload(draft.id)}
+                    onChanged={() =>
+                      reload({ preferredId: model.serviceId, originId: model.serviceId })
+                    }
                     onNotify={props.onNotify}
                   />
                 ))}
@@ -723,6 +787,8 @@ function ModelRow({
   const [thinkingMode, setThinkingMode] = useState(model.thinkingMode);
   const [reasoningEffort, setReasoningEffort] = useState(model.reasoningEffort);
   const [savingThinking, setSavingThinking] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [savingContext, setSavingContext] = useState(false);
 
   useEffect(() => {
     setThinkingMode(model.thinkingMode);
@@ -774,7 +840,7 @@ function ModelRow({
         contextWindow: model.contextWindow ?? 32768,
         inputCapability: model.inputCapability,
         maxOutputCapability: model.maxOutputCapability,
-        requestMaxOutputTokens: model.requestMaxOutputTokens ?? model.maxOutputTokens ?? 4096,
+        requestMaxOutputTokens: model.requestMaxOutputTokens,
         maxOutputTokens: model.maxOutputTokens ?? 4096,
         metadataSource: model.metadataSource,
         catalogVersion: model.catalogVersion,
@@ -797,6 +863,54 @@ function ModelRow({
       setSavingThinking(false);
     }
   };
+  const saveContextSettings = async (
+    contextWindowOverride: number | null,
+    compactionTriggerRatio: number,
+    requestMaxOutputTokens: number | null,
+  ) => {
+    setSavingContext(true);
+    try {
+      const effectiveContextWindow =
+        contextWindowOverride ?? model.automaticContextWindow ?? model.contextWindow ?? 32768;
+      const maxOutputTokens =
+        requestMaxOutputTokens ??
+        recommendedOutputBudget({
+          contextWindow: effectiveContextWindow,
+          compactionTriggerRatio,
+          maxOutputCapability: model.maxOutputCapability,
+        });
+      await command('model.save', {
+        id: model.id,
+        serviceId: model.serviceId,
+        remoteModelId: model.remoteModelId,
+        displayName: model.displayName,
+        contextWindow: model.automaticContextWindow ?? model.contextWindow ?? 32768,
+        contextWindowOverride,
+        compactionTriggerRatio,
+        inputCapability: model.inputCapability,
+        maxOutputCapability: model.maxOutputCapability,
+        requestMaxOutputTokens,
+        maxOutputTokens,
+        metadataSource: model.automaticMetadataSource,
+        catalogVersion: model.catalogVersion,
+        capabilityProfileRef: model.capabilityProfileRef,
+        capabilityMatchKind: model.capabilityMatchKind,
+        thinkingMode,
+        reasoningEffort,
+        capabilities: model.capabilities,
+        defaultParams: model.defaultParams,
+        enabled: model.status === 'enabled',
+        expectedRevision: snapshot.revision,
+      });
+      await onChanged();
+      setContextOpen(false);
+      onNotify('上下文设置已保存。', 'success');
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+    } finally {
+      setSavingContext(false);
+    }
+  };
   return (
     <>
       <div className="model-row">
@@ -811,9 +925,16 @@ function ModelRow({
           <strong>{model.displayName}</strong>
           <small>{model.remoteModelId}</small>
         </span>
-        <span className="model-cap">
-          <Settings2 size={12} /> {formatTokens(model.contextWindow)} · {model.metadataSource}
-        </span>
+        <button
+          type="button"
+          className="model-cap"
+          disabled={disabled}
+          onClick={() => setContextOpen(true)}
+          aria-label={`设置 ${model.displayName} 的上下文`}
+        >
+          <Settings2 size={12} /> {formatTokens(model.contextWindow)} ·{' '}
+          {modelMetadataSourceLabel(model.metadataSource)}
+        </button>
         {providerPresetId ? (
           <>
             <SelectMenu
@@ -859,8 +980,280 @@ function ModelRow({
           <Trash2 size={14} />
         </button>
       </div>
+      <ModelContextDialog
+        open={contextOpen}
+        model={model}
+        busy={savingContext}
+        onCancel={() => !savingContext && setContextOpen(false)}
+        onSave={(contextWindowOverride, compactionTriggerRatio, requestMaxOutputTokens) =>
+          void saveContextSettings(
+            contextWindowOverride,
+            compactionTriggerRatio,
+            requestMaxOutputTokens,
+          )
+        }
+      />
       {confirmDialog}
     </>
+  );
+}
+
+function ModelContextDialog({
+  open,
+  model,
+  busy,
+  onCancel,
+  onSave,
+}: {
+  open: boolean;
+  model: ModelManagementSnapshot['models'][number];
+  busy: boolean;
+  onCancel(): void;
+  onSave(
+    contextWindowOverride: number | null,
+    compactionTriggerRatio: number,
+    requestMaxOutputTokens: number | null,
+  ): void;
+}): JSX.Element | null {
+  const automaticContextWindow = model.automaticContextWindow ?? model.contextWindow ?? 32768;
+  const [mode, setMode] = useState<'automatic' | 'manual'>(
+    model.contextWindowOverride === null ? 'automatic' : 'manual',
+  );
+  const [contextWindow, setContextWindow] = useState(
+    String(model.contextWindowOverride ?? automaticContextWindow),
+  );
+  const [triggerRatio, setTriggerRatio] = useState(String(model.compactionTriggerRatio));
+  const [outputMode, setOutputMode] = useState<'automatic' | 'manual'>(
+    model.requestMaxOutputTokens === null ? 'automatic' : 'manual',
+  );
+  const [outputTokens, setOutputTokens] = useState(
+    String(model.requestMaxOutputTokens ?? model.maxOutputTokens ?? 1),
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    setMode(model.contextWindowOverride === null ? 'automatic' : 'manual');
+    setContextWindow(String(model.contextWindowOverride ?? automaticContextWindow));
+    setTriggerRatio(String(model.compactionTriggerRatio));
+    setOutputMode(model.requestMaxOutputTokens === null ? 'automatic' : 'manual');
+    setOutputTokens(String(model.requestMaxOutputTokens ?? model.maxOutputTokens ?? 1));
+  }, [
+    automaticContextWindow,
+    model.compactionTriggerRatio,
+    model.contextWindowOverride,
+    model.maxOutputTokens,
+    model.requestMaxOutputTokens,
+    open,
+  ]);
+
+  if (!open) return null;
+  const parsedContextWindow = Number(contextWindow);
+  const parsedRatio = Number(triggerRatio);
+  const parsedOutputTokens = Number(outputTokens);
+  const effectiveContextWindow =
+    mode === 'automatic' ? automaticContextWindow : parsedContextWindow;
+  const validContext =
+    Number.isInteger(effectiveContextWindow) &&
+    effectiveContextWindow >= 1024 &&
+    effectiveContextWindow <= 4_000_000 &&
+    parsedRatio >= 0.5 &&
+    parsedRatio <= 0.95;
+  const triggerTokens = validContext ? Math.floor(effectiveContextWindow * parsedRatio) : null;
+  const recommendedOutputTokens = validContext
+    ? recommendedOutputBudget({
+        contextWindow: effectiveContextWindow,
+        compactionTriggerRatio: parsedRatio,
+        maxOutputCapability: model.maxOutputCapability,
+      })
+    : null;
+  const maximumOutputTokens = validContext
+    ? maximumManualOutputBudget({
+        contextWindow: effectiveContextWindow,
+        maxOutputCapability: model.maxOutputCapability,
+      })
+    : null;
+  const validOutput =
+    outputMode === 'automatic' ||
+    (Number.isInteger(parsedOutputTokens) &&
+      parsedOutputTokens >= 1 &&
+      maximumOutputTokens !== null &&
+      parsedOutputTokens <= maximumOutputTokens);
+  const valid = validContext && validOutput;
+
+  return (
+    <div
+      className="dialog-backdrop"
+      onMouseDown={(event) => event.target === event.currentTarget && !busy && onCancel()}
+    >
+      <form
+        className="app-dialog context-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${model.displayName} 上下文设置`}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!valid || busy) return;
+          onSave(
+            mode === 'manual' ? parsedContextWindow : null,
+            parsedRatio,
+            outputMode === 'manual' ? parsedOutputTokens : null,
+          );
+        }}
+      >
+        <div className="app-dialog-copy">
+          <h2>上下文设置</h2>
+          <p>统一控制新 Turn 与后续 Step 的上下文压缩触发时机。</p>
+        </div>
+        <button
+          type="button"
+          className="dialog-close icon-button"
+          disabled={busy}
+          onClick={onCancel}
+          aria-label="关闭"
+        >
+          <X size={16} />
+        </button>
+
+        <div className="context-setting-block">
+          <div className="context-setting-heading">
+            <span>上下文上限</span>
+            <small>自动值来自{modelMetadataSourceLabel(model.automaticMetadataSource)}</small>
+          </div>
+          <div className="context-mode-switch" role="radiogroup" aria-label="上下文上限来源">
+            <button
+              type="button"
+              className={mode === 'automatic' ? 'selected' : ''}
+              role="radio"
+              aria-checked={mode === 'automatic'}
+              disabled={busy}
+              onClick={() => {
+                setMode('automatic');
+                setContextWindow(String(automaticContextWindow));
+              }}
+            >
+              自动
+            </button>
+            <button
+              type="button"
+              className={mode === 'manual' ? 'selected' : ''}
+              role="radio"
+              aria-checked={mode === 'manual'}
+              disabled={busy}
+              onClick={() => setMode('manual')}
+            >
+              手动
+            </button>
+          </div>
+          <label className="context-number-field">
+            <input
+              type="number"
+              min={1024}
+              max={4_000_000}
+              step={1024}
+              disabled={busy || mode === 'automatic'}
+              value={mode === 'automatic' ? automaticContextWindow : contextWindow}
+              onChange={(event) => setContextWindow(event.target.value)}
+              aria-label="上下文上限 Token"
+            />
+            <span>Token</span>
+          </label>
+        </div>
+
+        <div className="context-setting-block">
+          <div className="context-setting-heading">
+            <span>单次输出上限</span>
+            <small>
+              {model.maxOutputCapability
+                ? `模型能力上限 ${formatTokens(model.maxOutputCapability)}`
+                : '未声明模型输出能力'}
+            </small>
+          </div>
+          <div className="context-mode-switch" role="radiogroup" aria-label="单次输出上限来源">
+            <button
+              type="button"
+              className={outputMode === 'automatic' ? 'selected' : ''}
+              role="radio"
+              aria-checked={outputMode === 'automatic'}
+              disabled={busy}
+              onClick={() => setOutputMode('automatic')}
+            >
+              自动推荐
+            </button>
+            <button
+              type="button"
+              className={outputMode === 'manual' ? 'selected' : ''}
+              role="radio"
+              aria-checked={outputMode === 'manual'}
+              disabled={busy}
+              onClick={() => {
+                setOutputMode('manual');
+                if (recommendedOutputTokens !== null) {
+                  setOutputTokens(String(recommendedOutputTokens));
+                }
+              }}
+            >
+              手动
+            </button>
+          </div>
+          <label className="context-number-field">
+            <input
+              type="number"
+              min={1}
+              max={maximumOutputTokens ?? undefined}
+              step={1024}
+              disabled={busy || outputMode === 'automatic'}
+              value={
+                outputMode === 'automatic' && recommendedOutputTokens !== null
+                  ? recommendedOutputTokens
+                  : outputTokens
+              }
+              onChange={(event) => setOutputTokens(event.target.value)}
+              aria-label="单次输出上限 Token"
+            />
+            <span>Token</span>
+          </label>
+          <p className="context-trigger-preview">
+            {recommendedOutputTokens === null
+              ? '请先填写有效的上下文设置。'
+              : `动态推荐 ${formatTokens(recommendedOutputTokens)} Token，由压缩后余量与模型能力共同限制。`}
+          </p>
+        </div>
+
+        <div className="context-setting-block">
+          <div className="context-setting-heading">
+            <span>压缩触发阈值</span>
+            <small>达到该比例后采用内置压缩策略</small>
+          </div>
+          <SelectMenu
+            ariaLabel="压缩触发阈值"
+            disabled={busy}
+            value={triggerRatio}
+            options={[
+              { value: '0.6', label: '60% · 较早压缩' },
+              { value: '0.7', label: '70%' },
+              { value: '0.8', label: '80% · 推荐' },
+              { value: '0.85', label: '85%' },
+              { value: '0.9', label: '90% · 较晚压缩' },
+            ]}
+            onChange={setTriggerRatio}
+          />
+          <p className="context-trigger-preview">
+            {triggerTokens === null
+              ? '请填写有效的上下文上限。'
+              : `预计在约 ${formatTokens(triggerTokens)} Token 时开始压缩。`}
+          </p>
+        </div>
+
+        <div className="app-dialog-actions">
+          <button type="button" className="secondary-button" disabled={busy} onClick={onCancel}>
+            取消
+          </button>
+          <button type="submit" className="dark-button" disabled={!valid || busy}>
+            {busy ? '保存中...' : '保存'}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -874,6 +1267,17 @@ function reasoningEffortLabel(effort: string): string {
     max: '最高',
   };
   return labels[effort] ?? effort;
+}
+
+function modelMetadataSourceLabel(source: string): string {
+  const labels: Record<string, string> = {
+    manual: '手动设置',
+    endpoint: '服务端',
+    catalog: '内置模型表',
+    fallback: '保守默认值',
+    legacy: '旧配置',
+  };
+  return labels[source] ?? source;
 }
 
 interface StatisticsFilter {
@@ -893,11 +1297,14 @@ const emptyStatisticsFilter = (): StatisticsFilter => ({
 function StatisticsSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.Element {
   const [snapshot, setSnapshot] = useState<ModelCallStatisticsSnapshot | null>(null);
   const [filter, setFilter] = useState<StatisticsFilter>(emptyStatisticsFilter);
-  const [busy, setBusy] = useState(true);
+  const [busy, setBusy] = useState<'initial' | 'search' | 'reset' | 'refresh' | null>('initial');
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const reload = async (nextFilter: StatisticsFilter) => {
-    setBusy(true);
+  const reload = async (
+    nextFilter: StatisticsFilter,
+    action: Exclude<typeof busy, null> = 'refresh',
+  ) => {
+    setBusy(action);
     try {
       const params: ModelCallStatisticsParams = {
         ...(nextFilter.sessionId ? { sessionId: nextFilter.sessionId } : {}),
@@ -911,13 +1318,15 @@ function StatisticsSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>):
     } catch (error) {
       onNotify(userMessage(error), 'error');
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
   useEffect(() => {
-    void reload(emptyStatisticsFilter());
+    void reload(emptyStatisticsFilter(), 'initial');
   }, []);
+
+  const isBusy = busy !== null;
 
   return (
     <div className="settings-page statistics-page">
@@ -933,7 +1342,7 @@ function StatisticsSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>):
           className="statistics-filters"
           onSubmit={(event) => {
             event.preventDefault();
-            void reload(filter);
+            void reload(filter, 'search');
           }}
         >
           <label>
@@ -983,17 +1392,18 @@ function StatisticsSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>):
             <button
               type="button"
               className="secondary-button"
-              disabled={busy}
+              disabled={isBusy}
               onClick={() => {
                 const next = emptyStatisticsFilter();
                 setFilter(next);
-                void reload(next);
+                void reload(next, 'reset');
               }}
             >
               重置
             </button>
-            <button type="submit" className="dark-button" disabled={busy}>
-              {busy ? <RefreshCw className="spin" size={14} /> : <Search size={14} />} 搜索
+            <button type="submit" className="dark-button" disabled={isBusy}>
+              {busy === 'search' ? <RefreshCw className="spin" size={14} /> : <Search size={14} />}{' '}
+              搜索
             </button>
           </div>
         </form>
@@ -1016,10 +1426,10 @@ function StatisticsSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>):
             </div>
             <button
               className="secondary-button"
-              disabled={busy}
-              onClick={() => void reload(filter)}
+              disabled={isBusy}
+              onClick={() => void reload(filter, 'refresh')}
             >
-              <RefreshCw className={busy ? 'spin' : ''} size={13} /> 刷新
+              <RefreshCw className={busy === 'refresh' ? 'spin' : ''} size={13} /> 刷新
             </button>
           </div>
           <div className="statistics-table-head" aria-hidden="true">
@@ -1031,7 +1441,7 @@ function StatisticsSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>):
             <span>状态</span>
             <span />
           </div>
-          {busy && !snapshot ? (
+          {busy === 'initial' && !snapshot ? (
             <div className="center-state statistics-loading">
               <RefreshCw className="spin" /> 正在读取调用日志...
             </div>
@@ -1197,33 +1607,60 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [snapshot, setSnapshot] = useState<McpManagementSnapshot | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
   const [draft, setDraft] = useState<McpDraft>(emptyMcpDraft);
-  const [busy, setBusy] = useState<string | null>('load');
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [busyByServer, setBusyByServer] = useState<Record<string, string>>({});
 
-  const reload = async (preferred?: string) => {
-    setBusy('load');
+  const selectId = (id: string | null) => {
+    selectedIdRef.current = id;
+    setSelectedId(id);
+  };
+
+  const markBusy = (serverKey: string, action: string | null) => {
+    setBusyByServer((current) => {
+      const next = { ...current };
+      if (action) next[serverKey] = action;
+      else delete next[serverKey];
+      return next;
+    });
+  };
+
+  const reload = async (
+    options: {
+      preferredId?: string | null;
+      originId?: string | null;
+      initial?: boolean;
+    } = {},
+  ) => {
+    if (options.initial) setInitialLoading(true);
     try {
       const next = await query<McpManagementSnapshot>('mcp-management.snapshot');
       setSnapshot(next);
-      const target = preferred ?? selectedId ?? next.servers[0]?.id ?? null;
-      setSelectedId(target);
+      const currentId = selectedIdRef.current;
+      if (options.originId !== undefined && currentId !== options.originId) return;
+      const target =
+        options.preferredId !== undefined
+          ? options.preferredId
+          : (currentId ?? next.servers[0]?.id ?? null);
+      selectId(target);
       const server = next.servers.find((item) => item.id === target);
       setDraft(server ? mcpDraftOf(server) : emptyMcpDraft());
     } catch (error) {
       onNotify(userMessage(error), 'error');
     } finally {
-      setBusy(null);
+      if (options.initial) setInitialLoading(false);
     }
   };
 
   useEffect(() => {
-    void reload();
+    void reload({ initial: true });
   }, []);
 
   const selectServer = (id: string) => {
     const server = snapshot?.servers.find((item) => item.id === id);
     if (!server) return;
-    setSelectedId(id);
+    selectId(id);
     setDraft(mcpDraftOf(server));
   };
 
@@ -1302,14 +1739,17 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
       onNotify(validationError, 'error');
       return;
     }
-    setBusy('save');
+    const originId = draft.id ?? null;
+    const serverKey = draft.id ?? '__new__';
+    markBusy(serverKey, 'save');
     try {
       const result = await command<{ id: string }>('mcp-server.save', params());
       onNotify('MCP Server 已保存。新发现工具默认关闭。', 'success');
-      await reload(result.id);
+      await reload({ preferredId: result.id, originId });
     } catch (error) {
       onNotify(userMessage(error), 'error');
-      setBusy(null);
+    } finally {
+      markBusy(serverKey, null);
     }
   };
 
@@ -1319,7 +1759,8 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
       onNotify(validationError, 'error');
       return;
     }
-    setBusy('test');
+    const serverKey = draft.id ?? '__new__';
+    markBusy(serverKey, 'test');
     try {
       const { expectedRevision, ...testParams } = params();
       void expectedRevision;
@@ -1336,20 +1777,22 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
     } catch (error) {
       onNotify(userMessage(error), 'error');
     } finally {
-      setBusy(null);
+      markBusy(serverKey, null);
     }
   };
 
   const refresh = async () => {
     if (!draft.id) return;
-    setBusy('refresh');
+    const serverId = draft.id;
+    markBusy(serverId, 'refresh');
     try {
-      const result = await command<{ toolCount: number }>('mcp-server.refresh', { id: draft.id });
+      const result = await command<{ toolCount: number }>('mcp-server.refresh', { id: serverId });
       onNotify(`工具目录已刷新，共 ${result.toolCount} 个工具。`, 'success');
-      await reload(draft.id);
+      await reload({ preferredId: serverId, originId: serverId });
     } catch (error) {
       onNotify(userMessage(error), 'error');
-      setBusy(null);
+    } finally {
+      markBusy(serverId, null);
     }
   };
 
@@ -1358,54 +1801,61 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
     if (
       !(await confirm({
         title: '删除 MCP Server？',
-        description: `“${draft.name}”及其工具授权会从当前用户中移除。`,
+        description: `“${draft.name}”及其已加入工具会从当前用户中移除。`,
         confirmLabel: '删除 Server',
         tone: 'danger',
       }))
     )
       return;
-    setBusy('archive');
+    const serverId = draft.id;
+    const expectedRevision = snapshot.revision;
+    markBusy(serverId, 'archive');
     try {
       await command('mcp-server.archive', {
-        id: draft.id,
-        expectedRevision: snapshot.revision,
+        id: serverId,
+        expectedRevision,
       });
-      setSelectedId(null);
       onNotify('MCP Server 已删除。', 'success');
-      await reload('');
+      await reload({ preferredId: null, originId: serverId });
     } catch (error) {
       onNotify(userMessage(error), 'error');
-      setBusy(null);
+    } finally {
+      markBusy(serverId, null);
     }
   };
 
   const toggleTool = async (rawName: string, enabled: boolean) => {
     if (!snapshot || !draft.id) return;
-    setBusy(`tool:${rawName}`);
+    const serverId = draft.id;
+    const expectedRevision = snapshot.revision;
+    markBusy(serverId, `tool:${rawName}`);
     try {
       await command('mcp-tool.toggle', {
-        serverId: draft.id,
+        serverId,
         rawName,
         enabled,
-        expectedRevision: snapshot.revision,
+        expectedRevision,
       });
-      onNotify(`工具 ${rawName} 已${enabled ? '审核启用' : '停用'}。`, 'success');
-      await reload(draft.id);
+      onNotify(`工具 ${rawName} 已${enabled ? '加入' : '移除'}。`, 'success');
+      await reload({ preferredId: serverId, originId: serverId });
     } catch (error) {
       onNotify(userMessage(error), 'error');
-      setBusy(null);
+    } finally {
+      markBusy(serverId, null);
     }
   };
 
+  const serverKey = draft.id ?? '__new__';
+  const busy = busyByServer[serverKey] ?? null;
   const serverTools = snapshot?.tools.filter((tool) => tool.serverId === draft.id) ?? [];
   const isBundledMemory = draft.id === 'builtin-memory';
 
   return (
-    <div className="settings-page models-page">
+    <div className="settings-page models-page mcp-page">
       <header className="settings-page-header">
         <div>
           <h2>MCP Tool Bridge</h2>
-          <p>Streamable HTTP 为外部 MCP 主路径；发现的工具需逐项审核后才进入 Agent。</p>
+          <p>Streamable HTTP 为外部 MCP 主路径；发现工具点击加入后即可供 Agent 使用。</p>
         </div>
       </header>
       <div className="model-layout">
@@ -1413,7 +1863,7 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
           <button
             className="dashed-button"
             onClick={() => {
-              setSelectedId(null);
+              selectId(null);
               setDraft(emptyMcpDraft());
             }}
           >
@@ -1451,14 +1901,14 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
               <div className="row-actions">
                 <button
                   className="secondary-button"
-                  disabled={Boolean(busy)}
+                  disabled={initialLoading || Boolean(busy)}
                   onClick={() => void test()}
                 >
-                  测试连接
+                  {busy === 'test' && <RefreshCw className="spin" size={13} />} 测试连接
                 </button>
                 <button
                   className="primary-button"
-                  disabled={Boolean(busy)}
+                  disabled={initialLoading || Boolean(busy)}
                   onClick={() => void save()}
                 >
                   保存
@@ -1503,7 +1953,7 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
                 maxLength={300}
               />
               <small>
-                用于 mcp_search 的 Server
+                用于 capability_search 的 MCP Server
                 摘要。留空时会优先使用默认模型根据工具目录生成；无可用模型时自动使用目录摘要。
               </small>
             </label>
@@ -1598,14 +2048,14 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
                 <div className="models-heading mcp-tools-heading">
                   <div>
                     <h4>发现工具</h4>
-                    <p>Schema 变化后自动关闭并要求重新审核。</p>
+                    <p>Schema 变化后自动关闭，需要重新加入。</p>
                   </div>
                   <button
                     className="secondary-button"
                     disabled={Boolean(busy)}
                     onClick={() => void refresh()}
                   >
-                    <RefreshCw size={13} /> 刷新目录
+                    <RefreshCw size={13} className={busy === 'refresh' ? 'spin' : ''} /> 刷新目录
                   </button>
                 </div>
                 <div className="skill-list mcp-tool-list">
@@ -1618,21 +2068,25 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
                         <div className="skill-name">
                           <strong>{tool.rawName}</strong>
                           {tool.reviewStatus !== 'approved' && (
-                            <em>{tool.reviewStatus === 'pending' ? '待审核' : 'Schema 已变更'}</em>
+                            <em>{tool.reviewStatus === 'pending' ? '未加入' : '需要重新加入'}</em>
                           )}
                         </div>
                         <p>{tool.description || tool.publicName}</p>
                         <small>{tool.publicName}</small>
                       </div>
-                      <label className="toggle">
-                        <input
-                          type="checkbox"
-                          checked={tool.enabled && tool.reviewStatus === 'approved'}
-                          disabled={Boolean(busy)}
-                          onChange={(event) => void toggleTool(tool.rawName, event.target.checked)}
-                        />
-                        <span />
-                      </label>
+                      <div className="mcp-tool-controls">
+                        <label className="toggle" title="加入或移除这个工具">
+                          <input
+                            type="checkbox"
+                            checked={tool.enabled && tool.reviewStatus === 'approved'}
+                            disabled={Boolean(busy)}
+                            onChange={(event) =>
+                              void toggleTool(tool.rawName, event.target.checked)
+                            }
+                          />
+                          <span />
+                        </label>
+                      </div>
                     </article>
                   ))}
                   {serverTools.length === 0 && (

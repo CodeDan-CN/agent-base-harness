@@ -4,5 +4,6 @@ export * from '../client-contracts/projection';
 export * from './context-projector';
 export * from './tools';
 export * from './builtin-tools';
+export * from './capability-discovery';
 export * from './runtime-service';
 export * from './provider-normalizers';

@@ -471,14 +471,16 @@ inputBudget
 
 工具数量较少时，全部稳定注册往往比动态路由更省 token，因为不需要额外的能力发现 Step。
 
-只有当 Tool Schema 已成为上下文主要成本时，才引入两级能力加载：
+只有当 Tool Schema 已成为上下文主要成本时，才引入两级能力加载。Skill 与 MCP 在发现层使用同一个轻量入口，不分别建立有先后暗示的搜索链路：
 
 ```text
-常驻工具：tool_catalog、tool_load、必要通用工具
-领域工具：通过 tool_load 在后续 Step 加入当前 prompt epoch
+常驻工具：capability_search、skill_load、mcp_load、必要通用工具
+统一发现：capability_search 同时检索 Skill Catalog 与 MCP Catalog，分别限制每类候选数量
+按需展开：选中 Skill 后 skill_load；选中 MCP Server 后 mcp_load
+领域工具：mcp_load 后从下一 Step 加入当前 Turn 的 Tool Schema
 ```
 
-`tool_catalog` 只返回短 ID、一句话描述和分类；不返回全量 Schema。该方案的收益必须通过真实 token 统计证明，不应仅因为“动态更灵活”就在第一版引入。
+`capability_search` 只返回两类来源的短 ID、名称、摘要、少量能力提示和对应 loader 参数，不返回完整 `SKILL.md` 或 MCP Tool Schema。返回结果显式标记两类来源同级，Agent 在同一份结果中选择 Skill、MCP、两者或都不使用。该方案的收益必须通过真实 token 统计证明，不应仅因为“动态更灵活”就在第一版引入。
 
 ### 9.7 Session 历史与 ConversationEvent 上下文
 

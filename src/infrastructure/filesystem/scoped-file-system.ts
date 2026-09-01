@@ -18,6 +18,10 @@ export interface FileScope {
   sessionId: string;
 }
 
+export interface FileAccessOptions {
+  allowOutsideWorkspace?: boolean;
+}
+
 export interface ReadFileResult {
   path: string;
   content: string;
@@ -51,8 +55,19 @@ export class ScopedFileSystem {
     return sessionWorkspacePath(this.appDataDir, scope);
   }
 
-  async read(scope: FileScope, filePath: string, offset = 1, limit = 200): Promise<ReadFileResult> {
-    const resolved = await this.resolve(scope, filePath, false);
+  async read(
+    scope: FileScope,
+    filePath: string,
+    offset = 1,
+    limit = 200,
+    access: FileAccessOptions = {},
+  ): Promise<ReadFileResult> {
+    const resolved = await this.resolve(
+      scope,
+      filePath,
+      false,
+      access.allowOutsideWorkspace ?? false,
+    );
     const metadata = await lstat(resolved.absolute);
     if (!metadata.isFile() || metadata.isSymbolicLink()) {
       throw new ScopedFileSystemError('FILE_NOT_REGULAR');
@@ -75,11 +90,21 @@ export class ScopedFileSystem {
     };
   }
 
-  async write(scope: FileScope, filePath: string, content: string): Promise<WriteFileResult> {
+  async write(
+    scope: FileScope,
+    filePath: string,
+    content: string,
+    access: FileAccessOptions = {},
+  ): Promise<WriteFileResult> {
     if (Buffer.byteLength(content) > MAX_FILE_BYTES) {
       throw new ScopedFileSystemError('FILE_TOO_LARGE');
     }
-    const resolved = await this.resolve(scope, filePath, true);
+    const resolved = await this.resolve(
+      scope,
+      filePath,
+      true,
+      access.allowOutsideWorkspace ?? false,
+    );
     const existing = await this.readExisting(resolved.absolute);
     if (existing !== null) this.assertObserved(scope, resolved.absolute, digest(existing));
     await this.atomicWrite(resolved.absolute, content);
@@ -99,8 +124,14 @@ export class ScopedFileSystem {
     oldString: string,
     newString: string,
     replaceAll: boolean,
+    access: FileAccessOptions = {},
   ): Promise<EditFileResult> {
-    const resolved = await this.resolve(scope, filePath, false);
+    const resolved = await this.resolve(
+      scope,
+      filePath,
+      false,
+      access.allowOutsideWorkspace ?? false,
+    );
     const content = await this.readExisting(resolved.absolute);
     if (content === null) throw new ScopedFileSystemError('FILE_NOT_FOUND');
     this.assertObserved(scope, resolved.absolute, digest(content));
@@ -127,6 +158,7 @@ export class ScopedFileSystem {
     scope: FileScope,
     requested: string,
     allowMissing: boolean,
+    allowOutsideWorkspace: boolean,
   ): Promise<{ absolute: string; display: string }> {
     const configuredRoot = this.workspace(scope);
     await mkdir(configuredRoot, { recursive: true });
@@ -134,23 +166,31 @@ export class ScopedFileSystem {
     const absolute = path.isAbsolute(requested)
       ? path.resolve(requested)
       : path.resolve(root, requested);
-    if (!isInside(root, absolute)) throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
+    const outsideWorkspace = !isInside(root, absolute);
+    if (outsideWorkspace && !allowOutsideWorkspace) {
+      throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
+    }
     if (!allowMissing) {
       const canonical = await canonicalExisting(absolute);
-      if (!isInside(root, canonical)) {
+      if (!isInside(root, canonical) && !allowOutsideWorkspace) {
         throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
       }
-      return { absolute: canonical, display: path.relative(root, canonical) || '.' };
+      return {
+        absolute: canonical,
+        display: isInside(root, canonical) ? path.relative(root, canonical) || '.' : canonical,
+      };
     }
     const parent = path.dirname(absolute);
     await mkdir(parent, { recursive: true });
     const canonicalParent = await realpath(parent);
-    if (!isInside(root, canonicalParent)) throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
+    if (!isInside(root, canonicalParent) && !allowOutsideWorkspace) {
+      throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
+    }
     try {
       const metadata = await lstat(absolute);
       if (metadata.isSymbolicLink()) throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
       const canonicalTarget = await realpath(absolute);
-      if (!isInside(root, canonicalTarget)) {
+      if (!isInside(root, canonicalTarget) && !allowOutsideWorkspace) {
         throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
       }
     } catch (error) {
@@ -158,8 +198,13 @@ export class ScopedFileSystem {
     }
     return {
       absolute: path.join(canonicalParent, path.basename(absolute)),
-      display: path.relative(root, absolute) || '.',
+      display: isInside(root, absolute) ? path.relative(root, absolute) || '.' : absolute,
     };
+  }
+
+  isOutsideWorkspace(scope: FileScope, requested: string): boolean {
+    if (!path.isAbsolute(requested)) return false;
+    return !isInside(this.workspace(scope), path.resolve(requested));
   }
 
   private async readExisting(target: string): Promise<string | null> {

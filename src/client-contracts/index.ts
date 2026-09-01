@@ -4,6 +4,7 @@
  */
 export * from './projection';
 export * from './runtime';
+export * from './model-output-policy';
 
 export type { BootstrapLocalUser, BootstrapResult } from '../shared/contracts/bootstrap';
 export type {
@@ -30,3 +31,8 @@ export type {
   ModelCallStatisticsSnapshot,
 } from '../shared/contracts/statistics';
 export type { Session, SessionLogEvent } from '../shared/domain/session';
+export type {
+  ApprovalResolution,
+  PermissionPreset,
+  ToolApprovalPolicy,
+} from '../shared/domain/permission';

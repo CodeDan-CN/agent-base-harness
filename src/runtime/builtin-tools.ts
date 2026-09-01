@@ -6,6 +6,7 @@ import type { ShellExecutor } from '../infrastructure/process/shell-executor';
 import type { SqliteRepositories } from '../infrastructure/sqlite/repositories';
 import { materializeSkillResourceBase } from '../infrastructure/workspace/session-workspace';
 import { projectRuntime } from '../client-contracts/projection';
+import { createCapabilitySearchTool } from './capability-discovery';
 import { createFirstPartyTools } from './first-party-tools';
 import {
   ToolExecutionError,
@@ -29,6 +30,7 @@ export function registerBuiltinRuntimeTools(registry: ToolRegistry, deps: Builti
 export function createBuiltinTools(deps: BuiltinToolDeps): RuntimeTool<unknown>[] {
   return [
     requestUserInputTool(),
+    createCapabilitySearchTool(deps.repos),
     eventSearchTool(deps.repos),
     eventReadTool(deps.repos),
     turnListTool(deps.repos),
@@ -39,23 +41,61 @@ export function createBuiltinTools(deps: BuiltinToolDeps): RuntimeTool<unknown>[
 }
 
 function requestUserInputTool(): RuntimeTool<never> {
+  const question = z
+    .object({
+      id: z.string().min(1).max(64),
+      header: z.string().min(1).max(80).optional(),
+      question: z.string().min(1).max(1000),
+      options: z.array(z.string().min(1).max(200)).min(2).max(5),
+    })
+    .strict();
   const input = z
     .object({
       prompt: z.string().min(1).max(4000),
-      kind: z.enum(['text', 'confirm', 'select', 'approval', 'selection', 'form']).default('text'),
+      kind: z.enum(['text', 'confirm', 'select', 'selection', 'form']).default('text'),
       options: z.array(z.string().min(1)).max(20).optional(),
+      questions: z.array(question).min(1).max(6).optional(),
       schema: z.record(z.unknown()).optional(),
     })
-    .strict();
+    .strict()
+    .refine(
+      (value) =>
+        !value.questions ||
+        new Set(value.questions.map((item) => item.id)).size === value.questions.length,
+      { message: 'question ids must be unique', path: ['questions'] },
+    );
   return {
     name: 'request_user_input',
-    description: '缺少必要信息时暂停当前任务并向用户提出一个问题。',
+    description:
+      '缺少必要信息时暂停当前任务并请用户补充。需要同时询问多个相关问题时，优先使用 questions；每题提供 2–3 个具体、互斥的推荐选项。界面会自动追加“其他”，不要把“其他”写入 options。',
     parameters: {
       type: 'object',
       properties: {
-        prompt: { type: 'string', minLength: 1 },
-        kind: { enum: ['text', 'confirm', 'select', 'approval', 'selection', 'form'] },
+        prompt: { type: 'string', minLength: 1, description: '简短说明为什么需要这些信息。' },
+        kind: { enum: ['text', 'confirm', 'select', 'selection', 'form'] },
         options: { type: 'array', items: { type: 'string' } },
+        questions: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 6,
+          description: '多问题表单。每题推荐 2–3 个选项，不要包含“其他”。',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', minLength: 1, description: '稳定、唯一的英文字段名。' },
+              header: { type: 'string', description: '可选的简短标题。' },
+              question: { type: 'string', minLength: 1 },
+              options: {
+                type: 'array',
+                minItems: 2,
+                maxItems: 5,
+                items: { type: 'string', minLength: 1 },
+              },
+            },
+            required: ['id', 'question', 'options'],
+            additionalProperties: false,
+          },
+        },
         schema: { type: 'object' },
       },
       required: ['prompt'],
@@ -68,7 +108,10 @@ function requestUserInputTool(): RuntimeTool<never> {
     timeoutMs: 5_000,
     async execute(raw) {
       const parsed = input.parse(raw);
-      throw new ToolInteractionError(parsed);
+      throw new ToolInteractionError({
+        ...parsed,
+        kind: parsed.questions?.length ? 'form' : parsed.kind,
+      });
     },
   };
 }

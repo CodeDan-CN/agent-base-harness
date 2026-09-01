@@ -110,6 +110,20 @@ export const interactionResolveParamsSchema = z
     idempotencyKey: z.string().min(1).max(256),
   })
   .strict();
+export const approvalResolveParamsSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    approvalId: z.string().min(1),
+    resolution: z.enum(['allowed-once', 'session-granted', 'rejected', 'cancelled', 'unavailable']),
+    idempotencyKey: z.string().min(1).max(256),
+  })
+  .strict();
+export const permissionPresetSetParamsSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    preset: z.enum(['approval-required', 'guarded', 'full-access']),
+  })
+  .strict();
 export const eventsPageParamsSchema = z
   .object({
     sessionId: z.string().min(1),
@@ -149,6 +163,10 @@ export type RuntimeEventType =
   | 'tool.result'
   | 'interaction.requested'
   | 'interaction.resolved'
+  | 'approval.requested'
+  | 'approval.resolved'
+  | 'permission.grant.created'
+  | 'permission.preset.changed'
   | 'compaction.started'
   | 'compaction.summary-updated'
   | 'surface.replaced'
@@ -179,6 +197,10 @@ export const RUNTIME_EVENT_TYPES: readonly RuntimeEventType[] = [
   'tool.result',
   'interaction.requested',
   'interaction.resolved',
+  'approval.requested',
+  'approval.resolved',
+  'permission.grant.created',
+  'permission.preset.changed',
   'compaction.started',
   'compaction.summary-updated',
   'surface.replaced',
@@ -253,6 +275,14 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
       promptEpoch: z.number().int().positive(),
       estimatedInputTokens: z.number().int().nonnegative(),
       budgetTokens: z.number().int().positive(),
+      tokenBreakdown: z
+        .object({
+          fixedTokens: z.number().int().nonnegative(),
+          historyTokens: z.number().int().nonnegative(),
+          currentTurnTokens: z.number().int().nonnegative(),
+        })
+        .strict()
+        .optional(),
       includedEventIds: z.array(id),
       skillRevision: z.number().int().nonnegative(),
       runtimeRevision: z.number().int().nonnegative(),
@@ -353,6 +383,18 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
       prompt: z.string().min(1),
       kind: z.enum(['text', 'confirm', 'select', 'approval', 'selection', 'form']),
       options: z.array(z.string()),
+      questions: z
+        .array(
+          z
+            .object({
+              id: id,
+              header: z.string().min(1).optional(),
+              question: z.string().min(1),
+              options: z.array(z.string().min(1)),
+            })
+            .strict(),
+        )
+        .optional(),
       schema: z.record(z.unknown()).optional(),
     })
     .strict(),
@@ -363,6 +405,60 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
       value: z.unknown(),
       resolution: z.enum(['submitted', 'cancelled', 'rejected']),
       inboxItemId: id.nullable(),
+    })
+    .strict(),
+  'approval.requested': z
+    .object({
+      approvalId: id,
+      toolCallId: id,
+      toolName: id,
+      toolIdentity: id,
+      argumentsDigest: id,
+      eventId: id,
+      turnId: id,
+      stepId: id,
+      policy: z.enum(['first-use', 'always']),
+      presentation: z.unknown().nullable(),
+    })
+    .strict(),
+  'approval.resolved': z
+    .object({
+      approvalId: id,
+      toolIdentity: id,
+      resolution: z.enum([
+        'allowed-once',
+        'session-granted',
+        'rejected',
+        'cancelled',
+        'unavailable',
+      ]),
+    })
+    .strict(),
+  'permission.grant.created': z
+    .object({
+      approvalId: id,
+      toolIdentity: id,
+      scope: z.literal('session'),
+    })
+    .strict(),
+  'permission.preset.changed': z
+    .object({
+      from: z.enum([
+        'approval-required',
+        'guarded',
+        'full-access',
+        'read-only',
+        'workspace-write',
+        'danger-full-access',
+      ]),
+      to: z.enum([
+        'approval-required',
+        'guarded',
+        'full-access',
+        'read-only',
+        'workspace-write',
+        'danger-full-access',
+      ]),
     })
     .strict(),
   'compaction.started': z

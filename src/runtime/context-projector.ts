@@ -20,9 +20,16 @@ export interface ProjectedContext {
   messages: RuntimeMessage[];
   estimatedInputTokens: number;
   budgetTokens: number;
+  tokenBreakdown: ContextTokenBreakdown;
   includedEventIds: string[];
   promptEpoch: number;
   softTriggerTokens: number;
+}
+
+export interface ContextTokenBreakdown {
+  fixedTokens: number;
+  historyTokens: number;
+  currentTurnTokens: number;
 }
 
 export interface ContextMeasurement {
@@ -59,7 +66,7 @@ export class ContextProjector {
     const budget = inputBudget(input);
     if (budget <= 0) throw new ContextBudgetError();
 
-    const stableSystem = this.buildStableSystem(input.tools, input.skills);
+    const stableSystem = this.buildStableSystem(input.tools);
     const stableMessage: RuntimeMessage = { role: 'system', content: stableSystem };
     const toolSchemaTokens = estimateTextTokens(JSON.stringify(input.tools));
     const currentEvent = input.projection.events.get(input.eventId);
@@ -69,8 +76,11 @@ export class ContextProjector {
     const currentMessages = materializeTurnMessages(input.projection, input.turnId);
 
     // 当前 Turn（尤其 Tool Result）必须完整保留，超过预算时明确失败，不能截断事实。
-    const required = [stableMessage, ...currentMessages];
-    if (estimateMessages(required) + toolSchemaTokens > budget) throw new ContextBudgetError();
+    const stableSystemTokens = estimateMessage(stableMessage);
+    const currentTurnTokens = estimateMessages(currentMessages);
+    const fixedTokens = stableSystemTokens + toolSchemaTokens;
+    const requiredTokens = fixedTokens + currentTurnTokens;
+    if (requiredTokens > budget) throw new ContextBudgetError();
 
     const optional: Array<{ message: RuntimeMessage; eventIds: string[] }> = [];
     if (input.projection.sessionMemorySummary) {
@@ -176,11 +186,13 @@ export class ContextProjector {
 
     const selected: RuntimeMessage[] = [];
     const includedEventIds = new Set([input.eventId]);
-    let used = estimateMessages(required) + toolSchemaTokens;
+    let used = requiredTokens;
+    let historyTokens = 0;
     for (const candidate of optional) {
       const cost = estimateMessage(candidate.message);
       if (used + cost <= budget) {
         selected.push(candidate.message);
+        historyTokens += cost;
         for (const eventId of candidate.eventIds) includedEventIds.add(eventId);
         used += cost;
       }
@@ -190,27 +202,16 @@ export class ContextProjector {
       messages: [stableMessage, ...selected, ...currentMessages],
       estimatedInputTokens: used,
       budgetTokens: budget,
+      tokenBreakdown: { fixedTokens, historyTokens, currentTurnTokens },
       includedEventIds: [...includedEventIds],
       promptEpoch: input.promptEpoch ?? 1,
       softTriggerTokens: Math.min(Math.floor(input.contextWindow * 0.8), budget),
     };
   }
 
-  private buildStableSystem(
-    tools: readonly ModelToolDefinition[],
-    skills: readonly SkillInstallation[],
-  ): string {
-    const enabledSkills = skills
-      .filter((skill) => skill.enabled && skill.status === 'valid')
-      .sort((left, right) => left.skillName.localeCompare(right.skillName));
-    const skillText =
-      enabledSkills.length === 0
-        ? '当前没有已启用的 Skill。'
-        : `可按需加载的 Skill：\n${enabledSkills
-            .map((skill) => `- ${skill.skillName}: ${skill.description}`)
-            .join('\n')}`;
+  private buildStableSystem(tools: readonly ModelToolDefinition[]): string {
     const toolText = tools.map((tool) => tool.name).join('、') || '无';
-    return `${MINIMAL_SYSTEM_PROMPT}\n\n${skillText}\n可用工具：${toolText}`;
+    return `${MINIMAL_SYSTEM_PROMPT}\n\n可用工具：${toolText}`;
   }
 }
 

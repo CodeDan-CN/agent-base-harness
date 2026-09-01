@@ -4,6 +4,7 @@ import type { SqliteRepositories } from '../infrastructure/sqlite/repositories';
 import { BridgeError } from '../shared/contracts/errors';
 import type { AppendEventInput, SessionLogEvent } from '../shared/domain/session';
 import type { LocalUserId } from '../shared/domain/user';
+import type { ApprovalResolution, PermissionPreset } from '../shared/domain/permission';
 import type { SessionEventBatch } from '../shared/contracts/ipc';
 import type { Clock, IdProvider } from '../shared/domain/ports';
 import {
@@ -23,7 +24,7 @@ import {
   projectRuntime,
   type RuntimeProjection,
 } from '../client-contracts/projection';
-import type { RuntimeTool, ToolRegistry } from './tools';
+import type { RuntimeTool, ScheduledToolCall, ToolExecutionContext, ToolRegistry } from './tools';
 import { ToolScheduler } from './tools';
 import { pruneToolResultText, selectCheckpointMessages } from './surface-compactor';
 
@@ -61,6 +62,13 @@ interface ActiveExecution extends DriverIdentity {
   controller: AbortController;
 }
 
+interface PendingApproval {
+  userId: LocalUserId;
+  sessionId: string;
+  toolIdentity: string;
+  resolve(resolution: ApprovalResolution): void;
+}
+
 export class RuntimeService {
   private readonly repos: SqliteRepositories;
   private readonly clock: Clock;
@@ -85,6 +93,7 @@ export class RuntimeService {
   private readonly running = new Map<string, Promise<void>>();
   private readonly active = new Map<string, ActiveExecution>();
   private readonly projectionCache = new Map<string, RuntimeProjection>();
+  private readonly pendingApprovals = new Map<string, PendingApproval>();
   private closed = false;
 
   constructor(deps: RuntimeServiceDeps) {
@@ -104,7 +113,11 @@ export class RuntimeService {
     this.memoryCompactionTriggerRatio = deps.options?.memoryCompactionTriggerRatio ?? 0.8;
     this.surfaceCompactionTriggerRatio = deps.options?.surfaceCompactionTriggerRatio ?? 0.8;
     this.compactionRetries = deps.options?.compactionRetries ?? 1;
-    this.scheduler = new ToolScheduler(deps.tools, deps.options?.toolParallelism ?? 4);
+    this.scheduler = new ToolScheduler(
+      deps.tools,
+      deps.options?.toolParallelism ?? 4,
+      (call, tool, context) => this.authorizeToolCall(call, tool, context),
+    );
   }
 
   createSession(userId: LocalUserId, input: { sessionId?: string; title: string }): unknown {
@@ -154,6 +167,92 @@ export class RuntimeService {
     }
     this.repos.sessions.archiveSession(userId, sessionId, this.clock.nowIso());
     return { sessionId };
+  }
+
+  setPermissionPreset(
+    userId: LocalUserId,
+    sessionId: string,
+    preset: PermissionPreset,
+  ): { sessionId: string; permissionPreset: PermissionPreset } {
+    this.requireActiveSession(userId, sessionId);
+    const session = this.requireSession(userId, sessionId);
+    if (this.load(userId, sessionId).activeTurn) {
+      throw new BridgeError('SESSION_BUSY', 'Stop the active turn before changing permissions');
+    }
+    if (session.permissionPreset === preset) {
+      return { sessionId, permissionPreset: preset };
+    }
+    this.append(userId, sessionId, [
+      this.event('permission.preset.changed', {
+        from: session.permissionPreset,
+        to: preset,
+      }),
+    ]);
+    return { sessionId, permissionPreset: preset };
+  }
+
+  resolveApproval(
+    userId: LocalUserId,
+    input: {
+      sessionId: string;
+      approvalId: string;
+      resolution: ApprovalResolution;
+      idempotencyKey: string;
+    },
+  ): { approvalId: string; resolution: ApprovalResolution } {
+    const existing = this.repos.sessions.findByIdempotencyKey(
+      userId,
+      input.sessionId,
+      input.idempotencyKey,
+    );
+    if (existing) {
+      const payload = asRecord(existing.payload);
+      if (
+        stringAt(payload, 'approvalId') !== input.approvalId ||
+        stringAt(payload, 'resolution') !== input.resolution
+      ) {
+        throw new BridgeError('IDEMPOTENCY_CONFLICT', 'Idempotency key was reused');
+      }
+      return { approvalId: input.approvalId, resolution: input.resolution };
+    }
+    const projection = this.load(userId, input.sessionId);
+    const approval = projection.approvals.get(input.approvalId);
+    const pending = this.pendingApprovals.get(input.approvalId);
+    if (
+      !approval ||
+      approval.status !== 'pending' ||
+      !pending ||
+      pending.userId !== userId ||
+      pending.sessionId !== input.sessionId
+    ) {
+      throw new BridgeError('INTERACTION_NOT_PENDING', 'Approval is not pending');
+    }
+    this.renewLease({ userId, sessionId: input.sessionId });
+    const events: AppendEventInput[] = [
+      this.event(
+        'approval.resolved',
+        {
+          approvalId: input.approvalId,
+          toolIdentity: approval.toolIdentity,
+          resolution: input.resolution,
+        },
+        null,
+        input.idempotencyKey,
+      ),
+    ];
+    if (input.resolution === 'session-granted') {
+      events.push(
+        this.event('permission.grant.created', {
+          approvalId: input.approvalId,
+          toolIdentity: approval.toolIdentity,
+          scope: 'session',
+        }),
+      );
+    }
+    this.append(userId, input.sessionId, events);
+    this.pendingApprovals.delete(input.approvalId);
+    pending.resolve(input.resolution);
+    return { approvalId: input.approvalId, resolution: input.resolution };
   }
 
   submitInput(
@@ -583,6 +682,16 @@ export class RuntimeService {
               },
             ]);
           const events: AppendEventInput[] = [];
+          for (const approval of projection.approvals.values()) {
+            if (approval.status !== 'pending' || approval.turnId !== turn.id) continue;
+            events.push(
+              this.event('approval.resolved', {
+                approvalId: approval.id,
+                toolIdentity: approval.toolIdentity,
+                resolution: 'unavailable',
+              }),
+            );
+          }
           for (const pendingCall of unresolvedToolCalls(rawEvents, turn.id)) {
             events.push(
               this.event('tool.result', {
@@ -640,6 +749,8 @@ export class RuntimeService {
 
   close(): void {
     this.closed = true;
+    for (const pending of this.pendingApprovals.values()) pending.resolve('unavailable');
+    this.pendingApprovals.clear();
     for (const execution of this.active.values()) execution.controller.abort();
     while (this.sessionWaiters.length > 0) this.sessionWaiters.shift()?.();
   }
@@ -824,7 +935,7 @@ export class RuntimeService {
             turnId,
             contextWindow: model.contextWindow,
             inputCapability: model.inputCapability,
-            reservedOutputTokens: Math.min(this.reservedOutputTokens, model.maxOutputTokens),
+            reservedOutputTokens: this.outputReservationTokens(model),
             safetyTokens: this.safetyTokens,
             tools: availableTools,
             skills,
@@ -852,6 +963,7 @@ export class RuntimeService {
               promptEpoch: context.promptEpoch,
               estimatedInputTokens: context.estimatedInputTokens,
               budgetTokens: context.budgetTokens,
+              tokenBreakdown: context.tokenBreakdown,
               includedEventIds: context.includedEventIds,
               skillRevision: revisions.skillRevision,
               runtimeRevision: revisions.runtimeRevision,
@@ -990,10 +1102,7 @@ export class RuntimeService {
                     turnId,
                     contextWindow: model.contextWindow,
                     inputCapability: model.inputCapability,
-                    reservedOutputTokens: Math.min(
-                      this.reservedOutputTokens,
-                      model.maxOutputTokens,
-                    ),
+                    reservedOutputTokens: this.outputReservationTokens(model),
                     safetyTokens: this.safetyTokens,
                     tools: availableTools,
                     skills,
@@ -1013,6 +1122,7 @@ export class RuntimeService {
                         promptEpoch: recovered.promptEpoch,
                         estimatedInputTokens: recovered.estimatedInputTokens,
                         budgetTokens: recovered.budgetTokens,
+                        tokenBreakdown: recovered.tokenBreakdown,
                         includedEventIds: recovered.includedEventIds,
                         skillRevision: revisions.skillRevision,
                         runtimeRevision: revisions.runtimeRevision,
@@ -1144,6 +1254,9 @@ export class RuntimeService {
             sessionId: identity.sessionId,
             eventId,
             turnId,
+            stepId,
+            permissionPreset: this.requireSession(identity.userId, identity.sessionId)
+              .permissionPreset,
             signal: controller.signal,
           });
           const resultEvents: AppendEventInput[] = [];
@@ -1175,6 +1288,7 @@ export class RuntimeService {
                   prompt: result.interaction.prompt,
                   kind: result.interaction.kind,
                   options: result.interaction.options ?? [],
+                  questions: result.interaction.questions,
                   schema: result.interaction.schema,
                 }),
               );
@@ -1320,6 +1434,10 @@ export class RuntimeService {
     return validateModelResponse(completed);
   }
 
+  private outputReservationTokens(model: ModelSnapshot): number {
+    return model.maxOutputTokens > 0 ? model.maxOutputTokens : this.reservedOutputTokens;
+  }
+
   private async compactBusinessMemoryIfNeeded(
     identity: DriverIdentity,
     turnId: string,
@@ -1338,14 +1456,16 @@ export class RuntimeService {
       turnId,
       contextWindow: model.contextWindow,
       inputCapability: model.inputCapability,
-      reservedOutputTokens: Math.min(this.reservedOutputTokens, model.maxOutputTokens),
+      reservedOutputTokens: this.outputReservationTokens(model),
       safetyTokens: this.safetyTokens,
       tools: this.tools.definitions(identity.userId, turnId),
       skills,
     });
     const trigger = Math.min(
       measurement.hardInputLimitTokens,
-      Math.floor(model.contextWindow * this.memoryCompactionTriggerRatio),
+      Math.floor(
+        model.contextWindow * (model.compactionTriggerRatio ?? this.memoryCompactionTriggerRatio),
+      ),
     );
     if (measurement.estimatedInputTokens < trigger) return;
     const visible = projection.messages.filter(
@@ -1455,7 +1575,7 @@ export class RuntimeService {
           turnId,
           contextWindow: model.contextWindow,
           inputCapability: model.inputCapability,
-          reservedOutputTokens: Math.min(this.reservedOutputTokens, model.maxOutputTokens),
+          reservedOutputTokens: this.outputReservationTokens(model),
           safetyTokens: this.safetyTokens,
           tools: this.tools.definitions(identity.userId, turnId),
           skills: this.repos.skills.listInstallations(identity.userId),
@@ -1467,7 +1587,10 @@ export class RuntimeService {
         });
         const trigger = Math.min(
           measurement.hardInputLimitTokens,
-          Math.floor(model.contextWindow * this.surfaceCompactionTriggerRatio),
+          Math.floor(
+            model.contextWindow *
+              (model.compactionTriggerRatio ?? this.surfaceCompactionTriggerRatio),
+          ),
         );
         if (!force && measurement.estimatedInputTokens < trigger) break;
         const shadowed = new Set(
@@ -1639,6 +1762,83 @@ export class RuntimeService {
       });
     }
     return changed;
+  }
+
+  private async authorizeToolCall(
+    call: ScheduledToolCall,
+    tool: RuntimeTool<unknown>,
+    context: Omit<ToolExecutionContext, 'toolCallId'>,
+  ): Promise<ApprovalResolution | 'not-required'> {
+    if (context.permissionPreset === 'full-access') {
+      return 'not-required';
+    }
+    const configuredPolicy = tool.resolveApprovalPolicy
+      ? tool.resolveApprovalPolicy(call.arguments, context)
+      : (tool.approvalPolicy ?? 'never');
+    const policy =
+      context.permissionPreset === 'approval-required' && tool.approvalScope === 'external'
+        ? 'always'
+        : configuredPolicy;
+    if (policy === 'never') return 'not-required';
+    const toolIdentity = tool.permissionIdentity ?? ['tool', tool.name].join(':');
+    const approvalId = this.ids.newId();
+    const argumentsDigest = createHash('sha256').update(safeJson(call.arguments)).digest('hex');
+    this.append(
+      context.userId as LocalUserId,
+      context.sessionId,
+      [
+        this.event('approval.requested', {
+          approvalId,
+          toolCallId: call.id,
+          toolName: tool.name,
+          toolIdentity,
+          argumentsDigest,
+          eventId: context.eventId,
+          turnId: context.turnId,
+          stepId: context.stepId,
+          policy,
+          presentation: presentToolCall(tool, call.arguments) ?? null,
+        }),
+      ],
+      true,
+    );
+    return new Promise<ApprovalResolution>((resolve) => {
+      let settled = false;
+      const finish = (resolution: ApprovalResolution) => {
+        if (settled) return;
+        settled = true;
+        context.signal.removeEventListener('abort', onAbort);
+        resolve(resolution);
+      };
+      const onAbort = () => {
+        this.pendingApprovals.delete(approvalId);
+        try {
+          this.append(
+            context.userId as LocalUserId,
+            context.sessionId,
+            [
+              this.event('approval.resolved', {
+                approvalId,
+                toolIdentity,
+                resolution: 'cancelled',
+              }),
+            ],
+            true,
+          );
+        } catch {
+          // Turn cancellation remains authoritative if the approval audit cannot be appended.
+        }
+        finish('cancelled');
+      };
+      this.pendingApprovals.set(approvalId, {
+        userId: context.userId as LocalUserId,
+        sessionId: context.sessionId,
+        toolIdentity,
+        resolve: finish,
+      });
+      if (context.signal.aborted) onAbort();
+      else context.signal.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   private append(
@@ -1837,11 +2037,21 @@ function validInteractionValue(
   interaction: RuntimeProjection['interactions'] extends Map<string, infer T> ? T : never,
   value: unknown,
 ): boolean {
+  if (interaction.questions.length > 0) {
+    const answers = asRecord(value);
+    return Boolean(
+      answers &&
+      interaction.questions.every((question) => {
+        const answer = answers[question.id];
+        return typeof answer === 'string' && answer.trim().length > 0;
+      }),
+    );
+  }
   if (interaction.kind === 'confirm' || interaction.kind === 'approval') {
     return typeof value === 'boolean';
   }
   if (interaction.kind === 'select' || interaction.kind === 'selection') {
-    return typeof value === 'string' && interaction.options.includes(value);
+    return typeof value === 'string' && value.trim().length > 0;
   }
   if (interaction.kind === 'form') {
     return matchesJsonSchema(value, interaction.schema ?? { type: 'object' });
@@ -1928,6 +2138,8 @@ function serializeProjection(session: unknown, projection: RuntimeProjection): u
     turns: [...projection.turns.values()],
     messages: projection.messages,
     interactions: [...projection.interactions.values()],
+    approvals: [...projection.approvals.values()],
+    permissionGrants: [...projection.permissionGrants],
     trajectory: {
       steps: [...projection.steps.values()],
       toolCalls: [...projection.toolCalls.values()],
@@ -2017,7 +2229,13 @@ function redactDiagnosticEvent(event: SessionLogEvent): SessionLogEvent {
   if (event.eventType === 'interaction.requested') {
     return {
       ...event,
-      payload: { ...payload, prompt: '[redacted]', options: '[redacted]', schema: '[redacted]' },
+      payload: {
+        ...payload,
+        prompt: '[redacted]',
+        options: '[redacted]',
+        questions: '[redacted]',
+        schema: '[redacted]',
+      },
     };
   }
   if (event.eventType === 'interaction.resolved') {
