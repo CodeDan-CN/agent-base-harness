@@ -16,7 +16,13 @@ import {
 } from '../client-contracts/runtime';
 import { ContextBudgetError, ContextProjector } from './context-projector';
 import { estimateTextTokens } from './context-projector';
-import type { LlmAdapter, LlmAdapterRegistry, ModelResponse, ModelSnapshot } from './model';
+import type {
+  LlmAdapter,
+  LlmAdapterRegistry,
+  ModelResponse,
+  ModelSnapshot,
+  ModelToolDefinition,
+} from './model';
 import { validateModelResponse } from './model';
 import {
   applyRuntimeEvent,
@@ -27,6 +33,7 @@ import {
 import type { RuntimeTool, ScheduledToolCall, ToolExecutionContext, ToolRegistry } from './tools';
 import { ToolScheduler } from './tools';
 import { pruneToolResultText, selectCheckpointMessages } from './surface-compactor';
+import { modelToolsForPermission } from './permission-tool-policy';
 
 export interface RuntimeServiceOptions {
   leaseDurationMs?: number;
@@ -903,7 +910,14 @@ export class RuntimeService {
           return;
         }
         stepIndex += 1;
-        const availableTools = this.tools.definitions(identity.userId, turnId);
+        const permissionPreset = this.requireSession(
+          identity.userId,
+          identity.sessionId,
+        ).permissionPreset;
+        const availableTools = modelToolsForPermission(
+          this.tools.definitions(identity.userId, turnId),
+          permissionPreset,
+        );
         const stepId = this.ids.newId();
         if (stepIndex === 1) {
           await this.compactBusinessMemoryIfNeeded(
@@ -913,6 +927,8 @@ export class RuntimeService {
             model,
             adapter,
             controller.signal,
+            availableTools,
+            permissionPreset,
           );
         }
         await this.compactSurfaceIfNeeded(
@@ -922,6 +938,8 @@ export class RuntimeService {
           model,
           adapter,
           controller.signal,
+          availableTools,
+          permissionPreset,
         );
         const projectedForContext = this.load(identity.userId, identity.sessionId);
 
@@ -939,6 +957,7 @@ export class RuntimeService {
             safetyTokens: this.safetyTokens,
             tools: availableTools,
             skills,
+            permissionPreset,
             promptEpoch: 1 + revisions.skillRevision + revisions.mcpRevision,
           });
         } catch (error) {
@@ -1092,6 +1111,8 @@ export class RuntimeService {
                   model,
                   adapter,
                   controller.signal,
+                  availableTools,
+                  permissionPreset,
                   true,
                 );
                 if (surfaceChanged) {
@@ -1106,6 +1127,7 @@ export class RuntimeService {
                     safetyTokens: this.safetyTokens,
                     tools: availableTools,
                     skills,
+                    permissionPreset,
                     promptEpoch: 1 + revisions.skillRevision + revisions.mcpRevision,
                   });
                   context = recovered;
@@ -1255,8 +1277,7 @@ export class RuntimeService {
             eventId,
             turnId,
             stepId,
-            permissionPreset: this.requireSession(identity.userId, identity.sessionId)
-              .permissionPreset,
+            permissionPreset,
             signal: controller.signal,
           });
           const resultEvents: AppendEventInput[] = [];
@@ -1445,6 +1466,8 @@ export class RuntimeService {
     model: ModelSnapshot,
     adapter: NonNullable<ReturnType<LlmAdapterRegistry['get']>>,
     signal: AbortSignal,
+    availableTools: readonly ModelToolDefinition[],
+    permissionPreset: PermissionPreset,
   ): Promise<void> {
     const projection = this.load(identity.userId, identity.sessionId);
     const event = projection.events.get(eventId);
@@ -1458,8 +1481,9 @@ export class RuntimeService {
       inputCapability: model.inputCapability,
       reservedOutputTokens: this.outputReservationTokens(model),
       safetyTokens: this.safetyTokens,
-      tools: this.tools.definitions(identity.userId, turnId),
+      tools: availableTools,
       skills,
+      permissionPreset,
     });
     const trigger = Math.min(
       measurement.hardInputLimitTokens,
@@ -1563,6 +1587,8 @@ export class RuntimeService {
     model: ModelSnapshot,
     adapter: NonNullable<ReturnType<LlmAdapterRegistry['get']>>,
     signal: AbortSignal,
+    availableTools: readonly ModelToolDefinition[],
+    permissionPreset: PermissionPreset,
     force = false,
   ): Promise<boolean> {
     let changed = false;
@@ -1577,8 +1603,9 @@ export class RuntimeService {
           inputCapability: model.inputCapability,
           reservedOutputTokens: this.outputReservationTokens(model),
           safetyTokens: this.safetyTokens,
-          tools: this.tools.definitions(identity.userId, turnId),
+          tools: availableTools,
           skills: this.repos.skills.listInstallations(identity.userId),
+          permissionPreset,
           promptEpoch: 1 + revisions.skillRevision + revisions.mcpRevision,
         };
         let measurement = this.contextProjector.measureFull({

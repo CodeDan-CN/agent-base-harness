@@ -55,6 +55,11 @@ Thumbs.db
 
 reference_ui/
 
-scripts/
+scripts/*
+!scripts/agent-travel-benchmark.mjs
+!scripts/generate-travel-agent-comparison.mjs
 
-tests/
+tests/*
+!tests/unit/
+tests/unit/*
+!tests/unit/agent-travel-benchmark.test.ts

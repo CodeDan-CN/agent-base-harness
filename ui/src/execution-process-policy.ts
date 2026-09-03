@@ -25,6 +25,10 @@ export interface ExecutionPhase<
   reasoning: Reasoning | null;
 }
 
+export function shouldAutoExpandExecutionProcess(status: string | undefined): boolean {
+  return status === 'running';
+}
+
 /**
  * 以模型实际返回的 reasoning 作为新的展示阶段边界。
  * 后续未返回新 reasoning 的串行工具调用继续追加到最近阶段；同一步里的并行工具按 callIndex 排列。

@@ -224,6 +224,7 @@ AppShell
 - Queue 行提供“立刻介入”按钮，调用 `inbox.promote(sessionId, inboxItemId, expectedTurnId)`；它只把已有 Queue Item 提升到当前 Turn 的 `next-step`，不重复发送、不取消模型或工具。
 - 如产品同时提供直接“补充当前任务”，它使用 `input.submit(mode='steer')`，与“先排队、后介入”共享相同 next-step 安全边界，但来源和轨迹应可区分。
 - 本地输入草稿不是已接纳事实；Command 返回 accepted 后等待 Projection。
+- 输入法处于 composition/候选确认状态时，Enter 只确认输入法候选，不触发发送；仅在组合输入结束后，普通 Enter 才发送，Shift + Enter 始终换行。
 - 附件先通过系统选择器和 `attachment.import` 变为受控引用，再随输入提交引用 ID。具体采用稳定摄取主链路与可插拔 Loader Registry，默认只会话化保留派生内容，见 `../设计文档/09-附件摄取与可插拔加载器设计.md`。
 
 ### 5.4 M04 执行与控制
@@ -234,7 +235,7 @@ Queue 面板来自 InboxProjection，支持 remove/replace/promote。“立刻�
 
 如果 `expectedTurnId` 已变化、Item 已被 claim 或当前 Turn 已结束，UI 保留该 Queue 行，显示“当前任务已变化，消息仍在队列”，并重取 Session Snapshot。不得自动把它介入新的 Turn。
 
-Cancel 默认保留 next-turn、清理 next-step；按钮发送后进入 cancelling，直至 Projection 收到终态。Interaction 根据 Schema 渲染审批、单/多选或表单，提交前前端预校验，Worker 再做权威校验。
+Cancel 默认保留 next-turn、清理 next-step；按钮发送后进入 cancelling，直至 Projection 收到终态。Interaction 根据 Schema 渲染审批、单/多选或表单，提交前前端预校验，Worker 再做权威校验。Interaction 回答只作为内部续接输入进入模型上下文，不渲染成新的用户消息；回答前后的 Turn 在 UI 中合并为同一执行过程，回答本身显示为“用户回答”步骤。
 
 ### 5.5 M05 Model Management
 

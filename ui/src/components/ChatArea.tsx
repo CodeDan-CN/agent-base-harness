@@ -26,6 +26,7 @@ import { ProducedFiles } from './ProducedFiles';
 import { producedFilesForMessage } from '../produced-files';
 import { approvalDisplay } from '../approval-presentation';
 import {
+  interactionExecutionTurnIds,
   isExecutionProcessAssistant,
   selectTemporaryAssistantMessage,
   shouldRenderExecutionForMessage,
@@ -69,7 +70,7 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
     () =>
       allMessages.filter(
         (message) =>
-          message.role === 'user' ||
+          (message.role === 'user' && !message.interactionId) ||
           (message.role === 'assistant' &&
             !isExecutionProcessAssistant({
               role: message.role,
@@ -80,6 +81,10 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
   );
   const active = projection?.activeTurn ?? null;
   const executionTurn = active ?? [...(projection?.turns.values() ?? [])].at(-1) ?? null;
+  const interactions = [...(projection?.interactions.values() ?? [])];
+  const executionTurnIds = executionTurn
+    ? interactionExecutionTurnIds(interactions, executionTurn.id)
+    : [];
   const runningStream = useMemo(
     () => [...(projection?.streams.values() ?? [])].reverse().find((stream) => !stream.finalized),
     [projection],
@@ -223,7 +228,7 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                       }) && (
                         <ExecutionProcess
                           projection={projection}
-                          turnId={message.turnId}
+                          turnIds={interactionExecutionTurnIds(interactions, message.turnId)}
                           sessionId={props.sessionId}
                           onOpenError={props.onNotifyError}
                         />
@@ -267,7 +272,7 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                 <div className="assistant-block">
                   <ExecutionProcess
                     projection={projection}
-                    turnId={executionTurn.id}
+                    turnIds={executionTurnIds}
                     sessionId={props.sessionId}
                     onOpenError={props.onNotifyError}
                   />
@@ -286,7 +291,7 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                 <div className="assistant-block">
                   <ExecutionProcess
                     projection={projection}
-                    turnId={executionTurn.id}
+                    turnIds={executionTurnIds}
                     sessionId={props.sessionId}
                     onOpenError={props.onNotifyError}
                   />
@@ -404,27 +409,13 @@ function InteractionCard({
   }, [interaction.id]);
 
   return (
-    <section className="interaction-card">
-      <span className="interaction-label">需要你的回答</span>
-      <p>{interaction.prompt}</p>
+    <section className="interaction-card" aria-label="需要你的回答">
+      {!hasQuestions && <span className="interaction-label">需要你的回答</span>}
+      {!hasQuestions && <p>{interaction.prompt}</p>}
       {!confirmation && activeQuestion && (
         <div className="interaction-questions">
-          <div className="interaction-pagination" aria-label="问题进度">
-            <span>
-              {questionIndex + 1} / {questions.length}
-            </span>
-            <div aria-hidden="true">
-              {questions.map((question, index) => (
-                <i
-                  className={`${index === questionIndex ? 'active' : ''} ${answers[question.id] ? 'answered' : ''}`}
-                  key={question.id}
-                />
-              ))}
-            </div>
-          </div>
           <fieldset className="interaction-question" key={activeQuestion.id}>
             <legend>
-              <small>{activeQuestion.header ?? `问题 ${questionIndex + 1}`}</small>
               <span>{activeQuestion.question}</span>
             </legend>
             <ChoiceOptions
@@ -478,41 +469,72 @@ function InteractionCard({
           placeholder="请输入回复"
         />
       )}
-      <div className="interaction-actions">
-        <button className="secondary" onClick={() => onResolve(interaction.id, null, 'cancelled')}>
-          <X size={14} /> 取消
-        </button>
-        {confirmation && (
+      <div className={`interaction-footer ${hasQuestions ? '' : 'actions-only'}`}>
+        {hasQuestions && (
+          <div className="interaction-pagination" aria-label="问题进度">
+            <span>
+              {questionIndex + 1} / {questions.length}
+            </span>
+            <div aria-hidden="true">
+              {questions.map((question, index) => (
+                <i
+                  className={`${index === questionIndex ? 'active' : ''} ${answers[question.id] ? 'answered' : ''}`}
+                  key={question.id}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="interaction-actions">
           <button
-            className="secondary danger"
-            onClick={() => onResolve(interaction.id, false, 'rejected')}
+            className="secondary icon-action"
+            aria-label="取消"
+            title="取消"
+            onClick={() => onResolve(interaction.id, null, 'cancelled')}
           >
-            拒绝
+            <X size={14} />
           </button>
-        )}
-        {hasQuestions && questionIndex > 0 && (
-          <button className="secondary" onClick={() => setQuestionIndex((index) => index - 1)}>
-            <ChevronLeft size={14} /> 上一题
-          </button>
-        )}
-        {hasQuestions && !lastQuestion && (
-          <button
-            className="primary"
-            disabled={!activeQuestionAnswered}
-            onClick={() => setQuestionIndex((index) => index + 1)}
-          >
-            下一题 <ChevronRight size={14} />
-          </button>
-        )}
-        {(!hasQuestions || lastQuestion) && (
-          <button
-            className="primary"
-            disabled={!canSubmit}
-            onClick={() => onResolve(interaction.id, confirmation ? true : submittedValue)}
-          >
-            <Check size={14} /> 提交
-          </button>
-        )}
+          {confirmation && (
+            <button
+              className="secondary danger"
+              onClick={() => onResolve(interaction.id, false, 'rejected')}
+            >
+              拒绝
+            </button>
+          )}
+          {hasQuestions && questionIndex > 0 && (
+            <button
+              className="secondary icon-action"
+              aria-label="上一题"
+              title="上一题"
+              onClick={() => setQuestionIndex((index) => index - 1)}
+            >
+              <ChevronLeft size={14} />
+            </button>
+          )}
+          {hasQuestions && !lastQuestion && (
+            <button
+              className="primary icon-action"
+              aria-label="下一题"
+              title="下一题"
+              disabled={!activeQuestionAnswered}
+              onClick={() => setQuestionIndex((index) => index + 1)}
+            >
+              <ChevronRight size={14} />
+            </button>
+          )}
+          {(!hasQuestions || lastQuestion) && (
+            <button
+              className={`primary ${hasQuestions ? 'icon-action' : ''}`}
+              aria-label={hasQuestions ? '提交回答' : undefined}
+              title={hasQuestions ? '提交回答' : undefined}
+              disabled={!canSubmit}
+              onClick={() => onResolve(interaction.id, confirmation ? true : submittedValue)}
+            >
+              <Check size={hasQuestions ? 14 : 13} /> {!hasQuestions && '提交'}
+            </button>
+          )}
+        </div>
       </div>
     </section>
   );

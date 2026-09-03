@@ -8,6 +8,8 @@ export interface ProjectedMessage {
   content: string;
   eventId: string;
   turnId: string;
+  inboxItemId?: string;
+  interactionId?: string;
   stepId?: string;
   toolCallId?: string;
   toolCalls?: ModelToolCallProjection[];
@@ -44,6 +46,7 @@ export interface ProjectedTurn {
 
 export interface ProjectedInteraction {
   id: string;
+  toolCallId?: string;
   eventId: string;
   turnId: string;
   status: 'pending' | 'resolved';
@@ -54,6 +57,8 @@ export interface ProjectedInteraction {
   schema: Record<string, unknown> | null;
   resolution?: string;
   value?: unknown;
+  inboxItemId?: string;
+  continuationTurnId?: string;
 }
 
 export interface ProjectedInteractionQuestion {
@@ -606,12 +611,22 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
       const eventId = stringAt(payload, 'eventId');
       const turnId = stringAt(payload, 'turnId');
       if (content === undefined || !eventId || !turnId) break;
+      const inboxItemId = stringAt(payload, 'inboxItemId');
+      const sourceInteraction =
+        event.eventType === 'user.message' && inboxItemId
+          ? [...state.interactions.values()].find(
+              (interaction) => interaction.inboxItemId === inboxItemId,
+            )
+          : undefined;
+      if (sourceInteraction) sourceInteraction.continuationTurnId = turnId;
       state.messages.push({
         seq: event.seq,
         role: event.eventType === 'user.message' ? 'user' : 'assistant',
         content,
         eventId,
         turnId,
+        inboxItemId,
+        interactionId: sourceInteraction?.id,
         stepId: stringAt(payload, 'stepId'),
       });
       if (event.eventType === 'assistant.message') {
@@ -699,6 +714,7 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
       if (!id || !eventId || !turnId) break;
       state.interactions.set(id, {
         id,
+        toolCallId: stringAt(payload, 'toolCallId'),
         eventId,
         turnId,
         status: 'pending',
@@ -717,6 +733,11 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
         target.status = 'resolved';
         target.value = payload?.value;
         target.resolution = stringAt(payload, 'resolution') ?? 'submitted';
+        target.inboxItemId = stringAt(payload, 'inboxItemId');
+        const toolCall = target.toolCallId ? state.toolCalls.get(target.toolCallId) : undefined;
+        if (toolCall?.status === 'needs_input') {
+          toolCall.status = target.resolution === 'submitted' ? 'answered' : target.resolution;
+        }
       }
       break;
     }

@@ -11,99 +11,152 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { RuntimeProjection } from '@client-contracts';
-import { groupExecutionPhases } from '../execution-process-policy';
+import {
+  groupExecutionPhases,
+  shouldAutoExpandExecutionProcess,
+} from '../execution-process-policy';
 import { ContextTokenRing, formatCompactToken, formatOptionalToken } from './ContextTokenRing';
 import { MarkdownContent } from './MarkdownContent';
 
 interface ExecutionProcessProps {
   projection: RuntimeProjection;
-  turnId: string;
+  turnIds: readonly string[];
   sessionId: string | null;
   onOpenError?(message: string): void;
 }
 
 export function ExecutionProcess({
   projection,
-  turnId,
+  turnIds,
   sessionId,
   onOpenError,
 }: ExecutionProcessProps): JSX.Element | null {
-  const [expanded, setExpanded] = useState(true);
-  const turn = projection.turns.get(turnId);
-  if (!turn) return null;
-  const steps = [...projection.steps.values()]
-    .filter((step) => step.turnId === turn.id)
-    .sort((left, right) => left.stepIndex - right.stepIndex);
-  if (steps.length === 0) return null;
-  const tools = [...projection.toolCalls.values()].filter((tool) => tool.turnId === turn.id);
-  const reasoning = [...projection.reasoning.values()].filter((item) => item.turnId === turn.id);
-  const phases = groupExecutionPhases({ steps, tools, reasoning });
-  if (phases.length === 0) return null;
+  const turns = turnIds
+    .map((turnId) => projection.turns.get(turnId))
+    .filter((turn) => turn !== undefined);
+  const latestTurn = turns.at(-1);
+  const [expanded, setExpanded] = useState(() =>
+    shouldAutoExpandExecutionProcess(latestTurn?.status),
+  );
+
+  useEffect(() => {
+    setExpanded(shouldAutoExpandExecutionProcess(latestTurn?.status));
+  }, [latestTurn?.id, latestTurn?.status]);
+
+  if (!latestTurn) return null;
+
+  let nextStepIndex = 1;
+  const sections = turns.map((turn, turnIndex) => {
+    const steps = [...projection.steps.values()]
+      .filter((step) => step.turnId === turn.id)
+      .sort((left, right) => left.stepIndex - right.stepIndex)
+      .map((step) => ({ ...step, stepIndex: nextStepIndex++ }));
+    const tools = [...projection.toolCalls.values()].filter((tool) => tool.turnId === turn.id);
+    const reasoning = [...projection.reasoning.values()].filter((item) => item.turnId === turn.id);
+    const nextTurnId = turns[turnIndex + 1]?.id;
+    const interaction = nextTurnId
+      ? [...projection.interactions.values()].find(
+          (item) => item.turnId === turn.id && item.continuationTurnId === nextTurnId,
+        )
+      : undefined;
+    const interactionStepIndex = interaction ? nextStepIndex++ : null;
+    return {
+      interaction,
+      interactionStepIndex,
+      phases: groupExecutionPhases({ steps, tools, reasoning }),
+      steps,
+    };
+  });
+  const steps = sections.flatMap((section) => section.steps);
+  const interactionStepCount = sections.filter((section) => section.interaction).length;
+  if (sections.every((section) => section.phases.length === 0) && interactionStepCount === 0) {
+    return null;
+  }
   return (
     <section className="execution-card" aria-label="执行过程">
-      <button className="execution-header" onClick={() => setExpanded(!expanded)}>
+      <button
+        className="execution-header"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+      >
         <span>
           {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-          {turn.status === 'running' && <Loader2 className="spin" size={16} />}
+          {latestTurn.status === 'running' && <Loader2 className="spin" size={16} />}
           执行过程
         </span>
         <small>
-          {turn.status === 'running'
-            ? `已完成 ${Math.max(0, steps.length - 1)} 步`
-            : statusText(turn.status, turn.endReason)}
+          {latestTurn.status === 'running'
+            ? `已完成 ${
+                steps.filter((step) => step.status !== 'running').length + interactionStepCount
+              } 步`
+            : statusText(latestTurn.status, latestTurn.endReason)}
         </small>
       </button>
       {expanded && (
         <div className="execution-body">
-          {phases.map((phase) => {
-            const firstStep = phase.steps[0];
-            const latestStep = phase.steps.at(-1) ?? firstStep;
-            if (!firstStep || !latestStep) return null;
-            const stepLabel =
-              firstStep.stepIndex === latestStep.stepIndex
-                ? `步骤 ${firstStep.stepIndex}`
-                : `步骤 ${firstStep.stepIndex}–${latestStep.stepIndex}`;
-            return (
-              <div className="execution-step" key={firstStep.id}>
-                <div className="step-heading">
-                  <StatusIcon status={latestStep.status} />
-                  <span>{stepLabel}</span>
-                  <small>
-                    {latestStep.requestContext
-                      ? `上下文约 ${latestStep.requestContext.estimatedInputTokens} Token`
-                      : '准备模型请求'}
-                  </small>
-                </div>
-
-                {phase.reasoning && (
-                  <ReasoningPanel
-                    content={phase.reasoning.content}
-                    finalized={phase.reasoning.finalized}
-                    sessionId={sessionId}
-                    onOpenError={onOpenError}
-                  />
-                )}
-
-                {phase.tools.length > 0 && (
-                  <section className="tool-execution-panel" aria-label="执行内容">
-                    <div className="execution-section-title">
-                      <Wrench size={13} />
-                      <span>执行内容</span>
+          {sections.map((section, sectionIndex) => (
+            <div key={turns[sectionIndex]?.id}>
+              {section.phases.map((phase) => {
+                const firstStep = phase.steps[0];
+                const latestStep = phase.steps.at(-1) ?? firstStep;
+                if (!firstStep || !latestStep) return null;
+                const stepLabel =
+                  firstStep.stepIndex === latestStep.stepIndex
+                    ? `步骤 ${firstStep.stepIndex}`
+                    : `步骤 ${firstStep.stepIndex}–${latestStep.stepIndex}`;
+                return (
+                  <div className="execution-step" key={firstStep.id}>
+                    <div className="step-heading">
+                      <StatusIcon status={latestStep.status} />
+                      <span>{stepLabel}</span>
+                      <small>
+                        {latestStep.requestContext
+                          ? `上下文约 ${latestStep.requestContext.estimatedInputTokens} Token`
+                          : '准备模型请求'}
+                      </small>
                     </div>
-                    {phase.tools.map((tool) => (
-                      <ToolCallCard
-                        key={`${tool.id}-${tool.status}`}
-                        tool={tool}
+
+                    {phase.reasoning && (
+                      <ReasoningPanel
+                        content={phase.reasoning.content}
+                        finalized={phase.reasoning.finalized}
                         sessionId={sessionId}
                         onOpenError={onOpenError}
                       />
-                    ))}
-                  </section>
-                )}
-              </div>
-            );
-          })}
-          <ExecutionContextTokenIndicator projection={projection} turnId={turn.id} steps={steps} />
+                    )}
+
+                    {phase.tools.length > 0 && (
+                      <section className="tool-execution-panel" aria-label="执行内容">
+                        <div className="execution-section-title">
+                          <Wrench size={13} />
+                          <span>执行内容</span>
+                        </div>
+                        {phase.tools.map((tool) => (
+                          <ToolCallCard
+                            key={`${tool.id}-${tool.status}`}
+                            tool={tool}
+                            sessionId={sessionId}
+                            onOpenError={onOpenError}
+                          />
+                        ))}
+                      </section>
+                    )}
+                  </div>
+                );
+              })}
+              {section.interaction && section.interactionStepIndex !== null && (
+                <InteractionAnswerStep
+                  interaction={section.interaction}
+                  stepIndex={section.interactionStepIndex}
+                />
+              )}
+            </div>
+          ))}
+          <ExecutionContextTokenIndicator
+            projection={projection}
+            turnIds={turns.map((turn) => turn.id)}
+            steps={steps}
+          />
         </div>
       )}
     </section>
@@ -164,19 +217,66 @@ function ReasoningPanel({
   );
 }
 
+type Interaction = RuntimeProjection['interactions'] extends Map<string, infer Item> ? Item : never;
+
+function InteractionAnswerStep({
+  interaction,
+  stepIndex,
+}: {
+  interaction: Interaction;
+  stepIndex: number;
+}): JSX.Element {
+  return (
+    <div className="execution-step interaction-answer-step">
+      <div className="step-heading">
+        <CheckCircle2 className="status-success" size={16} />
+        <span>步骤 {stepIndex} · 用户回答</span>
+        <small>已继续执行</small>
+      </div>
+      <p>{interactionAnswerText(interaction)}</p>
+    </div>
+  );
+}
+
+function interactionAnswerText(interaction: Interaction): string {
+  if (typeof interaction.value === 'string') return interaction.value;
+  if (typeof interaction.value === 'boolean') return interaction.value ? '确认' : '拒绝';
+  if (
+    interaction.value &&
+    typeof interaction.value === 'object' &&
+    !Array.isArray(interaction.value)
+  ) {
+    const answers = interaction.value as Record<string, unknown>;
+    const fields = interaction.questions
+      .map((question) => {
+        const value = answers[question.id];
+        if (value === undefined || value === null || value === '') return null;
+        return `${question.header ?? question.question}：${String(value)}`;
+      })
+      .filter((value): value is string => Boolean(value));
+    if (fields.length > 0) return fields.join('；');
+  }
+  try {
+    return JSON.stringify(interaction.value) ?? '已提交回答';
+  } catch {
+    return '已提交回答';
+  }
+}
+
 function ExecutionContextTokenIndicator({
   projection,
-  turnId,
+  turnIds,
   steps,
 }: {
   projection: RuntimeProjection;
-  turnId: string;
+  turnIds: readonly string[];
   steps: Array<RuntimeProjection['steps'] extends Map<string, infer Item> ? Item : never>;
 }): JSX.Element {
   const latestStep = [...steps].reverse().find((step) => step.requestContext);
   const context = latestStep?.requestContext;
-  const replacements = projection.surfaceReplacements.filter(
-    (replacement) => replacement.turnId === turnId,
+  const turnIdSet = new Set(turnIds);
+  const replacements = projection.surfaceReplacements.filter((replacement) =>
+    turnIdSet.has(replacement.turnId),
   );
   const compressedTokens = replacements.reduce(
     (total, replacement) => total + Math.max(0, replacement.tokensBefore - replacement.tokensAfter),
@@ -299,6 +399,7 @@ function toolStatus(status: string): string {
   if (status === 'running') return '执行中';
   if (status === 'success') return '已完成';
   if (status === 'needs_input') return '等待用户';
+  if (status === 'answered') return '已回答';
   return status.includes('error') ? '失败' : status;
 }
 

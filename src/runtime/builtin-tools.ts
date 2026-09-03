@@ -40,7 +40,7 @@ export function createBuiltinTools(deps: BuiltinToolDeps): RuntimeTool<unknown>[
   ];
 }
 
-function requestUserInputTool(): RuntimeTool<never> {
+function requestUserInputTool(): RuntimeTool<string> {
   const question = z
     .object({
       id: z.string().min(1).max(64),
@@ -56,6 +56,7 @@ function requestUserInputTool(): RuntimeTool<never> {
       options: z.array(z.string().min(1)).max(20).optional(),
       questions: z.array(question).min(1).max(6).optional(),
       schema: z.record(z.unknown()).optional(),
+      requiresUserProvidedFact: z.boolean().default(false),
     })
     .strict()
     .refine(
@@ -97,17 +98,26 @@ function requestUserInputTool(): RuntimeTool<never> {
           },
         },
         schema: { type: 'object' },
+        requiresUserProvidedFact: {
+          type: 'boolean',
+          default: false,
+          description:
+            '仅当缺少不可推断且任务无法继续的用户事实时设为 true；不得用于偏好、方案、格式、可逆选择或任何密码、验证码、API Key。',
+        },
       },
       required: ['prompt'],
       additionalProperties: false,
     },
-    output: { schema: {}, render: textContent },
+    output: { schema: {}, render: (_args, value) => textContent(value) },
     concurrencySafe: false,
     replaySafe: true,
     exclusive: true,
     timeoutMs: 5_000,
-    async execute(raw) {
+    async execute(raw, context) {
       const parsed = input.parse(raw);
+      if (context.permissionPreset === 'full-access' && !parsed.requiresUserProvidedFact) {
+        return '完全访问：此项由模型自主决定。请选择风险最低、可逆且符合目标的方案继续；不得编造不可推断事实。';
+      }
       throw new ToolInteractionError({
         ...parsed,
         kind: parsed.questions?.length ? 'form' : parsed.kind,

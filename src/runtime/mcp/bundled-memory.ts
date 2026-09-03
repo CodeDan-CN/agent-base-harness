@@ -6,10 +6,12 @@ export const BUNDLED_MEMORY_SERVER_NAME = 'memory';
 export const BUNDLED_NODE_COMMAND = 'runtime://node';
 export const BUNDLED_MEMORY_ENTRYPOINT = 'runtime://mcp/memory';
 export const BUNDLED_MEMORY_DATA_FILE = 'runtime://mcp-data/memory.jsonl';
+export const BUNDLED_MEMORY_SERVER_SUMMARY =
+  '提供本地知识图谱式长期记忆，用于记住、跨会话保存和召回用户明确要求保留的偏好、事实、约束与工作流程。';
 
 /**
  * 首次提供 Bundled Runtime 时为每个内置用户建立一条可删除的默认配置。
- * 已存在同名配置（包括已归档配置）时不恢复，尊重用户的编辑和删除选择。
+ * 旧的内置配置仅在简介为空时回填；同名、已编辑或已归档配置不覆盖。
  */
 export function seedBundledMemoryServers(
   repos: SqliteRepositories,
@@ -18,17 +20,26 @@ export function seedBundledMemoryServers(
 ): void {
   if (!runtime) return;
   for (const user of repos.users.listUsers()) {
-    if (
-      repos.mcp.getServer(user.id, BUNDLED_MEMORY_SERVER_ID) ||
-      repos.mcp.getServerByName(user.id, BUNDLED_MEMORY_SERVER_NAME)
-    ) {
+    const bundled = repos.mcp.getServer(user.id, BUNDLED_MEMORY_SERVER_ID);
+    if (bundled) {
+      if (bundled.status !== 'archived' && bundled.summary.trim().length === 0) {
+        repos.mcp.setServerSummary(
+          user.id,
+          BUNDLED_MEMORY_SERVER_ID,
+          BUNDLED_MEMORY_SERVER_SUMMARY,
+          now,
+        );
+      }
+      continue;
+    }
+    if (repos.mcp.getServerByName(user.id, BUNDLED_MEMORY_SERVER_NAME)) {
       continue;
     }
     repos.mcp.createServer({
       id: BUNDLED_MEMORY_SERVER_ID,
       userId: user.id,
       name: BUNDLED_MEMORY_SERVER_NAME,
-      summary: '提供本地知识图谱式长期记忆，可创建实体与关系并按关键词检索历史信息。',
+      summary: BUNDLED_MEMORY_SERVER_SUMMARY,
       transport: 'stdio',
       config: {
         command: BUNDLED_NODE_COMMAND,

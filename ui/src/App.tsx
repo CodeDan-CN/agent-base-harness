@@ -508,7 +508,7 @@ export function App(): JSX.Element {
       <ConfirmDialog
         open={pendingPermissionPreset === 'full-access'}
         title="开启完全访问？"
-        description="Agent 将能以当前登录用户权限访问工作区外文件，并且工具调用不再逐次询问。此本地用户只需确认一次。"
+        description="Agent 将自主采用合理默认值，并能以当前登录用户权限访问工作区外文件。只有缺少不可推断且任务必需的事实时才会询问；密码、验证码和 API Key 等秘密应通过专用安全入口提供。此本地用户只需确认一次。"
         acknowledgementLabel="我理解这可能修改工作区外的文件"
         confirmLabel="开启完全访问"
         tone="warning"

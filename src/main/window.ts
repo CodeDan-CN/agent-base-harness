@@ -5,6 +5,7 @@ import { buildCspHeader, isAllowedNavigation } from './navigation';
 export interface MainWindowOptions {
   preloadPath: string;
   rendererUrl: string;
+  iconPath: string;
   dev: boolean;
   allowedNavigations: string[];
 }
@@ -27,6 +28,7 @@ export function createMainWindow(options: MainWindowOptions): BrowserWindow {
     height: 800,
     show: false,
     backgroundColor: '#141414',
+    icon: options.iconPath,
     ...(process.platform === 'darwin'
       ? {
           titleBarStyle: 'hiddenInset' as const,

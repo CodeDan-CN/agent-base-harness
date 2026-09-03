@@ -1,3 +1,4 @@
 # Application resources (icons, packaging metadata).
 
-# Icon assets are added during the packaging stage.
+- `icon.png`: development and runtime window/Dock icon.
+- `icon.icns`: packaged macOS application icon.

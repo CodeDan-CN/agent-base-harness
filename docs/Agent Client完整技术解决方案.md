@@ -925,6 +925,7 @@ cancel current Turn
 - 用户提交通过 `interaction.resolve` 返回等待中的工具或创建确定的后续 Exchange。
 - ConversationEvent 进入 `awaiting_user`，下一次补充继续同一事项。
 - 普通聊天补充与工具 Interaction 使用不同 Command，不互相伪装。
+- Interaction 回答作为内部续接输入持久化，不在聊天区渲染成新的用户气泡；UI 将回答前后的 ExecutionTurn 合并为同一执行过程，并把回答显示为其中的“用户回答”步骤。
 
 ### 10.10 Event Compaction
 
@@ -977,10 +978,11 @@ cancel current Turn
 
 1. 首次启动为每个本地用户预置并连接固定版本的官方 Memory MCP；它仍按普通 MCP 完成发现、逐项审核和启用，不创建记忆专用 Provider 或 Skill。
 2. Agent 只在当前用户的 `ToolCatalogSnapshot` 中看到已启用且审核通过的记忆 MCP 工具，工具名使用 `mcp__<serverName>__<rawName>`。
-3. 写入、纠错、删除和检索的具体语义由外部记忆 MCP 的真实 Tool Schema 和工具描述决定，Client 不假设 `memory_*` 名称或固定参数。
-4. 新 Session 通过同一用户的 MCP Tool 召回数据，不复制旧 Session，也不把 Session Summary 自动当作长期记忆事实源。
-5. 外部 MCP 不可用、调用失败或结果未知时，Agent 必须明确说明，不得声称已经写入或召回成功。
-6. 记忆正文和索引由 MCP Server 持有，不进入 Client 核心 SQLite；默认 Server 的 JSONL 文件位于当前用户的受管 MCP 数据目录，Client 只保存 MCP 配置、审核状态和 Tool Event 事实。
+3. 用户要求记住、保存或召回信息，或任务可能依赖用户过往的偏好、事实或约束时，最小系统提示词引导 Agent 先通过 `capability_search` 查找长期记忆能力；明确仅限当前会话时除外。
+4. 写入、纠错、删除和检索的具体语义由外部记忆 MCP 的真实 Tool Schema 和工具描述决定，Client 不假设 `memory_*` 名称或固定参数。
+5. 新 Session 通过同一用户的 MCP Tool 召回数据，不复制旧 Session，也不把 Session Summary 自动当作长期记忆事实源。
+6. 外部 MCP 不可用、调用失败或结果未知时，Agent 必须明确说明，不得声称已经写入或召回成功。
+7. 记忆正文和索引由 MCP Server 持有，不进入 Client 核心 SQLite；默认 Server 的 JSONL 文件位于当前用户的受管 MCP 数据目录，Client 只保存 MCP 配置、审核状态和 Tool Event 事实。
 
 ## 11. UI 与交互方案
 

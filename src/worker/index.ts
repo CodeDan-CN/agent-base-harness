@@ -14,6 +14,8 @@ export interface WorkerBootstrapData {
   logDir?: string;
   debug?: boolean;
   useSystemCredential?: boolean;
+  /** Benchmark/diagnostic workers sharing a live app database must not repair other sessions. */
+  skipRecovery?: boolean;
   runtime?: BundledRuntimeSnapshot;
   env?: {
     nodePath?: string;
@@ -61,7 +63,7 @@ try {
 
 try {
   // ready 前完成持久状态修复，并异步唤醒仍有排队输入的会话。
-  app.runtime.recover();
+  if (!data.skipRecovery) app.runtime.recover();
 } catch (err) {
   const error = toErrorPayload(err);
   logger.error('runtime recovery failed', {

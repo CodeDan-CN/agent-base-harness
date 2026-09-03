@@ -89,6 +89,10 @@ if (hasSingleInstanceLock)
       console: isDev,
     });
     const mainLogger = logger;
+    const iconPath = isDev
+      ? path.join(app.getAppPath(), 'resources', 'icon.png')
+      : path.join(process.resourcesPath, 'icon.png');
+    if (process.platform === 'darwin') app.dock.setIcon(iconPath);
     const runtimeTarget = `${process.platform}-${process.arch}`;
     const runtimeRoot = isDev
       ? path.join(app.getAppPath(), '.runtime-cache', runtimeTarget)
@@ -133,6 +137,7 @@ if (hasSingleInstanceLock)
     const renderer = createMainWindow({
       preloadPath,
       rendererUrl,
+      iconPath,
       dev: isDev,
       allowedNavigations,
     });

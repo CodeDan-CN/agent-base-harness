@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, JSX } from 'react';
-import { ArrowUp, Check, Edit3, Paperclip, Shield, Square, X, Zap } from 'lucide-react';
+import {
+  ArrowUp,
+  Check,
+  CircleAlert,
+  Edit3,
+  Paperclip,
+  Shield,
+  Square,
+  X,
+  Zap,
+} from 'lucide-react';
 import type { InboxItem, PermissionPreset } from '@client-contracts';
+import { shouldSubmitComposerOnKeyDown } from '../composer-input-policy';
 import { ContextTokenRing, formatCompactToken, formatOptionalToken } from './ContextTokenRing';
 
 interface InputAreaProps {
@@ -29,17 +40,23 @@ interface ContextTokenStats {
   memoryCompactionCount: number;
 }
 
+const COMPOSER_TEXTAREA_MAX_HEIGHT = 176;
+
 export function InputArea(props: InputAreaProps): JSX.Element {
   const [text, setText] = useState('');
   const [permissionOpen, setPermissionOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
+  const composingRef = useRef(false);
 
   useEffect(() => {
     const target = textareaRef.current;
     if (!target) return;
     target.style.height = 'auto';
-    target.style.height = `${Math.max(76, Math.min(target.scrollHeight, 220))}px`;
+    target.style.height = `${Math.max(
+      76,
+      Math.min(target.scrollHeight, COMPOSER_TEXTAREA_MAX_HEIGHT),
+    )}px`;
   }, [text]);
 
   useEffect(() => {
@@ -64,7 +81,14 @@ export function InputArea(props: InputAreaProps): JSX.Element {
   };
 
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (
+      shouldSubmitComposerOnKeyDown({
+        key: event.key,
+        shiftKey: event.shiftKey,
+        isComposing: composingRef.current || event.nativeEvent.isComposing,
+        keyCode: event.nativeEvent.keyCode,
+      })
+    ) {
       event.preventDefault();
       void submit('queue');
     }
@@ -125,6 +149,12 @@ export function InputArea(props: InputAreaProps): JSX.Element {
           value={text}
           disabled={props.disabled}
           onChange={(event) => setText(event.target.value)}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+          }}
           onKeyDown={keyDown}
           placeholder={props.processing ? '补充问题或加入队列...' : '给 AI 助手发送消息...'}
           aria-label="消息输入"
@@ -153,6 +183,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
                     type="button"
                     role="menuitemradio"
                     aria-checked={props.permissionPreset === option.value}
+                    aria-describedby={`permission-rule-${option.value}`}
                     disabled={props.processing}
                     key={option.value}
                     onClick={() => {
@@ -160,8 +191,22 @@ export function InputArea(props: InputAreaProps): JSX.Element {
                       setPermissionOpen(false);
                     }}
                   >
-                    <span>
-                      <strong>{option.label}</strong>
+                    <span className="permission-option-copy">
+                      <span className="permission-option-heading">
+                        <strong>{option.label}</strong>
+                        <span className="permission-rule-info" aria-hidden="true">
+                          <CircleAlert size={12} />
+                        </span>
+                        <span
+                          className="permission-rule-tooltip"
+                          id={`permission-rule-${option.value}`}
+                          role="tooltip"
+                        >
+                          {option.rules.map((rule) => (
+                            <span key={rule}>{rule}</span>
+                          ))}
+                        </span>
+                      </span>
                       <small>{option.description}</small>
                     </span>
                     {props.permissionPreset === option.value && <Check size={14} />}
@@ -249,21 +294,38 @@ const permissionOptions: Array<{
   value: PermissionPreset;
   label: string;
   description: string;
+  rules: string[];
 }> = [
   {
     value: 'approval-required',
     label: '请求批准',
     description: '工作区自动读写；外部写入、联网和 MCP 默认询问',
+    rules: [
+      '模型直接回答与规划，缺少任务信息时会询问。',
+      '工作区内读写自动执行。',
+      '外部写入、联网和 MCP 调用前请求批准。',
+    ],
   },
   {
     value: 'guarded',
     label: '受控自动',
     description: '低风险自动执行；高风险操作请求批准',
+    rules: [
+      '模型可采用低风险的合理默认值。',
+      '低风险工具自动执行。',
+      '高风险操作请求批准，缺少必要信息时会询问。',
+    ],
   },
   {
     value: 'full-access',
     label: '完全访问',
-    description: '按当前系统用户权限执行，不再逐次询问',
+    description: '模型自主选择合理默认值，仅在缺少必需事实时询问',
+    rules: [
+      '偏好、方案、格式和可逆选择由模型决定。',
+      '仅缺少不可推断且任务必需的事实时询问。',
+      '工具按当前系统用户权限执行，不再逐次批准。',
+      '密码、验证码和 API Key 不通过普通问题框收集。',
+    ],
   },
 ];
 

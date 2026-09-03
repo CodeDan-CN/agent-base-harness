@@ -22,6 +22,8 @@
     "runtime:verify": "node build-support/verify-runtime-pack.mjs",
     "pack:sign-local": "codesign --force --deep --sign - \"release/mac-arm64/Agent Harness.app\" && codesign --verify --deep --strict \"release/mac-arm64/Agent Harness.app\"",
     "catalog:build": "node scripts/build-model-catalog.mjs",
+    "benchmark:travel": "npm run build:worker && electron scripts/agent-travel-benchmark.mjs",
+    "benchmark:travel:compare": "node scripts/generate-travel-agent-comparison.mjs",
     "test": "npm run rebuild:node && vitest run",
     "test:unit": "npm run rebuild:node && vitest run tests/unit",
     "test:integration": "npm run rebuild:node && vitest run tests/integration",
@@ -88,10 +90,15 @@
       {
         "from": ".runtime-cache/darwin-arm64",
         "to": "runtimes/darwin-arm64"
+      },
+      {
+        "from": "resources/icon.png",
+        "to": "icon.png"
       }
     ],
     "npmRebuild": true,
     "mac": {
+      "icon": "resources/icon.icns",
       "category": "public.app-category.developer-tools",
       "target": [
         "dir"
