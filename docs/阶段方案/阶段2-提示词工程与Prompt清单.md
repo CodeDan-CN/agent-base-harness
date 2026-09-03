@@ -27,6 +27,7 @@
 | Skill 指令（`SKILL.md`）                                 | 是                | 按需，内容随 Skill 变化     | 模型选中 Skill 后            |
 | （可选）两级能力加载 `tool_catalog`/`tool_load`          | 是                | 半固定                      | 仅启用两级加载时             |
 | Session Summary                                          | 否（动态内容）    | 变化                        | 预算内自动加入               |
+| User Memory Profile                                      | 否（动态内容）    | 用户级文件变化              | 每次请求                     |
 | Event Context（用户可见问答 / Summary + raw tail）       | 否（动态内容）    | 变化                        | 预算内自动加入               |
 | 当前 ExecutionTurn Surface                               | 否（动态内容）    | 变化                        | 每次请求                     |
 | History Tool 结果（`event_read`/`turn_read` 等）         | 否（Tool Result） | 变化                        | 模型显式调用后               |
@@ -35,6 +36,7 @@ LLM Input 的组合顺序（稳定内容在前，本轮变化内容在后）：
 
 ```text
 LLM Input = 稳定前缀（System Prompt + Tool Schema）
+          + User Memory Profile
           + Session Summary
           + Event Context
           + 当前 ExecutionTurn Surface
@@ -50,6 +52,7 @@ LLM Input = 稳定前缀（System Prompt + Tool Schema）
 - 声明不编造工具结果。
 - 声明缺少必要信息时向用户询问。
 - 声明回答应优先直接完成任务。
+- 声明浅层记忆写入用户级 `memory-profile.md`，复杂记忆继续使用 MCP。
 
 ### 3.2 初版内容原则
 
@@ -69,6 +72,8 @@ LLM Input = 稳定前缀（System Prompt + Tool Schema）
 ```
 
 具体业务规则（例如某类任务的固定流程）一律放入对应 Tool 的 `description`、确定性校验或 Tool Result 中，不写入 System Prompt。
+
+当前用户的 `memory-profile.md` 位于用户工作区根目录，由 `read/write/edit` 按现有权限规则访问。文件内容以 `<user_memory_profile>` 动态拼入 System Message，仅作为事实与偏好参考；空文件不产生动态片段。用户明确要求记住浅层偏好、称呼或稳定约束时先完成文件写入，复杂或详细内容仍走长期记忆 MCP。
 
 ### 3.3 稳定约束
 

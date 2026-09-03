@@ -47,6 +47,7 @@ export class SkillCatalogService {
 
     for (const existing of this.repos.skills.listInstallations(userId)) {
       if (present.has(existing.skillName)) continue;
+      if (existing.sourceType === 'bundled') continue;
       if (existing.status === 'missing') continue;
       this.markMissing(userId, existing);
     }
@@ -93,6 +94,7 @@ export class SkillCatalogService {
 
   private upsertValid(userId: LocalUserId, skill: ParsedSkill): void {
     const existing = this.repos.skills.getInstallation(userId, skill.name);
+    if (existing?.sourceType === 'bundled') return;
     const changed =
       !existing ||
       existing.contentDigest !== skill.contentDigest ||
@@ -120,6 +122,7 @@ export class SkillCatalogService {
 
   private upsertInvalid(userId: LocalUserId, skillName: string, resourceBase: string): void {
     const existing = this.repos.skills.getInstallation(userId, skillName);
+    if (existing?.sourceType === 'bundled') return;
     const changed =
       !existing || existing.status !== 'invalid' || existing.rootPath !== resourceBase;
     if (!changed) return;

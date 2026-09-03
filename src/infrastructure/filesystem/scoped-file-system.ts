@@ -203,8 +203,11 @@ export class ScopedFileSystem {
   }
 
   isOutsideWorkspace(scope: FileScope, requested: string): boolean {
-    if (!path.isAbsolute(requested)) return false;
-    return !isInside(this.workspace(scope), path.resolve(requested));
+    const workspace = path.resolve(this.workspace(scope));
+    const resolved = path.isAbsolute(requested)
+      ? path.resolve(requested)
+      : path.resolve(workspace, requested);
+    return !isInside(workspace, resolved);
   }
 
   private async readExisting(target: string): Promise<string | null> {

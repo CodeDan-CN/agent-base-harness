@@ -606,7 +606,8 @@ Projection 更新必须满足：实时消费事件的结果与从 seq 1 完整�
 - ConversationEvent Context：同一事项的原始问答，或 Summary 加未覆盖 raw tail。
 - Current ExecutionTurn Surface：本 Turn 用户消息、助手消息、Tool Call/Result、当前必需 reasoning replay，以及压力下对已闭合旧区域的可追溯投影。
 - Explicit History Read：通过 `event_read` 或 `turn_read` 显式读取的原始历史证据。
-- User Long-term Memory：当前用户跨 Session 的稳定偏好、纠错结论和长期约束，默认由随包固定版本的官方 Memory MCP 持久化，也可替换为其他外部记忆 MCP。
+- User Memory Profile：每个用户工作区根目录中的 `memory-profile.md`，保存称呼、稳定偏好和浅层约束，每次模型请求动态拼入 System Message。
+- User Long-term Memory：复杂、详细或需要检索的跨 Session 记忆，默认由随包固定版本的官方 Memory MCP 持久化，也可替换为其他外部记忆 MCP。
 
 业务记忆只在新问题第一 Step 前检查，不在上一轮输出完成后调用摘要模型。达到 80% 时按需生成新的 Session 历史摘要和当前 Event 摘要，首 Step 使用“Session Summary + Event Summary + 最新问题”；允许全局背景与当前事项细节存在受控语义重叠，冲突优先级为“最新问题 > Event Summary > Session Summary”。
 
@@ -614,7 +615,7 @@ Projection 更新必须满足：实时消费事件的结果与从 seq 1 完整�
 
 所有 Summary、ConversationEvent 关系、相关历史搜索和按需读取都必须携带 `userId`。任何自动候选或历史工具都不能把另一个用户的数据带入模型上下文。
 
-用户长期记忆不属于 Session Event、Session Summary 或核心 SQLite 内容模型。阶段 4.5 不在 Runtime 内建立 Memory Provider、记忆 Skill 或记忆专用 Tool Contract；默认 Memory MCP 仍通过通用 MCP Bridge 运行，其 JSONL 正文位于用户级 MCP 数据目录。Client 核心 SQLite 只保存通用 MCP 配置、工具审核和运行事实。
+浅层 `memory-profile.md` 不属于 Session Event、Session Summary 或核心 SQLite 内容模型，由现有文件工具与三档权限管理。复杂长期记忆仍不在 Runtime 内建立 Memory Provider、记忆 Skill 或记忆专用 Tool Contract；默认 Memory MCP 通过通用 MCP Bridge 运行，其 JSONL 正文位于用户级 MCP 数据目录。Client 核心 SQLite 只保存通用 MCP 配置、工具审核和运行事实。
 
 ### 8.12 Configuration 与 Credential Service
 

@@ -63,3 +63,5 @@ tests/*
 !tests/unit/
 tests/unit/*
 !tests/unit/agent-travel-benchmark.test.ts
+!tests/unit/generated-skill-publisher.test.ts
+!tests/unit/memory-profile.test.ts

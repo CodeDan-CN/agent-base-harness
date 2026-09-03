@@ -458,32 +458,32 @@ select:focus-visible {
 .produced-files {
   display: flex;
   align-items: center;
-  gap: 9px;
-  margin-top: 12px;
+  margin-top: 8px;
   min-width: 0;
-}
-.produced-files-label {
-  flex: none;
-  color: #8a8e9a;
-  font-size: 11px;
 }
 .produced-files-list {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 2px 10px;
   min-width: 0;
-  overflow-x: auto;
 }
 .produced-files-list button {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   max-width: 220px;
-  padding: 5px 8px;
-  border: 1px solid #dedde7;
-  border-radius: 7px;
-  background: #faf9ff;
-  color: #6253d8;
+  padding: 2px 3px;
+  border-radius: 4px;
+  color: #777b86;
   font-size: 11px;
+}
+.produced-files-list button:hover {
+  background: #f3f3f5;
+  color: #555963;
+}
+.produced-files-list button svg {
+  flex: none;
+  color: #a1a4ac;
 }
 .produced-files-list button span {
   overflow: hidden;
@@ -4325,8 +4325,7 @@ textarea:focus-visible,
 
   .queue-title,
   .queue-index,
-  .queue-icon,
-  .produced-files-label {
+  .queue-icon {
     color: #989a96;
   }
 
@@ -4346,9 +4345,16 @@ textarea:focus-visible,
   }
 
   .produced-files-list button {
-    color: #9ec6ee;
-    border-color: #3d5267;
-    background: #223242;
+    color: #a5a7a3;
+  }
+
+  .produced-files-list button:hover {
+    background: #333532;
+    color: #d0d1ce;
+  }
+
+  .produced-files-list button svg {
+    color: #777a76;
   }
 
   .markdown-content h1,
@@ -5476,7 +5482,6 @@ select,
 .message-column .markdown-content pre,
 .message-column .markdown-content th,
 .message-column .markdown-content td,
-.message-column .produced-files-label,
 .message-column .produced-files-list button,
 .message-column .approval-card,
 .message-column .approval-heading strong,

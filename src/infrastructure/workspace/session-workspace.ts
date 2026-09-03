@@ -1,9 +1,36 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { cp, mkdir, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 export interface SessionWorkspaceScope {
   userId: string;
   sessionId: string;
+}
+
+export const USER_MEMORY_PROFILE_FILENAME = 'memory-profile.md';
+
+export function userMemoryProfilePath(appDataDir: string, userId: string): string {
+  return path.join(appDataDir, 'workspaces', userId, USER_MEMORY_PROFILE_FILENAME);
+}
+
+export function ensureUserMemoryProfile(appDataDir: string, userId: string): string {
+  const filePath = userMemoryProfilePath(appDataDir, userId);
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  try {
+    writeFileSync(filePath, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if (!isAlreadyExists(error)) throw error;
+  }
+  return filePath;
+}
+
+export function readUserMemoryProfile(appDataDir: string, userId: string): string {
+  try {
+    return readFileSync(userMemoryProfilePath(appDataDir, userId), 'utf8').trim();
+  } catch (error) {
+    if (isMissing(error)) return '';
+    throw error;
+  }
 }
 
 export function sessionWorkspacePath(appDataDir: string, scope: SessionWorkspaceScope): string {
@@ -41,4 +68,22 @@ export async function materializeSkillResourceBase(input: {
   await mkdir(resourcesRoot, { recursive: true });
   await cp(source, target, { recursive: true, dereference: false });
   return realpath(target);
+}
+
+function isMissing(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: string }).code === 'ENOENT'
+  );
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: string }).code === 'EEXIST'
+  );
 }

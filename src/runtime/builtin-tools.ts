@@ -4,6 +4,12 @@ import { z } from 'zod';
 import type { ScopedFileSystem } from '../infrastructure/filesystem/scoped-file-system';
 import type { ShellExecutor } from '../infrastructure/process/shell-executor';
 import type { SqliteRepositories } from '../infrastructure/sqlite/repositories';
+import {
+  BUILTIN_SKILL_CREATOR_NAME,
+  GeneratedSkillPublishError,
+  type PublishGeneratedSkillInput,
+  type PublishGeneratedSkillResult,
+} from '../infrastructure/skills/generated-skill-publisher';
 import { materializeSkillResourceBase } from '../infrastructure/workspace/session-workspace';
 import { projectRuntime } from '../client-contracts/projection';
 import { createCapabilitySearchTool } from './capability-discovery';
@@ -21,13 +27,31 @@ export interface BuiltinToolDeps {
   repos: SqliteRepositories;
   fileSystem: ScopedFileSystem;
   shell: ShellExecutor;
+  publishSkill?: (
+    userId: string,
+    input: PublishGeneratedSkillInput,
+  ) => PublishGeneratedSkillResult | Promise<PublishGeneratedSkillResult>;
 }
 
 export function registerBuiltinRuntimeTools(registry: ToolRegistry, deps: BuiltinToolDeps): void {
-  for (const tool of createBuiltinTools(deps)) registry.register(tool);
+  for (const tool of createBuiltinTools({
+    ...deps,
+    exposeTurnTools: (userId, turnId, tools) => registry.exposeTurnTools(userId, turnId, tools),
+  })) {
+    registry.register(tool);
+  }
 }
 
-export function createBuiltinTools(deps: BuiltinToolDeps): RuntimeTool<unknown>[] {
+interface BuiltinToolFactoryDeps extends BuiltinToolDeps {
+  exposeTurnTools?: (
+    userId: string,
+    turnId: string,
+    tools: readonly RuntimeTool<unknown>[],
+  ) => void;
+}
+
+export function createBuiltinTools(deps: BuiltinToolFactoryDeps): RuntimeTool<unknown>[] {
+  const skillPublisher = deps.publishSkill ? skillPublishTool(deps.publishSkill) : undefined;
   return [
     requestUserInputTool(),
     createCapabilitySearchTool(deps.repos),
@@ -35,7 +59,13 @@ export function createBuiltinTools(deps: BuiltinToolDeps): RuntimeTool<unknown>[
     eventReadTool(deps.repos),
     turnListTool(deps.repos),
     turnReadTool(deps.repos),
-    skillLoadTool(deps.repos, deps.appDataDir),
+    skillLoadTool(
+      deps.repos,
+      deps.appDataDir,
+      skillPublisher && deps.exposeTurnTools
+        ? (userId, turnId) => deps.exposeTurnTools?.(userId, turnId, [skillPublisher])
+        : undefined,
+    ),
     ...createFirstPartyTools({ fileSystem: deps.fileSystem, shell: deps.shell }),
   ];
 }
@@ -239,6 +269,7 @@ interface SkillLoadResult {
 function skillLoadTool(
   repos: SqliteRepositories,
   appDataDir: string,
+  exposePublisher?: (userId: string, turnId: string) => void,
 ): RuntimeTool<SkillLoadResult> {
   const input = z.object({ skillName: z.string().min(1) }).strict();
   return {
@@ -301,15 +332,130 @@ function skillLoadTool(
           skillName: installation.skillName,
           sourceRoot: realRoot,
         });
-        return {
+        const result = {
           skillName: installation.skillName,
           resourceBase: { kind: 'directory', path: resourceBase },
           content: await readFile(path.join(resourceBase, 'SKILL.md'), 'utf8'),
-        };
+        } satisfies SkillLoadResult;
+        if (
+          installation.skillName === BUILTIN_SKILL_CREATOR_NAME &&
+          installation.sourceType === 'bundled'
+        ) {
+          exposePublisher?.(context.userId, context.turnId);
+        }
+        return result;
       } catch (error) {
         if (error instanceof ToolExecutionError) throw error;
         throw new ToolExecutionError('SKILL_READ_FAILED');
       }
+    },
+  };
+}
+
+function skillPublishTool(
+  publish: NonNullable<BuiltinToolDeps['publishSkill']>,
+): RuntimeTool<PublishGeneratedSkillResult> {
+  const input = z
+    .object({
+      name: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+      description: z
+        .string()
+        .trim()
+        .min(1)
+        .max(500)
+        .refine((value) => !/[\r\n]/.test(value)),
+      instructions: z.string().trim().min(1).max(100_000),
+    })
+    .strict();
+  return {
+    name: 'skill_publish',
+    description: '把 skill-creator 整理出的纯文本 Skill 发布到当前用户目录并立即启用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 64,
+          pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$',
+          description: '小写英文、数字和连字符组成的唯一名称。',
+        },
+        description: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 500,
+          pattern: '^[^\\r\\n]+$',
+          description: '一行说明 Skill 的能力和触发条件。',
+        },
+        instructions: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 100000,
+          description: '可复用的完整 Markdown 指令正文，不要包含 YAML frontmatter。',
+        },
+      },
+      required: ['name', 'description', 'instructions'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          skillName: { type: 'string' },
+          description: { type: 'string' },
+          scope: { const: 'user' },
+          enabled: { const: true },
+          contentDigest: { type: 'string' },
+        },
+        required: ['skillName', 'description', 'scope', 'enabled', 'contentDigest'],
+        additionalProperties: false,
+      },
+      render(_args, value) {
+        return textContent({
+          skillName: value.skillName,
+          scope: value.scope,
+          enabled: value.enabled,
+          contentDigest: value.contentDigest,
+        });
+      },
+    },
+    concurrencySafe: false,
+    replaySafe: false,
+    exclusive: true,
+    timeoutMs: 10_000,
+    approvalPolicy: 'always',
+    approvalScope: 'local',
+    permissionIdentity: 'skill:publish:user',
+    async execute(raw, context) {
+      const parsed = input.parse(raw);
+      try {
+        return await publish(context.userId, parsed);
+      } catch (error) {
+        if (error instanceof GeneratedSkillPublishError) {
+          throw new ToolExecutionError(error.code);
+        }
+        throw new ToolExecutionError('SKILL_PUBLISH_FAILED');
+      }
+    },
+    presentCall(raw) {
+      const parsed = input.safeParse(raw);
+      return parsed.success
+        ? { kind: 'generic', title: '发布 Skill', detail: parsed.data.name }
+        : undefined;
+    },
+    presentResult(raw, result) {
+      const parsed = input.safeParse(raw);
+      if (!parsed.success) return undefined;
+      return {
+        kind: 'generic',
+        title: '发布 Skill',
+        detail: parsed.data.name,
+        status: result.status === 'success' ? 'success' : 'error',
+      };
     },
   };
 }

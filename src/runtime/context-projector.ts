@@ -1,6 +1,8 @@
 import type { SkillInstallation } from '../shared/domain/skill';
 import type { PermissionPreset } from '../shared/domain/permission';
 import type { RuntimeProjection } from '../client-contracts/projection';
+import { readUserMemoryProfile } from '../infrastructure/workspace/session-workspace';
+import type { LocalUserId } from '../shared/domain/user';
 import type { ModelToolDefinition, RuntimeMessage } from './model';
 import { MINIMAL_SYSTEM_PROMPT } from './model';
 
@@ -8,6 +10,7 @@ export const FULL_ACCESS_AUTONOMY_PROMPT =
   '完全访问：偏好、方案、格式及可逆选择自行决定。仅缺少不可推断的必需事实时调用 request_user_input，并设 requiresUserProvidedFact=true；不得收集密码、验证码或 API Key。';
 
 export interface ContextProjectionInput {
+  userId?: LocalUserId;
   projection: RuntimeProjection;
   eventId: string;
   turnId: string;
@@ -51,6 +54,8 @@ export class ContextBudgetError extends Error {
 }
 
 export class ContextProjector {
+  constructor(private readonly appDataDir?: string) {}
+
   measureFull(input: ContextProjectionInput): ContextMeasurement {
     const hardInputLimitTokens = inputBudget(input);
     const projected = this.project({
@@ -71,7 +76,11 @@ export class ContextProjector {
     const budget = inputBudget(input);
     if (budget <= 0) throw new ContextBudgetError();
 
-    const stableSystem = this.buildStableSystem(input.tools, input.permissionPreset ?? 'guarded');
+    const stableSystem = this.buildStableSystem(
+      input.userId,
+      input.tools,
+      input.permissionPreset ?? 'guarded',
+    );
     const stableMessage: RuntimeMessage = { role: 'system', content: stableSystem };
     const toolSchemaTokens = estimateTextTokens(JSON.stringify(input.tools));
     const currentEvent = input.projection.events.get(input.eventId);
@@ -215,12 +224,17 @@ export class ContextProjector {
   }
 
   private buildStableSystem(
+    userId: LocalUserId | undefined,
     tools: readonly ModelToolDefinition[],
     permissionPreset: PermissionPreset,
   ): string {
     const toolText = tools.map((tool) => tool.name).join('、') || '无';
     const autonomy = permissionPreset === 'full-access' ? `\n\n${FULL_ACCESS_AUTONOMY_PROMPT}` : '';
-    return `${MINIMAL_SYSTEM_PROMPT}${autonomy}\n\n可用工具：${toolText}`;
+    const profile = this.appDataDir && userId ? readUserMemoryProfile(this.appDataDir, userId) : '';
+    const memoryProfile = profile
+      ? `\n\n<user_memory_profile>\n${profile}\n</user_memory_profile>`
+      : '';
+    return `${MINIMAL_SYSTEM_PROMPT}${memoryProfile}${autonomy}\n\n可用工具：${toolText}`;
   }
 }
 

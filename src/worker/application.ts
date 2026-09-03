@@ -9,9 +9,14 @@ import { ProcessRunner } from '../infrastructure/process/process-runner';
 import { ShellExecutor } from '../infrastructure/process/shell-executor';
 import type { BundledRuntimeSnapshot } from '../infrastructure/runtime/bundled-runtime-registry';
 import { ScopedFileSystem } from '../infrastructure/filesystem/scoped-file-system';
+import { ensureUserMemoryProfile } from '../infrastructure/workspace/session-workspace';
 import { EnvironmentDetector } from '../infrastructure/process/environment-detector';
 import { SkillCatalogService } from './skill-catalog-service';
 import { parseSkillDirectory } from '../infrastructure/skills/parser';
+import {
+  BUILTIN_SKILL_CREATOR_NAME,
+  GeneratedSkillPublisher,
+} from '../infrastructure/skills/generated-skill-publisher';
 import { FakeCredentialStore } from '../infrastructure/credential/fake-credential-store';
 import { MacKeychainCredentialStore } from '../infrastructure/credential/mac-keychain-store';
 import { OpenAiCompatibleAdapter } from '../infrastructure/llm/openai-compatible-adapter';
@@ -184,6 +189,9 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
 
   const repos = new SqliteRepositories(db);
   repos.users.seedUsers(clock.nowIso());
+  for (const user of repos.users.listUsers()) {
+    ensureUserMemoryProfile(deps.appDataDir, user.id);
+  }
   seedBundledMemoryServers(repos, deps.runtime, clock.nowIso());
   const activeUserId = repos.users.repairActiveUserId(clock.nowIso());
 
@@ -215,9 +223,17 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
 
   const skillRoot = (userId: LocalUserId) => path.join(deps.appDataDir, 'skills', userId);
   const skillCatalog = new SkillCatalogService({ repos, skillRoot, clock });
-  skillCatalog.refresh(activeUserId);
-
   const ids = deps.idProvider ?? new UuidIdProvider();
+  const generatedSkills = new GeneratedSkillPublisher({
+    appDataDir: deps.appDataDir,
+    repos,
+    clock,
+    ids,
+    skillRoot,
+  });
+  skillCatalog.refresh(activeUserId);
+  generatedSkills.seedBuiltinCreator(repos.users.listUsers().map((user) => user.id));
+
   const llmAdapters = deps.llmAdapters ?? new LlmAdapterRegistry();
   if (!deps.llmAdapters) {
     llmAdapters.register(
@@ -234,9 +250,11 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
       repos,
       fileSystem,
       shell,
+      publishSkill: (userId, input) => generatedSkills.publish(userId, input),
     });
   }
   const runtime = new RuntimeService({
+    appDataDir: deps.appDataDir,
     repos,
     clock,
     ids,
@@ -676,22 +694,35 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
       skillCatalog.refresh(userId);
       return {
         revision: repos.users.getRevisions(userId).skillRevision,
-        skills: repos.skills.listInstallations(userId).map((skill) => ({
-          id: skill.id,
-          name: skill.skillName,
-          description: skill.description,
-          sourceType: skill.sourceType,
-          enabled: skill.enabled,
-          status: skill.status,
-          compatibilityStatus: skill.compatibilityStatus,
-          contentDigest: skill.contentDigest,
-          metadata: skill.metadata,
-        })),
+        skills: repos.skills
+          .listInstallations(userId)
+          .filter(
+            (skill) =>
+              !(skill.skillName === BUILTIN_SKILL_CREATOR_NAME && skill.sourceType === 'bundled'),
+          )
+          .map((skill) => ({
+            id: skill.id,
+            name: skill.skillName,
+            description: skill.description,
+            sourceType: skill.sourceType,
+            enabled: skill.enabled,
+            status: skill.status,
+            compatibilityStatus: skill.compatibilityStatus,
+            contentDigest: skill.contentDigest,
+            metadata: skill.metadata,
+          })),
       };
     },
 
     setSkillEnabled(userId, skillName, enabled, expectedRevision) {
       assertRevision(repos.users.getRevisions(userId).skillRevision, expectedRevision);
+      const installation = repos.skills.getInstallation(userId, skillName);
+      if (
+        installation?.skillName === BUILTIN_SKILL_CREATOR_NAME &&
+        installation.sourceType === 'bundled'
+      ) {
+        throw new BridgeError('INVALID_REQUEST', 'Built-in Skill cannot be disabled');
+      }
       repos.skills.setEnabled(userId, skillName, enabled, clock.nowIso());
       return { skillName, enabled };
     },
@@ -703,7 +734,8 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
       const userRoot = skillRoot(userId);
       mkdirSync(userRoot, { recursive: true });
       const destination = path.join(userRoot, parsed.skill.name);
-      if (pathExists(destination)) {
+      const existing = repos.skills.getInstallation(userId, parsed.skill.name);
+      if (pathExists(destination) || (existing && existing.status !== 'missing')) {
         throw new BridgeError('REVISION_CONFLICT', 'Skill already exists; use update');
       }
       const temporary = path.join(userRoot, `.install-${ids.newId()}`);

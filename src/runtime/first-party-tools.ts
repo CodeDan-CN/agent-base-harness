@@ -42,7 +42,7 @@ function readTool(fileSystem: ScopedFileSystem): RuntimeTool<ReadFileResult> {
   return {
     name: 'read',
     description:
-      '读取当前 Session 工作区或已启用 Skill 中的 UTF-8 文件，返回带行号的有界文本窗口。',
+      '读取当前 Session 工作区、当前用户的 ../memory-profile.md 或已启用 Skill 中的 UTF-8 文件，返回带行号的有界文本窗口。',
     parameters: {
       type: 'object',
       properties: {
@@ -113,7 +113,7 @@ function writeTool(fileSystem: ScopedFileSystem): RuntimeTool<WriteFileResult> {
   return {
     name: 'write',
     description:
-      '在当前 Session 工作区创建或整体写入 UTF-8 文件；覆盖已有文件前必须先使用 read 读取最新版本。',
+      '在当前 Session 工作区或当前用户的 ../memory-profile.md 创建、整体写入 UTF-8 文件；覆盖已有文件前必须先使用 read 读取最新版本。',
     parameters: {
       type: 'object',
       properties: {
@@ -178,7 +178,7 @@ function editTool(fileSystem: ScopedFileSystem): RuntimeTool<EditFileResult> {
   return {
     name: 'edit',
     description:
-      '精确替换当前 Session 工作区文件中的文本；编辑前必须 read，默认要求 old_string 唯一匹配。',
+      '精确替换当前 Session 工作区或当前用户 ../memory-profile.md 中的文本；编辑前必须 read，默认要求 old_string 唯一匹配。',
     parameters: {
       type: 'object',
       properties: {

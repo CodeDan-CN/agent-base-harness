@@ -47,6 +47,7 @@ export interface RuntimeServiceOptions {
 }
 
 export interface RuntimeServiceDeps {
+  appDataDir: string;
   repos: SqliteRepositories;
   clock: Clock;
   ids: IdProvider;
@@ -85,7 +86,7 @@ export class RuntimeService {
   private readonly llmAdapters: LlmAdapterRegistry;
   private readonly tools: ToolRegistry;
   private readonly scheduler: ToolScheduler;
-  private readonly contextProjector = new ContextProjector();
+  private readonly contextProjector: ContextProjector;
   private readonly resolveModel: RuntimeServiceDeps['resolveModel'];
   private readonly onEventsAppended: (batch: SessionEventBatch) => void;
   private readonly leaseDurationMs: number;
@@ -104,6 +105,7 @@ export class RuntimeService {
   private closed = false;
 
   constructor(deps: RuntimeServiceDeps) {
+    this.contextProjector = new ContextProjector(deps.appDataDir);
     this.repos = deps.repos;
     this.clock = deps.clock;
     this.ids = deps.ids;
@@ -948,6 +950,7 @@ export class RuntimeService {
         let context;
         try {
           context = this.contextProjector.project({
+            userId: identity.userId,
             projection: projectedForContext,
             eventId,
             turnId,
@@ -1118,6 +1121,7 @@ export class RuntimeService {
                 if (surfaceChanged) {
                   overflowRetried = true;
                   const recovered = this.contextProjector.project({
+                    userId: identity.userId,
                     projection: this.load(identity.userId, identity.sessionId),
                     eventId,
                     turnId,
@@ -1474,6 +1478,7 @@ export class RuntimeService {
     if (!event) return;
     const skills = this.repos.skills.listInstallations(identity.userId);
     const measurement = this.contextProjector.measureFull({
+      userId: identity.userId,
       projection,
       eventId,
       turnId,
@@ -1597,6 +1602,7 @@ export class RuntimeService {
         let projection = this.load(identity.userId, identity.sessionId);
         const revisions = this.repos.users.getRevisions(identity.userId);
         const measurementInput = {
+          userId: identity.userId,
           eventId,
           turnId,
           contextWindow: model.contextWindow,
