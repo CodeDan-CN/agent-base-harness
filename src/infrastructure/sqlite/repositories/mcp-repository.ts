@@ -18,6 +18,7 @@ interface ServerRow {
   user_id: string;
   name: string;
   summary: string;
+  category_id: string;
   transport: McpServer['transport'];
   status: McpServer['status'];
   config_json: string;
@@ -85,6 +86,7 @@ export class McpRepository {
     config: McpServerConfig;
     credentialRef: string | null;
     enabled: boolean;
+    categoryId?: string;
     now: string;
   }): void {
     try {
@@ -93,8 +95,8 @@ export class McpRepository {
           .prepare(
             `INSERT INTO mcp_servers
              (id, user_id, name, summary, transport, status, config_json, credential_ref,
-              connection_status, generation, last_error, created_at, updated_at, archived_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'disconnected', 0, NULL, ?, ?, NULL)`,
+              connection_status, generation, last_error, created_at, updated_at, archived_at, category_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'disconnected', 0, NULL, ?, ?, NULL, ?)`,
           )
           .run(
             input.id,
@@ -107,6 +109,7 @@ export class McpRepository {
             input.credentialRef,
             input.now,
             input.now,
+            input.categoryId ?? 'uncategorized',
           );
         this.bumpRevision(input.userId, input.now);
       });
@@ -126,6 +129,7 @@ export class McpRepository {
       config: McpServerConfig;
       credentialRef: string | null;
       enabled: boolean;
+      categoryId: string;
     },
     now: string,
   ): void {
@@ -135,7 +139,8 @@ export class McpRepository {
           .prepare(
             `UPDATE mcp_servers
              SET name = ?, summary = ?, transport = ?, config_json = ?, credential_ref = ?,
-                 status = ?, connection_status = 'disconnected', last_error = NULL, updated_at = ?
+                 status = ?, category_id = ?, connection_status = 'disconnected', last_error = NULL,
+                 updated_at = ?
              WHERE user_id = ? AND id = ? AND status <> 'archived'`,
           )
           .run(
@@ -145,6 +150,7 @@ export class McpRepository {
             JSON.stringify(patch.config),
             patch.credentialRef,
             patch.enabled ? 'enabled' : 'disabled',
+            patch.categoryId,
             now,
             userId,
             id,
@@ -354,6 +360,7 @@ function mapServer(row: ServerRow): McpServer {
     userId: row.user_id,
     name: row.name,
     summary: row.summary,
+    categoryId: row.category_id,
     transport: row.transport,
     status: row.status,
     config: JSON.parse(row.config_json) as McpServerConfig,

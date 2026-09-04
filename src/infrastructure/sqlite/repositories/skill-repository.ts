@@ -14,6 +14,7 @@ interface InstallationRow {
   user_id: string;
   skill_name: string;
   description: string;
+  category_id: string;
   source_type: SkillSourceType;
   source_ref: string | null;
   root_path: string;
@@ -146,6 +147,7 @@ export class SkillRepository {
       userId: row.user_id,
       skillName: row.skill_name,
       description: row.description,
+      categoryId: row.category_id,
       sourceType: row.source_type,
       sourceRef: row.source_ref,
       rootPath: row.root_path,

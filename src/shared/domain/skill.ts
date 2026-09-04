@@ -11,6 +11,7 @@ export interface SkillInstallation {
   userId: LocalUserId;
   skillName: string;
   description: string;
+  categoryId: string;
   sourceType: SkillSourceType;
   sourceRef: string | null;
   rootPath: string;
@@ -55,6 +56,7 @@ export interface InvalidSkill {
 export interface SkillCatalogEntry {
   name: string;
   description: string;
+  categoryId: string;
   sourceType: SkillSourceType;
   resourceBase: string;
   metadata: Record<string, unknown>;

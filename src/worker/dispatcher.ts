@@ -22,6 +22,9 @@ import { z } from 'zod';
 import { BridgeError } from '../shared/contracts/errors';
 import type { WorkerApplication } from './application';
 import {
+  capabilityCategoryCreateParamsSchema,
+  capabilityCategoryDeleteParamsSchema,
+  capabilityCategoryRenameParamsSchema,
   modelArchiveParamsSchema,
   modelDefaultSetParamsSchema,
   modelDiscoverParamsSchema,
@@ -30,6 +33,7 @@ import {
   modelServiceSaveParamsSchema,
   modelServiceTestParamsSchema,
   skillToggleParamsSchema,
+  skillCategorySetParamsSchema,
   mcpServerSaveParamsSchema,
   mcpServerTargetParamsSchema,
   mcpServerTestParamsSchema,
@@ -152,6 +156,33 @@ export async function dispatch(
     case 'skill.install.directory': {
       const value = parse(z.object({ sourcePath: z.string().min(1).max(4096) }).strict(), params);
       return app.installSkillDirectory(userId, value.sourcePath);
+    }
+    case 'skill.category.set': {
+      const value = parse(skillCategorySetParamsSchema, params);
+      return app.setSkillCategory(
+        userId,
+        value.skillName,
+        value.categoryId,
+        value.expectedRevision,
+      );
+    }
+    case 'capability-category.create': {
+      const value = parse(capabilityCategoryCreateParamsSchema, params);
+      return app.createCapabilityCategory(userId, value.type, value.name, value.expectedRevision);
+    }
+    case 'capability-category.rename': {
+      const value = parse(capabilityCategoryRenameParamsSchema, params);
+      return app.renameCapabilityCategory(
+        userId,
+        value.type,
+        value.id,
+        value.name,
+        value.expectedRevision,
+      );
+    }
+    case 'capability-category.delete': {
+      const value = parse(capabilityCategoryDeleteParamsSchema, params);
+      return app.deleteCapabilityCategory(userId, value.type, value.id, value.expectedRevision);
     }
     case 'mcp-server.save':
       return app.saveMcpServer(userId, parse(mcpServerSaveParamsSchema, params));

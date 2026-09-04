@@ -445,4 +445,100 @@ WHERE request_max_output_tokens = 4096
   AND max_output_tokens = 4096;
 `,
   },
+  {
+    version: 11,
+    name: 'capability-categories',
+    sql: `
+CREATE TABLE capability_categories (
+  id          TEXT NOT NULL,
+  user_id     TEXT NOT NULL,
+  name        TEXT NOT NULL COLLATE NOCASE,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  is_system   INTEGER NOT NULL DEFAULT 0 CHECK (is_system IN (0, 1)),
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, name),
+  FOREIGN KEY (user_id) REFERENCES local_users(id)
+);
+
+INSERT INTO capability_categories
+  (id, user_id, name, sort_order, is_system, created_at, updated_at)
+SELECT 'uncategorized', id, '未分类', 1000000, 1, updated_at, updated_at FROM local_users;
+
+INSERT INTO capability_categories
+  (id, user_id, name, sort_order, is_system, created_at, updated_at)
+SELECT 'memory', id, '记忆', 10, 0, updated_at, updated_at FROM local_users;
+
+ALTER TABLE skill_installations ADD COLUMN category_id TEXT NOT NULL DEFAULT 'uncategorized';
+ALTER TABLE mcp_servers ADD COLUMN category_id TEXT NOT NULL DEFAULT 'uncategorized';
+
+UPDATE mcp_servers SET category_id = 'memory'
+WHERE id = 'builtin-memory' AND status <> 'archived';
+
+CREATE INDEX idx_skill_installations_user_category
+  ON skill_installations(user_id, category_id, skill_name);
+CREATE INDEX idx_mcp_servers_user_category
+  ON mcp_servers(user_id, category_id, name);
+`,
+  },
+  {
+    version: 12,
+    name: 'split-capability-category-types',
+    sql: `
+CREATE TABLE capability_categories_v12 (
+  id          TEXT NOT NULL,
+  user_id     TEXT NOT NULL,
+  type        TEXT NOT NULL CHECK (type IN ('skill', 'mcp')),
+  name        TEXT NOT NULL COLLATE NOCASE,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  is_system   INTEGER NOT NULL DEFAULT 0 CHECK (is_system IN (0, 1)),
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (user_id, type, id),
+  UNIQUE (user_id, type, name),
+  FOREIGN KEY (user_id) REFERENCES local_users(id)
+);
+
+INSERT INTO capability_categories_v12
+  (id, user_id, type, name, sort_order, is_system, created_at, updated_at)
+SELECT id, user_id, 'skill', name, sort_order, is_system, created_at, updated_at
+FROM capability_categories;
+
+INSERT INTO capability_categories_v12
+  (id, user_id, type, name, sort_order, is_system, created_at, updated_at)
+SELECT id, user_id, 'mcp', name, sort_order, is_system, created_at, updated_at
+FROM capability_categories;
+
+DROP TABLE capability_categories;
+ALTER TABLE capability_categories_v12 RENAME TO capability_categories;
+`,
+  },
+  {
+    version: 13,
+    name: 'prune-capability-category-namespaces',
+    sql: `
+-- v12 把所有旧分类复制进了 skill 与 mcp 两个命名空间，导致用户在 Skill 页创建的分类
+-- 泄漏进 mcp（同名 mcp 副本），mcp 专有的 memory 分类也泄漏进 skill。按命名空间裁剪：
+--   mcp   只保留系统分类 + memory（builtin-memory 的归属）
+--   skill 只保留系统分类
+-- 被裁剪分类下的 server/skill 一律回退到 uncategorized。
+UPDATE mcp_servers
+   SET category_id = 'uncategorized', updated_at = datetime('now')
+ WHERE category_id IN (
+     SELECT id FROM capability_categories
+      WHERE type = 'mcp' AND is_system = 0 AND id <> 'memory'
+ );
+
+UPDATE skill_installations
+   SET category_id = 'uncategorized', updated_at = datetime('now')
+ WHERE category_id = 'memory';
+
+DELETE FROM capability_categories
+ WHERE type = 'mcp' AND is_system = 0 AND id <> 'memory';
+
+DELETE FROM capability_categories
+ WHERE type = 'skill' AND is_system = 0 AND id = 'memory';
+`,
+  },
 ];

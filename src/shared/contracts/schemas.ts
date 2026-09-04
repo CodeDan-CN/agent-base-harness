@@ -20,6 +20,9 @@ import {
   turnReadParamsSchema,
 } from '../../client-contracts/runtime';
 import {
+  capabilityCategoryCreateParamsSchema,
+  capabilityCategoryDeleteParamsSchema,
+  capabilityCategoryRenameParamsSchema,
   modelArchiveParamsSchema,
   modelDefaultSetParamsSchema,
   modelDiscoverParamsSchema,
@@ -36,6 +39,7 @@ import {
   mcpServerTestParamsSchema,
   mcpToolToggleParamsSchema,
   skillManagementSnapshotSchema,
+  skillCategorySetParamsSchema,
   skillToggleParamsSchema,
 } from './management';
 import { modelCallStatisticsParamsSchema, modelCallStatisticsSnapshotSchema } from './statistics';
@@ -109,6 +113,10 @@ export const commandRequestSchema = z.discriminatedUnion('method', [
   command('model.discover', modelDiscoverParamsSchema),
   command('skill.enable', skillToggleParamsSchema),
   command('skill.disable', skillToggleParamsSchema),
+  command('skill.category.set', skillCategorySetParamsSchema),
+  command('capability-category.create', capabilityCategoryCreateParamsSchema),
+  command('capability-category.rename', capabilityCategoryRenameParamsSchema),
+  command('capability-category.delete', capabilityCategoryDeleteParamsSchema),
   command('mcp-server.save', mcpServerSaveParamsSchema),
   command('mcp-server.test', mcpServerTestParamsSchema),
   command('mcp-server.archive', mcpServerTargetParamsSchema),
@@ -228,13 +236,9 @@ export function runtimeResponseSchema(method: string): z.ZodTypeAny | undefined 
         })
         .strict();
     case 'mcp-server.refresh':
-      return z
-        .object({ id: z.string(), toolCount: z.number().int().nonnegative() })
-        .strict();
+      return z.object({ id: z.string(), toolCount: z.number().int().nonnegative() }).strict();
     case 'mcp-tool.toggle':
-      return z
-        .object({ serverId: z.string(), rawName: z.string(), enabled: z.boolean() })
-        .strict();
+      return z.object({ serverId: z.string(), rawName: z.string(), enabled: z.boolean() }).strict();
     case 'session.list':
       return z.array(sessionResultSchema);
     case 'session.snapshot':

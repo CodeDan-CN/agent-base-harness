@@ -86,6 +86,38 @@ export const skillToggleParamsSchema = z
   .object({ skillName: id, expectedRevision: revision })
   .strict();
 
+export const capabilityCategoryCreateParamsSchema = z
+  .object({
+    type: z.enum(['skill', 'mcp']),
+    name: z.string().trim().min(1).max(40),
+    expectedRevision: revision,
+  })
+  .strict();
+export const capabilityCategoryRenameParamsSchema = z
+  .object({
+    type: z.enum(['skill', 'mcp']),
+    id,
+    name: z.string().trim().min(1).max(40),
+    expectedRevision: revision,
+  })
+  .strict();
+export const capabilityCategoryDeleteParamsSchema = z
+  .object({ type: z.enum(['skill', 'mcp']), id, expectedRevision: revision })
+  .strict();
+export const skillCategorySetParamsSchema = z
+  .object({ skillName: id, categoryId: id, expectedRevision: revision })
+  .strict();
+
+const capabilityCategorySchema = z
+  .object({
+    id: z.string(),
+    type: z.enum(['skill', 'mcp']),
+    name: z.string(),
+    sortOrder: z.number().int(),
+    system: z.boolean(),
+  })
+  .strict();
+
 export const modelManagementSnapshotSchema = z
   .object({
     revision,
@@ -187,12 +219,14 @@ export const modelServiceTestResultSchema = z
 export const skillManagementSnapshotSchema = z
   .object({
     revision,
+    categories: z.array(capabilityCategorySchema),
     skills: z.array(
       z
         .object({
           id: z.string(),
           name: z.string(),
           description: z.string(),
+          categoryId: z.string(),
           sourceType: z.string(),
           enabled: z.boolean(),
           status: z.string(),
@@ -233,6 +267,7 @@ export const mcpServerSaveParamsSchema = z.discriminatedUnion('transport', [
         .max(80)
         .regex(/^[A-Za-z0-9_-]+$/),
       summary: z.string().trim().max(300),
+      categoryId: id,
       transport: z.literal('stdio'),
       config: mcpStdioConfigSchema,
       enabled: z.boolean(),
@@ -250,6 +285,7 @@ export const mcpServerSaveParamsSchema = z.discriminatedUnion('transport', [
         .max(80)
         .regex(/^[A-Za-z0-9_-]+$/),
       summary: z.string().trim().max(300),
+      categoryId: id,
       transport: z.literal('streamable-http'),
       config: mcpHttpConfigSchema,
       enabled: z.boolean(),
@@ -280,12 +316,14 @@ export const mcpToolToggleParamsSchema = z
 export const mcpManagementSnapshotSchema = z
   .object({
     revision,
+    categories: z.array(capabilityCategorySchema),
     servers: z.array(
       z
         .object({
           id: z.string(),
           name: z.string(),
           summary: z.string(),
+          categoryId: z.string(),
           transport: z.enum(['stdio', 'streamable-http']),
           status: z.enum(['enabled', 'disabled']),
           config: z.record(z.unknown()),

@@ -25,6 +25,7 @@ export interface McpServer {
   userId: LocalUserId;
   name: string;
   summary: string;
+  categoryId: string;
   transport: McpTransport;
   status: McpServerStatus;
   config: McpServerConfig;

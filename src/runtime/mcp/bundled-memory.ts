@@ -1,5 +1,6 @@
 import type { BundledRuntimeSnapshot } from '../../infrastructure/runtime/bundled-runtime-registry';
 import type { SqliteRepositories } from '../../infrastructure/sqlite/repositories';
+import { MEMORY_CATEGORY_ID } from '../../shared/domain/capability-category';
 
 export const BUNDLED_MEMORY_SERVER_ID = 'builtin-memory';
 export const BUNDLED_MEMORY_SERVER_NAME = 'memory';
@@ -20,6 +21,7 @@ export function seedBundledMemoryServers(
 ): void {
   if (!runtime) return;
   for (const user of repos.users.listUsers()) {
+    repos.categories.ensureDefaults(user.id, 'mcp', now);
     const bundled = repos.mcp.getServer(user.id, BUNDLED_MEMORY_SERVER_ID);
     if (bundled) {
       if (bundled.status !== 'archived' && bundled.summary.trim().length === 0) {
@@ -35,6 +37,7 @@ export function seedBundledMemoryServers(
     if (repos.mcp.getServerByName(user.id, BUNDLED_MEMORY_SERVER_NAME)) {
       continue;
     }
+    repos.categories.ensureMemoryDefault(user.id, now);
     repos.mcp.createServer({
       id: BUNDLED_MEMORY_SERVER_ID,
       userId: user.id,
@@ -48,6 +51,7 @@ export function seedBundledMemoryServers(
       },
       credentialRef: null,
       enabled: true,
+      categoryId: MEMORY_CATEGORY_ID,
       now,
     });
   }

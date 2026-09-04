@@ -65,6 +65,7 @@ export class SkillCatalogService {
         .map((i) => ({
           name: i.skillName,
           description: i.description,
+          categoryId: i.categoryId,
           sourceType: i.sourceType,
           resourceBase: i.rootPath,
           metadata: i.metadata,

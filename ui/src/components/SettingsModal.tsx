@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   BarChart3,
   Cable,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -12,6 +13,8 @@ import {
   EyeOff,
   FileText,
   FolderOpen,
+  MoreHorizontal,
+  Pencil,
   KeyRound,
   Plus,
   RefreshCw,
@@ -41,7 +44,7 @@ import { command, query, requireClient, unwrap, userMessage } from '../client';
 import type { ThemePreference } from '../theme';
 import type { SettingsTab } from '../types';
 import { useConfirmDialog } from './Dialogs';
-import { SelectMenu } from './SelectMenu';
+import { SelectMenu, CategoryCombo } from './SelectMenu';
 
 interface SettingsModalProps {
   initialTab?: SettingsTab;
@@ -57,7 +60,10 @@ export function SettingsModal(props: SettingsModalProps): JSX.Element {
 
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !document.querySelector('.select-popover, .dialog-backdrop')) {
+      if (
+        event.key === 'Escape' &&
+        !document.querySelector('.select-popover, .dialog-backdrop, .category-manager-popover')
+      ) {
         props.onClose();
       }
     };
@@ -1576,6 +1582,7 @@ interface McpDraft {
   id?: string;
   name: string;
   summary: string;
+  category: string;
   transport: 'streamable-http' | 'stdio';
   url: string;
   local: boolean;
@@ -1591,6 +1598,7 @@ interface McpDraft {
 const emptyMcpDraft = (): McpDraft => ({
   name: 'memory',
   summary: '',
+  category: '未分类',
   transport: 'streamable-http',
   url: '',
   local: false,
@@ -1611,6 +1619,8 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
   const [draft, setDraft] = useState<McpDraft>(emptyMcpDraft);
   const [initialLoading, setInitialLoading] = useState(true);
   const [busyByServer, setBusyByServer] = useState<Record<string, string>>({});
+  const [search, setSearch] = useState('');
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
 
   const selectId = (id: string | null) => {
     selectedIdRef.current = id;
@@ -1645,7 +1655,15 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
           : (currentId ?? next.servers[0]?.id ?? null);
       selectId(target);
       const server = next.servers.find((item) => item.id === target);
-      setDraft(server ? mcpDraftOf(server) : emptyMcpDraft());
+      setDraft(server ? mcpDraftOf(server, next.categories) : emptyMcpDraft());
+      if (server) {
+        setCollapsedCategories((current) => {
+          if (!current.has(server.categoryId)) return current;
+          const nextCollapsed = new Set(current);
+          nextCollapsed.delete(server.categoryId);
+          return nextCollapsed;
+        });
+      }
     } catch (error) {
       onNotify(userMessage(error), 'error');
     } finally {
@@ -1661,7 +1679,13 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
     const server = snapshot?.servers.find((item) => item.id === id);
     if (!server) return;
     selectId(id);
-    setDraft(mcpDraftOf(server));
+    setDraft(mcpDraftOf(server, snapshot?.categories ?? []));
+    setCollapsedCategories((current) => {
+      if (!current.has(server.categoryId)) return current;
+      const next = new Set(current);
+      next.delete(server.categoryId);
+      return next;
+    });
   };
 
   const credential = () => {
@@ -1670,11 +1694,12 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
     return { action: 'unchanged' as const };
   };
 
-  const params = (): McpServerSaveParams => {
+  const params = (categoryId: string): McpServerSaveParams => {
     const common = {
       ...(draft.id ? { id: draft.id } : {}),
       name: draft.name.trim(),
       summary: draft.summary.trim(),
+      categoryId,
       enabled: draft.enabled,
       credential: credential(),
       expectedRevision: snapshot?.revision ?? 0,
@@ -1711,6 +1736,9 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
     if (draft.summary.trim().length > 300) {
       return 'MCP Server 摘要不能超过 300 个字符。';
     }
+    if (draft.category.trim().length > 40) {
+      return '分类名称不能超过 40 个字符。';
+    }
     if (draft.transport === 'streamable-http') {
       if (!draft.url.trim()) return '请填写 Streamable HTTP 地址。';
       let endpoint: URL;
@@ -1739,11 +1767,28 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
       onNotify(validationError, 'error');
       return;
     }
+    const categoryName = draft.category.trim() || '未分类';
     const originId = draft.id ?? null;
     const serverKey = draft.id ?? '__new__';
     markBusy(serverKey, 'save');
     try {
-      const result = await command<{ id: string }>('mcp-server.save', params());
+      let categoryId = (snapshot?.categories ?? []).find(
+        (category) => category.name.toLocaleLowerCase() === categoryName.toLocaleLowerCase(),
+      )?.id;
+      let expectedRevision = snapshot?.revision ?? 0;
+      if (!categoryId) {
+        const created = await command<{ id: string }>('capability-category.create', {
+          type: 'mcp',
+          name: categoryName,
+          expectedRevision,
+        });
+        categoryId = created.id;
+        expectedRevision = expectedRevision + 1;
+      }
+      const result = await command<{ id: string }>('mcp-server.save', {
+        ...params(categoryId),
+        expectedRevision,
+      });
       onNotify('MCP Server 已保存。新发现工具默认关闭。', 'success');
       await reload({ preferredId: result.id, originId });
     } catch (error) {
@@ -1762,7 +1807,11 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
     const serverKey = draft.id ?? '__new__';
     markBusy(serverKey, 'test');
     try {
-      const { expectedRevision, ...testParams } = params();
+      const categoryName = draft.category.trim() || '未分类';
+      const existing = (snapshot?.categories ?? []).find(
+        (category) => category.name.toLocaleLowerCase() === categoryName.toLocaleLowerCase(),
+      );
+      const { expectedRevision, ...testParams } = params(existing?.id ?? 'uncategorized');
       void expectedRevision;
       const result = await command<{ status: string; toolCount: number }>(
         'mcp-server.test',
@@ -1844,11 +1893,26 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
       markBusy(serverId, null);
     }
   };
-
   const serverKey = draft.id ?? '__new__';
   const busy = busyByServer[serverKey] ?? null;
   const serverTools = snapshot?.tools.filter((tool) => tool.serverId === draft.id) ?? [];
   const isBundledMemory = draft.id === 'builtin-memory';
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const groupedServers = useMemo(
+    () =>
+      (snapshot?.categories ?? [])
+        .map((category) => ({
+          category,
+          servers: (snapshot?.servers ?? []).filter(
+            (server) =>
+              server.categoryId === category.id &&
+              (!normalizedSearch ||
+                fuzzyIncludes(`${server.name} ${server.summary}`, normalizedSearch)),
+          ),
+        }))
+        .filter((group) => group.servers.length > 0),
+    [snapshot, normalizedSearch],
+  );
 
   return (
     <div className="settings-page models-page mcp-page">
@@ -1860,35 +1924,76 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
       </header>
       <div className="model-layout">
         <aside className="service-list">
-          <button
-            className="dashed-button"
-            onClick={() => {
-              selectId(null);
-              setDraft(emptyMcpDraft());
-            }}
-          >
-            <Plus size={14} /> 添加 MCP Server
-          </button>
+          <label className="compact-search mcp-search">
+            <Search size={13} />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="搜索名称或简介..."
+            />
+          </label>
+          <div className="mcp-add-row">
+            <button
+              className="dashed-button"
+              onClick={() => {
+                selectId(null);
+                setDraft(emptyMcpDraft());
+              }}
+            >
+              <Plus size={14} /> 添加 MCP Server
+            </button>
+          </div>
           <div className="service-items custom-scrollbar">
-            {(snapshot?.servers ?? []).map((server) => (
-              <button
-                key={server.id}
-                className={`service-item ${selectedId === server.id ? 'active' : ''}`}
-                onClick={() => selectServer(server.id)}
-              >
-                <span className="service-icon">
-                  <Cable size={14} />
-                </span>
-                <span className="service-copy">
-                  <strong>{server.name}</strong>
-                  <small>
-                    {server.transport} · {server.toolCount} 个工具
-                  </small>
-                </span>
-                {server.id === 'builtin-memory' && <em>内置</em>}
-                {server.connectionStatus === 'connected' && <em>已连接</em>}
-              </button>
-            ))}
+            {groupedServers.map(({ category, servers }) => {
+              const collapsed = !normalizedSearch && collapsedCategories.has(category.id);
+              return (
+                <section className="mcp-category-group" key={category.id}>
+                  <button
+                    type="button"
+                    className="mcp-category-heading"
+                    aria-expanded={!collapsed}
+                    onClick={() =>
+                      setCollapsedCategories((current) => {
+                        const next = new Set(current);
+                        if (next.has(category.id)) next.delete(category.id);
+                        else next.add(category.id);
+                        return next;
+                      })
+                    }
+                  >
+                    {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                    <span>{category.name}</span>
+                    <small>{servers.length}</small>
+                  </button>
+                  {!collapsed &&
+                    servers.map((server) => (
+                      <button
+                        key={server.id}
+                        className={`service-item ${selectedId === server.id ? 'active' : ''}`}
+                        onClick={() => selectServer(server.id)}
+                      >
+                        <span className="service-icon">
+                          <Cable size={14} />
+                        </span>
+                        <span className="service-copy">
+                          <strong>{server.name}</strong>
+                          <small className="mcp-service-summary">
+                            {server.summary || '暂无简介'}
+                          </small>
+                          <small>
+                            {server.transport} · {server.toolCount} 个工具
+                          </small>
+                        </span>
+                        {server.id === 'builtin-memory' && <em>内置</em>}
+                        {server.connectionStatus === 'connected' && <em>已连接</em>}
+                      </button>
+                    ))}
+                </section>
+              );
+            })}
+            {!initialLoading && groupedServers.length === 0 && (
+              <div className="empty-panel compact">未找到匹配的 MCP Server。</div>
+            )}
           </div>
         </aside>
         <main className="service-editor custom-scrollbar">
@@ -1944,6 +2049,21 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
                 />
               </label>
             </div>
+            <label className="form-field mcp-category-field">
+              <span>分类</span>
+              <CategoryCombo
+                text={draft.category}
+                ariaLabel="MCP Server 分类"
+                disabled={initialLoading || Boolean(busy)}
+                placeholder="选择或输入分类"
+                options={(snapshot?.categories ?? []).map((category) => ({
+                  value: category.id,
+                  label: category.name,
+                }))}
+                onTextChange={(category) => setDraft({ ...draft, category })}
+              />
+              <small>可直接选择已有分类，或输入新名称；保存时若分类不存在会自动新建。</small>
+            </label>
             <label className="form-field">
               <span>能力摘要</span>
               <textarea
@@ -2108,12 +2228,16 @@ function McpSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.El
   );
 }
 
-function mcpDraftOf(server: McpManagementSnapshot['servers'][number]): McpDraft {
+function mcpDraftOf(
+  server: McpManagementSnapshot['servers'][number],
+  categories: ReadonlyArray<{ id: string; name: string }>,
+): McpDraft {
   const config = server.config;
   return {
     id: server.id,
     name: server.name,
     summary: server.summary,
+    category: categories.find((item) => item.id === server.categoryId)?.name ?? '未分类',
     transport: server.transport,
     url: typeof config.url === 'string' ? config.url : '',
     local: config.local === true,
@@ -2151,9 +2275,11 @@ function parseEnv(value: string): Record<string, string> {
 }
 
 function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.Element {
+  const { confirm, dialog: confirmDialog } = useConfirmDialog();
   const [snapshot, setSnapshot] = useState<SkillManagementSnapshot | null>(null);
   const [search, setSearch] = useState('');
   const [enabledOnly, setEnabledOnly] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState('all');
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>('load');
   const reload = async () => {
@@ -2169,17 +2295,28 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
     void reload();
   }, []);
 
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const skill of snapshot?.skills ?? []) {
+      counts.set(skill.categoryId, (counts.get(skill.categoryId) ?? 0) + 1);
+    }
+    return counts;
+  }, [snapshot]);
+  const categoryName = (categoryId: string) =>
+    snapshot?.categories.find((category) => category.id === categoryId)?.name ?? '未分类';
+
   const filtered = useMemo(
     () =>
       (snapshot?.skills ?? []).filter(
         (skill) =>
           (!enabledOnly || skill.enabled) &&
+          (categoryFilter === 'all' || skill.categoryId === categoryFilter) &&
           (!search.trim() ||
             `${skill.name} ${skill.description}`
               .toLocaleLowerCase()
               .includes(search.trim().toLocaleLowerCase())),
       ),
-    [snapshot, enabledOnly, search],
+    [snapshot, enabledOnly, categoryFilter, search],
   );
   const selected = snapshot?.skills.find((skill) => skill.name === selectedName);
   const toggle = async (name: string, enabled: boolean) => {
@@ -2213,6 +2350,76 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
       setBusy(null);
     }
   };
+  const setCategory = async (skillName: string, categoryId: string) => {
+    if (!snapshot) return;
+    setBusy(`skill-category:${skillName}`);
+    try {
+      await command('skill.category.set', {
+        skillName,
+        categoryId,
+        expectedRevision: snapshot.revision,
+      });
+      await reload();
+      onNotify('Skill 分类已更新。', 'success');
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+      setBusy(null);
+    }
+  };
+  const createCategory = async (name: string) => {
+    if (!snapshot || !name.trim()) return;
+    setBusy('category');
+    try {
+      await command('capability-category.create', {
+        type: 'skill',
+        name,
+        expectedRevision: snapshot.revision,
+      });
+      await reload();
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+      setBusy(null);
+    }
+  };
+  const renameCategory = async (id: string, name: string) => {
+    if (!snapshot || !id || !name.trim()) return;
+    setBusy('category');
+    try {
+      await command('capability-category.rename', {
+        type: 'skill',
+        id,
+        name,
+        expectedRevision: snapshot.revision,
+      });
+      await reload();
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+      setBusy(null);
+    }
+  };
+  const deleteCategory = async (id: string, name: string) => {
+    if (!snapshot) return;
+    const accepted = await confirm({
+      title: '删除分类？',
+      description: `“${name}”中的 Skill 会移动到“未分类”。`,
+      confirmLabel: '删除分类',
+      tone: 'danger',
+    });
+    if (!accepted) return;
+    setBusy('category');
+    try {
+      await command('capability-category.delete', {
+        type: 'skill',
+        id,
+        expectedRevision: snapshot.revision,
+      });
+      if (categoryFilter === id) setCategoryFilter('all');
+      await reload();
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+      setBusy(null);
+    }
+  };
 
   if (selected)
     return (
@@ -2231,9 +2438,22 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
               <h2>SKILL.md</h2>
               <p>托管 Skill 摘要</p>
             </div>
-            <button className="secondary-button" onClick={() => setSelectedName(null)}>
-              返回列表
-            </button>
+            <div className="row-actions skill-detail-actions">
+              <SelectMenu
+                value={selected.categoryId}
+                ariaLabel="Skill 分类"
+                disabled={Boolean(busy)}
+                className="compact"
+                options={(snapshot?.categories ?? []).map((category) => ({
+                  value: category.id,
+                  label: category.name,
+                }))}
+                onChange={(categoryId) => void setCategory(selected.name, categoryId)}
+              />
+              <button className="secondary-button" onClick={() => setSelectedName(null)}>
+                返回列表
+              </button>
+            </div>
           </header>
           <div className="skill-document">
             <pre>{`name: ${selected.name}\ndescription: ${selected.description}\nsource: ${selected.sourceType}\nstatus: ${selected.status}\ncompatibility: ${selected.compatibilityStatus}`}</pre>
@@ -2244,6 +2464,8 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
               <dd>{selected.contentDigest}</dd>
               <dt>运行状态</dt>
               <dd>{selected.enabled ? '已启用' : '已停用'}</dd>
+              <dt>分类</dt>
+              <dd>{categoryName(selected.categoryId)}</dd>
               <dt>元数据</dt>
               <dd>
                 {Object.keys(selected.metadata).length
@@ -2256,6 +2478,7 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
             </p>
           </div>
         </main>
+        {confirmDialog}
       </div>
     );
 
@@ -2267,6 +2490,40 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
           <p>可导入标准 SKILL.md 目录或 ZIP，校验后复制到当前用户的托管区域。</p>
         </div>
       </header>
+      <div className="skill-category-bar">
+        <div
+          className="skill-category-tabs custom-scrollbar"
+          role="tablist"
+          aria-label="Skill 分类"
+        >
+          <button
+            type="button"
+            className={categoryFilter === 'all' ? 'active' : ''}
+            onClick={() => setCategoryFilter('all')}
+          >
+            全部 <small>{snapshot?.skills.length ?? 0}</small>
+          </button>
+          {(snapshot?.categories ?? []).map((category) => (
+            <button
+              type="button"
+              className={categoryFilter === category.id ? 'active' : ''}
+              key={category.id}
+              onClick={() => setCategoryFilter(category.id)}
+            >
+              {category.name} <small>{categoryCounts.get(category.id) ?? 0}</small>
+            </button>
+          ))}
+        </div>
+        <CategoryManager
+          categories={snapshot?.categories ?? []}
+          counts={categoryCounts}
+          busy={busy === 'category'}
+          label="管理分类"
+          onCreate={createCategory}
+          onRename={renameCategory}
+          onDelete={deleteCategory}
+        />
+      </div>
       <div className="skills-toolbar">
         <label className="compact-search">
           <Search size={14} />
@@ -2313,7 +2570,7 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
                 </div>
                 <p>{skill.description || '暂无描述'}</p>
                 <small>
-                  {skill.sourceType} · {skill.status}
+                  {categoryName(skill.categoryId)} · {skill.sourceType} · {skill.status}
                 </small>
               </div>
               <label className="toggle" onClick={(event) => event.stopPropagation()}>
@@ -2332,8 +2589,27 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
           <div className="empty-panel">未找到匹配的 Skill。</div>
         )}
       </div>
+      {confirmDialog}
     </div>
   );
+}
+
+function fuzzyIncludes(value: string, normalizedQuery: string): boolean {
+  if (!normalizedQuery) return true;
+  const normalizedValue = value.toLocaleLowerCase();
+  if (normalizedValue.includes(normalizedQuery)) return true;
+  return normalizedQuery
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((term) => {
+      if (normalizedValue.includes(term)) return true;
+      let cursor = 0;
+      for (const character of normalizedValue) {
+        if (character === term[cursor]) cursor += 1;
+        if (cursor === term.length) return true;
+      }
+      return false;
+    });
 }
 
 function formatTokens(value: number | null): string {
@@ -2341,4 +2617,166 @@ function formatTokens(value: number | null): string {
   if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
   if (value >= 1000) return `${Math.round(value / 100) / 10}K`;
   return String(value);
+}
+
+interface CategoryManagerProps {
+  categories: ReadonlyArray<{ id: string; name: string; system: boolean }>;
+  counts: Map<string, number>;
+  busy: boolean;
+  label: string;
+  onCreate(name: string): void | Promise<void>;
+  onRename(id: string, name: string): void | Promise<void>;
+  onDelete(id: string, name: string): void | Promise<void>;
+}
+
+/** 分类管理浮层：删除确认由父级各自闭环，避免双重确认弹窗。 */
+function CategoryManager({
+  categories,
+  counts,
+  busy,
+  label,
+  onCreate,
+  onRename,
+  onDelete,
+}: CategoryManagerProps): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', keydown);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', keydown);
+    };
+  }, [open]);
+
+  return (
+    <div className="category-manager" ref={containerRef}>
+      <button
+        type="button"
+        className="icon-button category-manager-trigger"
+        title={label}
+        aria-label={label}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <MoreHorizontal size={17} />
+      </button>
+      {open && (
+        <div className="category-manager-popover">
+          <strong>{label}</strong>
+          <form
+            className="category-create-row"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!newName.trim() || busy) return;
+              void onCreate(newName.trim());
+              setNewName('');
+            }}
+          >
+            <input
+              value={newName}
+              maxLength={40}
+              disabled={busy}
+              onChange={(event) => setNewName(event.target.value)}
+              placeholder="新增分类"
+              aria-label="新增分类名称"
+            />
+            <button
+              type="submit"
+              className="icon-button"
+              disabled={busy || !newName.trim()}
+              aria-label="新增分类"
+            >
+              <Plus size={15} />
+            </button>
+          </form>
+          <div className="category-manager-list custom-scrollbar">
+            {categories.map((category) =>
+              editingId === category.id ? (
+                <form
+                  className="category-edit-row"
+                  key={category.id}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!editingId || !editingName.trim() || busy) return;
+                    void onRename(editingId, editingName.trim());
+                    setEditingId(null);
+                  }}
+                >
+                  <input
+                    autoFocus
+                    value={editingName}
+                    maxLength={40}
+                    disabled={busy}
+                    onChange={(event) => setEditingName(event.target.value)}
+                    aria-label={`重命名 ${category.name}`}
+                  />
+                  <button
+                    type="submit"
+                    className="icon-button"
+                    disabled={busy || !editingName.trim()}
+                    aria-label="保存分类名称"
+                  >
+                    <Check size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    onClick={() => setEditingId(null)}
+                    aria-label="取消重命名"
+                  >
+                    <X size={14} />
+                  </button>
+                </form>
+              ) : (
+                <div className="category-manager-row" key={category.id}>
+                  <span>{category.name}</span>
+                  <small>{counts.get(category.id) ?? 0}</small>
+                  {category.system ? (
+                    <em>固定</em>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        disabled={busy}
+                        onClick={() => {
+                          setEditingId(category.id);
+                          setEditingName(category.name);
+                        }}
+                        aria-label={`重命名 ${category.name}`}
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button danger"
+                        disabled={busy}
+                        onClick={() => void onDelete(category.id, category.name)}
+                        aria-label={`删除 ${category.name}`}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              ),
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

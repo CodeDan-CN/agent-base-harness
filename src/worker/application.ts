@@ -29,6 +29,7 @@ import { SystemClock, UuidIdProvider } from '../shared/domain/ports';
 import type { Clock, IdProvider } from '../shared/domain/ports';
 import { isBuiltinUser } from '../shared/domain/user';
 import type { LocalUserId } from '../shared/domain/user';
+import type { CapabilityCategoryType } from '../shared/domain/capability-category';
 import { BridgeError } from '../shared/contracts/errors';
 import type { BootstrapResult } from '../shared/contracts/bootstrap';
 import type { HealthSnapshot, InterpreterHealth } from '../shared/contracts/health';
@@ -143,6 +144,31 @@ export interface WorkerApplication {
     enabled: boolean,
     expectedRevision: number,
   ): { skillName: string; enabled: boolean };
+  setSkillCategory(
+    userId: LocalUserId,
+    skillName: string,
+    categoryId: string,
+    expectedRevision: number,
+  ): { skillName: string; categoryId: string };
+  createCapabilityCategory(
+    userId: LocalUserId,
+    type: CapabilityCategoryType,
+    name: string,
+    expectedRevision: number,
+  ): { id: string };
+  renameCapabilityCategory(
+    userId: LocalUserId,
+    type: CapabilityCategoryType,
+    id: string,
+    name: string,
+    expectedRevision: number,
+  ): { id: string };
+  deleteCapabilityCategory(
+    userId: LocalUserId,
+    type: CapabilityCategoryType,
+    id: string,
+    expectedRevision: number,
+  ): { id: string };
   installSkillDirectory(userId: LocalUserId, sourcePath: string): { skillName: string };
   mcpManagement(userId: LocalUserId): Promise<McpManagementSnapshot>;
   saveMcpServer(userId: LocalUserId, input: McpServerSaveParams): Promise<{ id: string }>;
@@ -190,6 +216,8 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
   const repos = new SqliteRepositories(db);
   repos.users.seedUsers(clock.nowIso());
   for (const user of repos.users.listUsers()) {
+    repos.categories.ensureDefaults(user.id, 'skill', clock.nowIso());
+    repos.categories.ensureDefaults(user.id, 'mcp', clock.nowIso());
     ensureUserMemoryProfile(deps.appDataDir, user.id);
   }
   seedBundledMemoryServers(repos, deps.runtime, clock.nowIso());
@@ -694,6 +722,13 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
       skillCatalog.refresh(userId);
       return {
         revision: repos.users.getRevisions(userId).skillRevision,
+        categories: repos.categories.list(userId, 'skill').map((category) => ({
+          id: category.id,
+          type: category.type,
+          name: category.name,
+          sortOrder: category.sortOrder,
+          system: category.system,
+        })),
         skills: repos.skills
           .listInstallations(userId)
           .filter(
@@ -704,6 +739,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
             id: skill.id,
             name: skill.skillName,
             description: skill.description,
+            categoryId: skill.categoryId,
             sourceType: skill.sourceType,
             enabled: skill.enabled,
             status: skill.status,
@@ -725,6 +761,31 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
       }
       repos.skills.setEnabled(userId, skillName, enabled, clock.nowIso());
       return { skillName, enabled };
+    },
+
+    setSkillCategory(userId, skillName, categoryId, expectedRevision) {
+      assertRevision(repos.users.getRevisions(userId).skillRevision, expectedRevision);
+      repos.categories.setSkillCategory(userId, skillName, categoryId, clock.nowIso());
+      return { skillName, categoryId };
+    },
+
+    createCapabilityCategory(userId, type, name, expectedRevision) {
+      assertRevision(revisionForCategoryType(repos, userId, type), expectedRevision);
+      const id = ids.newId();
+      repos.categories.create(userId, type, id, name, clock.nowIso());
+      return { id };
+    },
+
+    renameCapabilityCategory(userId, type, id, name, expectedRevision) {
+      assertRevision(revisionForCategoryType(repos, userId, type), expectedRevision);
+      repos.categories.rename(userId, type, id, name, clock.nowIso());
+      return { id };
+    },
+
+    deleteCapabilityCategory(userId, type, id, expectedRevision) {
+      assertRevision(revisionForCategoryType(repos, userId, type), expectedRevision);
+      repos.categories.delete(userId, type, id, clock.nowIso());
+      return { id };
     },
 
     installSkillDirectory(userId, sourcePath) {
@@ -755,6 +816,13 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
       const tools = repos.mcp.listTools(userId);
       return {
         revision: repos.users.getRevisions(userId).mcpRevision,
+        categories: repos.categories.list(userId, 'mcp').map((category) => ({
+          id: category.id,
+          type: category.type,
+          name: category.name,
+          sortOrder: category.sortOrder,
+          system: category.system,
+        })),
         servers: await Promise.all(
           servers.map(async (server) => {
             const serverTools = tools.filter((tool) => tool.serverId === server.id);
@@ -762,6 +830,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
               id: server.id,
               name: server.name,
               summary: server.summary,
+              categoryId: server.categoryId,
               transport: server.transport,
               status: server.status === 'enabled' ? 'enabled' : 'disabled',
               config: { ...server.config },
@@ -796,6 +865,9 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
 
     async saveMcpServer(userId, input) {
       assertRevision(repos.users.getRevisions(userId).mcpRevision, input.expectedRevision);
+      if (!repos.categories.get(userId, 'mcp', input.categoryId)) {
+        throw new BridgeError('INVALID_REQUEST', 'Category not found');
+      }
       const id = input.id ?? ids.newId();
       const existing = input.id ? repos.mcp.getServer(userId, input.id) : undefined;
       if (input.id && !existing) throw new BridgeError('INVALID_REQUEST', 'MCP server not found');
@@ -818,6 +890,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
             config: input.config,
             credentialRef,
             enabled: input.enabled,
+            categoryId: input.categoryId,
           },
           clock.nowIso(),
         );
@@ -831,6 +904,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
           config: input.config,
           credentialRef,
           enabled: input.enabled,
+          categoryId: input.categoryId,
           now: clock.nowIso(),
         });
       }
@@ -868,6 +942,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
         userId,
         name: input.name,
         summary: input.summary,
+        categoryId: input.categoryId,
         transport: input.transport,
         status: 'enabled',
         config: input.config,
@@ -1217,6 +1292,15 @@ function assertRevision(actual: number, expected: number): void {
   if (actual !== expected) {
     throw new BridgeError('REVISION_CONFLICT', 'Configuration revision changed');
   }
+}
+
+function revisionForCategoryType(
+  repos: SqliteRepositories,
+  userId: LocalUserId,
+  type: CapabilityCategoryType,
+): number {
+  const revisions = repos.users.getRevisions(userId);
+  return type === 'skill' ? revisions.skillRevision : revisions.mcpRevision;
 }
 
 async function applyCredentialMutation(
