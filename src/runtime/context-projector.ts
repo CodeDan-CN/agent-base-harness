@@ -1,10 +1,12 @@
 import type { SkillInstallation } from '../shared/domain/skill';
+import { isHistoricalConversationMessage } from '../client-contracts/assistant-output-policy';
 import type { PermissionPreset } from '../shared/domain/permission';
 import type { RuntimeProjection } from '../client-contracts/projection';
 import { readUserMemoryProfile } from '../infrastructure/workspace/session-workspace';
 import type { LocalUserId } from '../shared/domain/user';
 import type { ModelToolDefinition, RuntimeMessage } from './model';
 import { MINIMAL_SYSTEM_PROMPT } from './model';
+import { PROGRESS_REMINDER } from './progress-communication';
 
 export const FULL_ACCESS_AUTONOMY_PROMPT =
   '完全访问：偏好、方案、格式及可逆选择自行决定。仅缺少不可推断的必需事实时调用 request_user_input，并设 requiresUserProvidedFact=true；不得收集密码、验证码或 API Key。';
@@ -22,9 +24,11 @@ export interface ContextProjectionInput {
   skills: readonly SkillInstallation[];
   permissionPreset?: PermissionPreset;
   promptEpoch?: number;
+  progressReminder?: boolean;
 }
 
 export interface ProjectedContext {
+  progressReminder: boolean;
   messages: RuntimeMessage[];
   estimatedInputTokens: number;
   budgetTokens: number;
@@ -91,10 +95,19 @@ export class ContextProjector {
 
     // 当前 Turn（尤其 Tool Result）必须完整保留，超过预算时明确失败，不能截断事实。
     const stableSystemTokens = estimateMessage(stableMessage);
-    const currentTurnTokens = estimateMessages(currentMessages);
+    let currentTurnTokens = estimateMessages(currentMessages);
     const fixedTokens = stableSystemTokens + toolSchemaTokens;
-    const requiredTokens = fixedTokens + currentTurnTokens;
+    let requiredTokens = fixedTokens + currentTurnTokens;
     if (requiredTokens > budget) throw new ContextBudgetError();
+    const reminder: RuntimeMessage = { role: 'system', content: PROGRESS_REMINDER };
+    const reminderTokens = estimateMessage(reminder);
+    const progressReminder = Boolean(
+      input.progressReminder && requiredTokens + reminderTokens <= budget,
+    );
+    if (progressReminder) {
+      currentTurnTokens += reminderTokens;
+      requiredTokens += reminderTokens;
+    }
 
     const optional: Array<{ message: RuntimeMessage; eventIds: string[] }> = [];
     if (input.projection.sessionMemorySummary) {
@@ -213,7 +226,13 @@ export class ContextProjector {
     }
 
     return {
-      messages: [stableMessage, ...selected, ...currentMessages],
+      messages: [
+        stableMessage,
+        ...selected,
+        ...currentMessages,
+        ...(progressReminder ? [reminder] : []),
+      ],
+      progressReminder,
       estimatedInputTokens: used,
       budgetTokens: budget,
       tokenBreakdown: { fixedTokens, historyTokens, currentTurnTokens },
@@ -318,7 +337,7 @@ function materializeTurnMessages(projection: RuntimeProjection, turnId: string):
 }
 
 function isVisibleHistoricalMessage(message: RuntimeProjection['messages'][number]): boolean {
-  return message.role !== 'tool' && !(message.role === 'assistant' && message.toolCalls?.length);
+  return isHistoricalConversationMessage(message);
 }
 
 function inputBudget(input: ContextProjectionInput): number {

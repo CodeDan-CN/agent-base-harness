@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import {
   Check,
@@ -28,7 +28,7 @@ import { approvalDisplay } from '../approval-presentation';
 import {
   interactionExecutionTurnIds,
   isExecutionProcessAssistant,
-  selectTemporaryAssistantMessage,
+  selectChatMessages,
   shouldRenderExecutionForMessage,
   shouldRenderStandaloneExecution,
 } from '../chat-layout-policy';
@@ -67,17 +67,8 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
   const projection = props.projection;
   const allMessages = projection?.messages ?? [];
   const messages = useMemo(
-    () =>
-      allMessages.filter(
-        (message) =>
-          (message.role === 'user' && !message.interactionId) ||
-          (message.role === 'assistant' &&
-            !isExecutionProcessAssistant({
-              role: message.role,
-              toolCallCount: message.toolCalls?.length ?? 0,
-            })),
-      ),
-    [allMessages],
+    () => selectChatMessages(allMessages, [...(projection?.interactions.values() ?? [])]),
+    [allMessages, projection],
   );
   const active = projection?.activeTurn ?? null;
   const executionTurn = active ?? [...(projection?.turns.values() ?? [])].at(-1) ?? null;
@@ -89,22 +80,12 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
     () => [...(projection?.streams.values() ?? [])].reverse().find((stream) => !stream.finalized),
     [projection],
   );
-  const streamingTurnId = runningStream ? (active?.id ?? executionTurn?.id ?? null) : null;
+  const streamingTurnId = runningStream
+    ? (runningStream.turnId ?? active?.id ?? executionTurn?.id ?? null)
+    : null;
   const executionTurnHasAssistant = messages.some(
-    (message) => message.role === 'assistant' && message.turnId === executionTurn?.id,
+    (message) => message.role === 'assistant' && executionTurnIds.includes(message.turnId),
   );
-  const executionTurnHasFinalAnswer = messages.some(
-    (message) =>
-      message.role === 'assistant' &&
-      message.turnId === executionTurn?.id &&
-      Boolean(message.content.trim()),
-  );
-  const temporaryAssistantMessage = selectTemporaryAssistantMessage({
-    messages: allMessages,
-    executionTurnId: executionTurn?.id ?? null,
-    hasRunningStream: Boolean(runningStream),
-    hasFinalAssistant: executionTurnHasFinalAnswer,
-  });
   const pendingInteraction = [...(projection?.interactions.values() ?? [])]
     .reverse()
     .find((interaction) => interaction.status === 'pending');
@@ -147,7 +128,8 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
 
   useEffect(() => {
     const target = scrollRef.current;
-    const hasStreamingBody = Boolean(runningStream?.content);
+    const hasStreamingBody =
+      Boolean(runningStream?.content) && runningStream?.displayPhase !== 'commentary';
     if (!target || (!hasStreamingBody && !pinnedToBottom.current)) return;
 
     // 思考过程只滚动自己的面板；正文一旦开始流式输出，主内容区持续跟随。
@@ -157,7 +139,12 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
       target.scrollTop = target.scrollHeight;
     });
     return () => cancelAnimationFrame(frame);
-  }, [messages.length, runningStream?.requestId, runningStream?.content]);
+  }, [
+    messages.length,
+    runningStream?.requestId,
+    runningStream?.content,
+    runningStream?.displayPhase,
+  ]);
 
   return (
     <main className={`chat-area ${props.sidebarOpen ? '' : 'sidebar-collapsed'}`}>
@@ -203,64 +190,92 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
         ) : (
           <div className="message-column">
             {messages.map((message) => {
+              const messageTurnIds = interactionExecutionTurnIds(interactions, message.turnId);
               const producedFiles =
                 message.role === 'assistant'
                   ? producedFilesForMessage(projection, message.turnId, message.seq)
                   : [];
+              const isCommentary = isExecutionProcessAssistant({
+                role: message.role,
+                toolCallCount: message.toolCalls?.length ?? 0,
+                phase: message.phase,
+              });
               return (
-                <article
-                  className={`message ${message.role}`}
-                  key={`${message.seq}-${message.role}`}
-                >
-                  {message.role === 'user' ? (
-                    <div className="user-bubble">
-                      <MarkdownContent
-                        content={message.content}
-                        sessionId={props.sessionId}
-                        onOpenError={props.onNotifyError}
-                      />
-                    </div>
-                  ) : message.role === 'assistant' ? (
-                    <div className="assistant-block">
-                      {shouldRenderExecutionForMessage({
-                        messageTurnId: message.turnId,
-                        streamingTurnId,
-                      }) && (
-                        <ExecutionProcess
-                          projection={projection}
-                          turnIds={interactionExecutionTurnIds(interactions, message.turnId)}
+                <Fragment key={`${message.seq}-${message.role}`}>
+                  <article className={`message ${message.role}`}>
+                    {message.role === 'user' ? (
+                      <div className="user-bubble">
+                        <MarkdownContent
+                          content={message.content}
                           sessionId={props.sessionId}
                           onOpenError={props.onNotifyError}
                         />
-                      )}
-                      <MarkdownContent
-                        content={message.content}
-                        className="assistant-response"
-                        sessionId={props.sessionId}
-                        producedFiles={producedFiles}
-                        onOpenError={props.onNotifyError}
-                      />
-                      <ProducedFiles
-                        sessionId={props.sessionId}
-                        paths={producedFiles}
-                        onOpenError={props.onNotifyError}
-                      />
-                      {message.content && (
-                        <div className="message-actions">
-                          <button
-                            onClick={() => void navigator.clipboard.writeText(message.content)}
-                            title="复制"
-                          >
-                            <Copy size={14} />
-                          </button>
-                          <button title="重新发送暂未开放" disabled>
-                            <RotateCcw size={14} />
-                          </button>
+                      </div>
+                    ) : message.role === 'assistant' ? (
+                      <div className="assistant-block">
+                        {!messageTurnIds.includes(streamingTurnId ?? '') &&
+                          shouldRenderExecutionForMessage({
+                            messageTurnId: message.turnId,
+                            streamingTurnId,
+                          }) && (
+                            <ExecutionProcess
+                              projection={projection}
+                              turnIds={messageTurnIds}
+                              sessionId={props.sessionId}
+                              onOpenError={props.onNotifyError}
+                            />
+                          )}
+                        {!isCommentary && (
+                          <>
+                            <MarkdownContent
+                              content={message.content}
+                              className="assistant-response"
+                              sessionId={props.sessionId}
+                              producedFiles={producedFiles}
+                              onOpenError={props.onNotifyError}
+                            />
+                            <ProducedFiles
+                              sessionId={props.sessionId}
+                              paths={producedFiles}
+                              onOpenError={props.onNotifyError}
+                            />
+                            {message.content && (
+                              <div className="message-actions">
+                                <button
+                                  onClick={() =>
+                                    void navigator.clipboard.writeText(message.content)
+                                  }
+                                  title="复制"
+                                >
+                                  <Copy size={14} />
+                                </button>
+                                <button title="重新发送暂未开放" disabled>
+                                  <RotateCcw size={14} />
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ) : null}
+                  </article>
+                  {message.role === 'user' &&
+                    message.turnId !== executionTurn?.id &&
+                    !projection.messages.some(
+                      (item) => item.role === 'assistant' && messageTurnIds.includes(item.turnId),
+                    ) && (
+                      <article className="message assistant">
+                        <div className="assistant-block">
+                          <ExecutionProcess
+                            projection={projection}
+                            turnIds={interactionExecutionTurnIds(interactions, message.turnId)}
+                            sessionId={props.sessionId}
+                            onOpenError={props.onNotifyError}
+                          />
                         </div>
-                      )}
-                    </div>
-                  ) : null}
-                </article>
+                      </article>
+                    )}
+                </Fragment>
               );
             })}
             {executionTurn &&
@@ -276,14 +291,6 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                     sessionId={props.sessionId}
                     onOpenError={props.onNotifyError}
                   />
-                  {temporaryAssistantMessage && (
-                    <MarkdownContent
-                      content={temporaryAssistantMessage.content}
-                      className="temporary-assistant-response"
-                      sessionId={props.sessionId}
-                      onOpenError={props.onNotifyError}
-                    />
-                  )}
                 </div>
               )}
             {runningStream && executionTurn && (
@@ -295,21 +302,23 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                     sessionId={props.sessionId}
                     onOpenError={props.onNotifyError}
                   />
-                  <div className="streaming-output">
-                    {runningStream.content ? (
-                      <MarkdownContent
-                        content={runningStream.content}
-                        className="streaming-markdown"
-                        sessionId={props.sessionId}
-                        streaming
-                        onOpenError={props.onNotifyError}
-                      />
-                    ) : (
-                      <span className="stream-status">
-                        <Sparkles size={14} /> 正在生成回复
-                      </span>
-                    )}
-                  </div>
+                  {runningStream.displayPhase !== 'commentary' && (
+                    <div className="streaming-output">
+                      {runningStream.content ? (
+                        <MarkdownContent
+                          content={runningStream.content}
+                          className="streaming-markdown"
+                          sessionId={props.sessionId}
+                          streaming
+                          onOpenError={props.onNotifyError}
+                        />
+                      ) : (
+                        <span className="stream-status">
+                          <Sparkles size={14} /> 正在生成回复
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </article>
             )}

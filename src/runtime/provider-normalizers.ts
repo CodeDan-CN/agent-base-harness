@@ -1,4 +1,8 @@
 import type { ModelResponse, ModelStreamEvent, ModelToolCall } from './model';
+import {
+  readAssistantPhase,
+  type AssistantMessagePhase,
+} from '../client-contracts/assistant-output-policy';
 
 interface ToolAccumulator {
   id: string;
@@ -15,6 +19,7 @@ export class OpenAiStreamNormalizer {
   private inputTokens = 0;
   private outputTokens = 0;
   private finishReason = 'stop';
+  private phase: AssistantMessagePhase | undefined;
 
   push(value: unknown): ModelStreamEvent[] {
     const root = record(value);
@@ -22,6 +27,11 @@ export class OpenAiStreamNormalizer {
     const choiceRecord = record(choice);
     const delta = record(choiceRecord?.delta);
     const events: ModelStreamEvent[] = [];
+    const phase = readAssistantPhase(delta?.phase);
+    if (phase && phase !== this.phase) {
+      this.phase = phase;
+      events.push({ type: 'message_metadata', phase });
+    }
     const explicitReasoning =
       stringAt(delta, 'reasoning_content') ?? stringAt(delta, 'reasoning') ?? '';
     if (explicitReasoning) {
@@ -75,14 +85,17 @@ export class OpenAiStreamNormalizer {
     }
     return {
       type: 'completed',
-      response: buildResponse(
-        this.content,
-        this.reasoning,
-        this.tools,
-        this.inputTokens,
-        this.outputTokens,
-        this.finishReason,
-      ),
+      response: {
+        ...buildResponse(
+          this.content,
+          this.reasoning,
+          this.tools,
+          this.inputTokens,
+          this.outputTokens,
+          this.finishReason,
+        ),
+        ...(this.phase ? { phase: this.phase } : {}),
+      },
     };
   }
 }

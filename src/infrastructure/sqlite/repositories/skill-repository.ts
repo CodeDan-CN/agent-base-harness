@@ -141,6 +141,24 @@ export class SkillRepository {
     }
   }
 
+  deleteInstallation(userId: LocalUserId, skillName: string, now: string): void {
+    try {
+      this.db.transaction(() => {
+        const result = this.db
+          .prepare('DELETE FROM skill_installations WHERE user_id = ? AND skill_name = ?')
+          .run(userId, skillName);
+        if (result.changes !== 1) throw new BridgeError('INVALID_REQUEST', 'Skill not found');
+        this.db
+          .prepare(
+            'UPDATE user_config_revisions SET skill_revision = skill_revision + 1, updated_at = ? WHERE user_id = ?',
+          )
+          .run(now, userId);
+      })();
+    } catch (error) {
+      throw mapSqliteError(error);
+    }
+  }
+
   private mapInstallation(row: InstallationRow): SkillInstallation {
     return {
       id: row.id,

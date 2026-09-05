@@ -1627,6 +1627,26 @@ select:focus-visible {
   min-width: 0;
   flex: 1;
 }
+.skill-card > .row-actions {
+  flex: none;
+}
+button.skill-hover-action {
+  opacity: 0;
+  pointer-events: none;
+}
+.skill-card:hover .skill-hover-action,
+.skill-card:focus-within .skill-hover-action,
+.skill-detail main > header:hover .skill-hover-action,
+.skill-detail main > header:focus-within .skill-hover-action {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  button.skill-hover-action {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
 .skill-name {
   display: flex;
   align-items: center;
@@ -2973,6 +2993,91 @@ textarea:focus-visible,
   background: #f6f6f3;
 }
 
+.execution-commentary {
+  margin: 8px 0 12px;
+  line-height: 1.6;
+}
+
+.execution-commentary > :last-child > :first-child {
+  margin-top: 0;
+}
+
+.reasoning-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 执行详情保持轻量；展开状态由用户控制，不随实时输出自动打开。 */
+.execution-step .reasoning-panel,
+.execution-step .tool-execution-panel,
+.execution-step .tool-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.execution-step .reasoning-panel,
+.execution-step .tool-execution-panel {
+  padding: 0;
+}
+
+.execution-step .reasoning-toggle,
+.execution-step .execution-disclosure {
+  margin-bottom: 0;
+  padding: 6px 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.execution-disclosure::-webkit-details-marker,
+.tool-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.execution-disclosure:focus-visible,
+.tool-card > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.disclosure-chevron {
+  flex-shrink: 0;
+}
+
+details[open] > summary > .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.execution-step .tool-card {
+  margin-top: 2px;
+}
+
+.execution-step .tool-card > summary {
+  padding: 6px 0 6px 19px;
+}
+
+.execution-step .tool-card > summary > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.execution-step .tool-detail {
+  padding: 4px 0 8px 19px;
+}
+
+.execution-step .reasoning-scroll {
+  margin-top: 6px;
+}
+
 .reasoning-scroll {
   max-height: 154px;
   overflow-y: auto;
@@ -3537,6 +3642,25 @@ textarea:focus-visible,
   color: #a0a19d;
   font-size: 9px;
   background: #fbfbf9;
+}
+
+.skill-description-dialog {
+  width: min(820px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+}
+
+.skill-description-dialog .app-dialog-actions {
+  margin-top: 20px;
+}
+
+.skill-description-dialog .app-dialog-actions button {
+  min-width: 56px;
+  min-height: 30px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 11px;
 }
 
 .rename-dialog {
@@ -6343,4 +6467,20 @@ select,
     color: #c5c5bf;
     background: rgba(19, 20, 18, 0.48);
   }
+}
+
+.execution-activity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  margin: 8px 0;
+}
+
+.execution-activity small {
+  color: var(--muted);
+  white-space: nowrap;
 }

@@ -15,6 +15,14 @@ export interface ExecutionReasoningLike {
   content: string;
 }
 
+export interface ExecutionCommentary {
+  id: string;
+  stepId: string;
+  content: string;
+  finalized: boolean;
+  interrupted?: boolean;
+}
+
 export interface ExecutionPhase<
   Step extends ExecutionStepLike,
   Tool extends ExecutionToolLike,
@@ -23,6 +31,7 @@ export interface ExecutionPhase<
   steps: Step[];
   tools: Tool[];
   reasoning: Reasoning | null;
+  commentary: ExecutionCommentary[];
 }
 
 export function shouldAutoExpandExecutionProcess(status: string | undefined): boolean {
@@ -30,8 +39,7 @@ export function shouldAutoExpandExecutionProcess(status: string | undefined): bo
 }
 
 /**
- * 以模型实际返回的 reasoning 作为新的展示阶段边界。
- * 后续未返回新 reasoning 的串行工具调用继续追加到最近阶段；同一步里的并行工具按 callIndex 排列。
+ * 一个执行步骤对应一个模型请求；说明和推理都是可选内容，不决定步骤边界。
  */
 export function groupExecutionPhases<
   Step extends ExecutionStepLike,
@@ -41,6 +49,7 @@ export function groupExecutionPhases<
   steps: readonly Step[];
   tools: readonly Tool[];
   reasoning: readonly Reasoning[];
+  commentary?: readonly ExecutionCommentary[];
 }): ExecutionPhase<Step, Tool, Reasoning>[] {
   const reasoningByStep = new Map(
     input.reasoning
@@ -61,18 +70,20 @@ export function groupExecutionPhases<
   const phases: ExecutionPhase<Step, Tool, Reasoning>[] = [];
   for (const step of [...input.steps].sort((left, right) => left.stepIndex - right.stepIndex)) {
     const stepReasoning = reasoningByStep.get(step.id) ?? null;
-    if (phases.length === 0 || stepReasoning) {
-      phases.push({ steps: [], tools: [], reasoning: stepReasoning });
-    }
-    const phase = phases.at(-1);
-    if (!phase) continue;
-    phase.steps.push(step);
-    phase.tools.push(...(toolsByStep.get(step.id) ?? []));
+    phases.push({
+      steps: [step],
+      tools: toolsByStep.get(step.id) ?? [],
+      reasoning: stepReasoning,
+      commentary: (input.commentary ?? []).filter(
+        (item) => item.stepId === step.id && item.content.trim(),
+      ),
+    });
   }
 
   return phases.filter(
     (phase) =>
       phase.reasoning !== null ||
+      phase.commentary.length > 0 ||
       phase.tools.length > 0 ||
       phase.steps.some((step) => step.status === 'running'),
   );

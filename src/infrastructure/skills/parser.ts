@@ -24,7 +24,17 @@ function parseFrontmatter(content: string): Frontmatter | null {
     const kv = line.match(/^\s*([A-Za-z0-9_-]+)\s*:\s*(.*?)\s*$/);
     if (kv) {
       const key = kv[1] ?? '';
-      const value = (kv[2] ?? '').replace(/^["']|["']$/g, '');
+      const raw = kv[2] ?? '';
+      let value = raw.replace(/^["']|["']$/g, '');
+      // 编辑器使用 JSON 双引号标量写回 YAML，正确还原引号、换行和反斜杠。
+      if (raw.startsWith('"') && raw.endsWith('"')) {
+        try {
+          const decoded: unknown = JSON.parse(raw);
+          if (typeof decoded === 'string') value = decoded;
+        } catch {
+          // 保留原有非 JSON YAML 标量的兼容解析。
+        }
+      }
       fields.set(key, value);
     }
   }

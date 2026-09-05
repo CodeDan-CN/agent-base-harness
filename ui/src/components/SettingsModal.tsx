@@ -43,7 +43,7 @@ import { maximumManualOutputBudget, recommendedOutputBudget } from '@client-cont
 import { command, query, requireClient, unwrap, userMessage } from '../client';
 import type { ThemePreference } from '../theme';
 import type { SettingsTab } from '../types';
-import { useConfirmDialog } from './Dialogs';
+import { TextPromptDialog, useConfirmDialog } from './Dialogs';
 import { SelectMenu, CategoryCombo } from './SelectMenu';
 
 interface SettingsModalProps {
@@ -2281,6 +2281,7 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
   const [enabledOnly, setEnabledOnly] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ name: string; description: string } | null>(null);
   const [busy, setBusy] = useState<string | null>('load');
   const reload = async () => {
     try {
@@ -2319,6 +2320,61 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
     [snapshot, enabledOnly, categoryFilter, search],
   );
   const selected = snapshot?.skills.find((skill) => skill.name === selectedName);
+  const saveDescription = async () => {
+    if (!snapshot || !editing || busy) return;
+    setBusy('description');
+    try {
+      await command('skill.description.update', {
+        skillName: editing.name,
+        description: editing.description,
+        expectedRevision: snapshot.revision,
+      });
+      setEditing(null);
+      onNotify('Skill 描述已保存，能力目录将使用新描述。', 'success');
+      await reload();
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+      await reload();
+    }
+  };
+  const removeSkill = async (name: string) => {
+    if (!snapshot || busy) return;
+    const accepted = await confirm({
+      title: '删除 Skill？',
+      description: `将永久删除“${name}”的受管目录和安装记录，不保留备份。原始导入目录不受影响，已加载到会话中的内容不会被抹除。`,
+      confirmLabel: '删除 Skill',
+      tone: 'danger',
+    });
+    if (!accepted) return;
+    setBusy('delete');
+    try {
+      await command('skill.delete', { skillName: name, expectedRevision: snapshot.revision });
+      if (selectedName === name) setSelectedName(null);
+      onNotify(`Skill ${name} 已删除。`, 'success');
+      await reload();
+    } catch (error) {
+      onNotify(userMessage(error), 'error');
+      await reload();
+    }
+  };
+  const descriptionDialog = (
+    <TextPromptDialog
+      className="skill-description-dialog"
+      open={editing !== null}
+      title={`编辑 ${editing?.name ?? ''} 的描述`}
+      description="说明能力和适用场景。模型会根据这段 description 选择 Skill；保存后写回 SKILL.md，不修改正文。"
+      label="Description"
+      value={editing?.description ?? ''}
+      maxLength={4000}
+      multiline
+      busy={busy === 'description'}
+      onChange={(description) =>
+        setEditing((current) => (current ? { ...current, description } : null))
+      }
+      onCancel={() => setEditing(null)}
+      onConfirm={() => void saveDescription()}
+    />
+  );
   const toggle = async (name: string, enabled: boolean) => {
     if (!snapshot) return;
     setBusy(name);
@@ -2439,6 +2495,24 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
               <p>托管 Skill 摘要</p>
             </div>
             <div className="row-actions skill-detail-actions">
+              <button
+                className="secondary-button skill-hover-action"
+                disabled={
+                  Boolean(busy) || selected.sourceType === 'bundled' || selected.status !== 'valid'
+                }
+                onClick={() =>
+                  setEditing({ name: selected.name, description: selected.description })
+                }
+              >
+                <Pencil size={14} /> 编辑描述
+              </button>
+              <button
+                className="danger-button skill-hover-action"
+                disabled={Boolean(busy) || selected.sourceType === 'bundled'}
+                onClick={() => void removeSkill(selected.name)}
+              >
+                <Trash2 size={14} /> 删除
+              </button>
               <SelectMenu
                 value={selected.categoryId}
                 ariaLabel="Skill 分类"
@@ -2478,6 +2552,7 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
             </p>
           </div>
         </main>
+        {descriptionDialog}
         {confirmDialog}
       </div>
     );
@@ -2573,15 +2648,37 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
                   {categoryName(skill.categoryId)} · {skill.sourceType} · {skill.status}
                 </small>
               </div>
-              <label className="toggle" onClick={(event) => event.stopPropagation()}>
-                <input
-                  type="checkbox"
-                  checked={skill.enabled}
-                  disabled={Boolean(busy)}
-                  onChange={(event) => void toggle(skill.name, event.target.checked)}
-                />
-                <span />
-              </label>
+              <div className="row-actions" onClick={(event) => event.stopPropagation()}>
+                <button
+                  className="icon-button skill-hover-action"
+                  aria-label={`编辑 ${skill.name} 的描述`}
+                  title="编辑描述"
+                  disabled={
+                    Boolean(busy) || skill.sourceType === 'bundled' || skill.status !== 'valid'
+                  }
+                  onClick={() => setEditing({ name: skill.name, description: skill.description })}
+                >
+                  <Pencil size={15} />
+                </button>
+                <button
+                  className="icon-button danger-text skill-hover-action"
+                  aria-label={`删除 ${skill.name}`}
+                  title="删除 Skill"
+                  disabled={Boolean(busy) || skill.sourceType === 'bundled'}
+                  onClick={() => void removeSkill(skill.name)}
+                >
+                  <Trash2 size={15} />
+                </button>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={skill.enabled}
+                    disabled={Boolean(busy)}
+                    onChange={(event) => void toggle(skill.name, event.target.checked)}
+                  />
+                  <span />
+                </label>
+              </div>
             </article>
           ))
         )}
@@ -2589,6 +2686,7 @@ function SkillSettings({ onNotify }: Pick<SettingsModalProps, 'onNotify'>): JSX.
           <div className="empty-panel">未找到匹配的 Skill。</div>
         )}
       </div>
+      {descriptionDialog}
       {confirmDialog}
     </div>
   );

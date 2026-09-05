@@ -1,4 +1,9 @@
 import { createHash } from 'node:crypto';
+import {
+  assistantMessagePhase,
+  isHistoricalConversationMessage,
+  type AssistantMessagePhase,
+} from '../client-contracts/assistant-output-policy';
 import type { Logger } from '../infrastructure/logging/logger';
 import type { SqliteRepositories } from '../infrastructure/sqlite/repositories';
 import { BridgeError } from '../shared/contracts/errors';
@@ -23,7 +28,8 @@ import type {
   ModelSnapshot,
   ModelToolDefinition,
 } from './model';
-import { validateModelResponse } from './model';
+import { SYSTEM_PROMPT_REVISION, validateModelResponse } from './model';
+import { needsProgressReminder } from './progress-communication';
 import {
   applyRuntimeEvent,
   cloneRuntimeProjection,
@@ -645,7 +651,9 @@ export class RuntimeService {
     if (!event) throw new BridgeError('INVALID_REQUEST', 'Conversation event not found');
     return {
       ...event,
-      messages: projection.messages.filter((message) => message.eventId === eventId),
+      messages: projection.messages.filter(
+        (message) => message.eventId === eventId && isHistoricalConversationMessage(message),
+      ),
       turns: [...projection.turns.values()].filter((turn) => turn.eventId === eventId),
     };
   }
@@ -921,8 +929,26 @@ export class RuntimeService {
           permissionPreset,
         );
         const stepId = this.ids.newId();
-        if (stepIndex === 1) {
-          await this.compactBusinessMemoryIfNeeded(
+        this.append(
+          identity.userId,
+          identity.sessionId,
+          [this.event('step.started', { stepId, turnId, eventId, stepIndex })],
+          true,
+        );
+        try {
+          if (stepIndex === 1) {
+            await this.compactBusinessMemoryIfNeeded(
+              identity,
+              turnId,
+              eventId,
+              model,
+              adapter,
+              controller.signal,
+              availableTools,
+              permissionPreset,
+            );
+          }
+          await this.compactSurfaceIfNeeded(
             identity,
             turnId,
             eventId,
@@ -932,18 +958,37 @@ export class RuntimeService {
             availableTools,
             permissionPreset,
           );
+        } catch (error) {
+          const cancelled = controller.signal.aborted;
+          this.append(
+            identity.userId,
+            identity.sessionId,
+            [
+              this.event('step.ended', {
+                stepId,
+                turnId,
+                eventId,
+                status: cancelled ? 'cancelled' : 'failed',
+              }),
+            ],
+            true,
+          );
+          await this.endTurn(
+            identity,
+            turnId,
+            eventId,
+            exchangeId,
+            cancelled ? 'cancelled' : 'failed',
+            cancelled ? 'user_cancelled' : errorCodeOf(error),
+          );
+          return;
         }
-        await this.compactSurfaceIfNeeded(
-          identity,
-          turnId,
-          eventId,
-          model,
-          adapter,
-          controller.signal,
-          availableTools,
-          permissionPreset,
-        );
         const projectedForContext = this.load(identity.userId, identity.sessionId);
+        const progressReminder = needsProgressReminder(
+          projectedForContext,
+          turnId,
+          this.clock.nowIso(),
+        );
 
         const revisions = this.repos.users.getRevisions(identity.userId);
         const skills = this.repos.skills.listInstallations(identity.userId);
@@ -952,6 +997,7 @@ export class RuntimeService {
           context = this.contextProjector.project({
             userId: identity.userId,
             projection: projectedForContext,
+            progressReminder,
             eventId,
             turnId,
             contextWindow: model.contextWindow,
@@ -961,11 +1007,17 @@ export class RuntimeService {
             tools: availableTools,
             skills,
             permissionPreset,
-            promptEpoch: 1 + revisions.skillRevision + revisions.mcpRevision,
+            promptEpoch: SYSTEM_PROMPT_REVISION + revisions.skillRevision + revisions.mcpRevision,
           });
         } catch (error) {
           const reason =
             error instanceof ContextBudgetError ? 'context_budget_exceeded' : 'context_failed';
+          this.append(
+            identity.userId,
+            identity.sessionId,
+            [this.event('step.ended', { stepId, turnId, eventId, status: 'failed' })],
+            true,
+          );
           await this.endTurn(identity, turnId, eventId, exchangeId, 'failed', reason);
           return;
         }
@@ -975,7 +1027,6 @@ export class RuntimeService {
           identity.userId,
           identity.sessionId,
           [
-            this.event('step.started', { stepId, turnId, eventId, stepIndex }),
             this.event('model.request.context', {
               requestId,
               stepId,
@@ -1001,7 +1052,7 @@ export class RuntimeService {
                 contentDigest: skill.contentDigest,
                 enabled: skill.enabled,
               })),
-              runtimeConfig: {},
+              runtimeConfig: { progressReminder: context.progressReminder },
             }),
           ],
           true,
@@ -1081,6 +1132,22 @@ export class RuntimeService {
                     true,
                   );
                 },
+                (phase) => {
+                  this.append(
+                    identity.userId,
+                    identity.sessionId,
+                    [
+                      this.event('assistant.message.metadata', {
+                        requestId,
+                        stepId,
+                        turnId,
+                        eventId,
+                        phase,
+                      }),
+                    ],
+                    true,
+                  );
+                },
               );
               const completedAt = this.clock.nowIso();
               const completedTick = performance.now();
@@ -1121,6 +1188,7 @@ export class RuntimeService {
                 if (surfaceChanged) {
                   overflowRetried = true;
                   const recovered = this.contextProjector.project({
+                    progressReminder,
                     userId: identity.userId,
                     projection: this.load(identity.userId, identity.sessionId),
                     eventId,
@@ -1132,7 +1200,8 @@ export class RuntimeService {
                     tools: availableTools,
                     skills,
                     permissionPreset,
-                    promptEpoch: 1 + revisions.skillRevision + revisions.mcpRevision,
+                    promptEpoch:
+                      SYSTEM_PROMPT_REVISION + revisions.skillRevision + revisions.mcpRevision,
                   });
                   context = recovered;
                   this.append(
@@ -1164,7 +1233,7 @@ export class RuntimeService {
                           contentDigest: skill.contentDigest,
                           enabled: skill.enabled,
                         })),
-                        runtimeConfig: {},
+                        runtimeConfig: { progressReminder: recovered.progressReminder },
                       }),
                     ],
                     true,
@@ -1232,6 +1301,8 @@ export class RuntimeService {
             turnId,
             eventId,
             content: response.content,
+            phase: assistantMessagePhase(response),
+            phaseSource: response.phase ? 'provider' : 'compatibility',
             inputTokens: response.usage.inputTokens,
             outputTokens: response.usage.outputTokens,
             stopReason: response.stopReason,
@@ -1439,13 +1510,18 @@ export class RuntimeService {
     signal: AbortSignal,
     onTextDelta: (chunk: string, chunkIndex: number) => void,
     onReasoningDelta: (chunk: string, chunkIndex: number) => void,
+    onMetadata: (phase: AssistantMessagePhase) => void,
   ): Promise<ModelResponse> {
     if (!adapter.stream) return validateModelResponse(await adapter.generate(request, signal));
     let completed: ModelResponse | undefined;
     let chunkIndex = 0;
     let reasoningChunkIndex = 0;
+    let phase: AssistantMessagePhase | undefined;
     for await (const event of adapter.stream(request, signal)) {
-      if (event.type === 'text_delta') {
+      if (event.type === 'message_metadata') {
+        phase = event.phase;
+        onMetadata(phase);
+      } else if (event.type === 'text_delta') {
         onTextDelta(event.delta, chunkIndex);
         chunkIndex += 1;
       } else if (event.type === 'reasoning_delta') {
@@ -1456,7 +1532,7 @@ export class RuntimeService {
       }
     }
     if (!completed) throw new Error('MODEL_STREAM_INCOMPLETE');
-    return validateModelResponse(completed);
+    return validateModelResponse({ ...completed, ...(completed.phase || !phase ? {} : { phase }) });
   }
 
   private outputReservationTokens(model: ModelSnapshot): number {
@@ -1498,7 +1574,7 @@ export class RuntimeService {
     );
     if (measurement.estimatedInputTokens < trigger) return;
     const visible = projection.messages.filter(
-      (message) => message.turnId !== turnId && message.role !== 'tool',
+      (message) => message.turnId !== turnId && isHistoricalConversationMessage(message),
     );
     const sessionMemory = projection.sessionMemorySummary;
     const sessionCandidates = visible.filter(
@@ -1612,7 +1688,7 @@ export class RuntimeService {
           tools: availableTools,
           skills: this.repos.skills.listInstallations(identity.userId),
           permissionPreset,
-          promptEpoch: 1 + revisions.skillRevision + revisions.mcpRevision,
+          promptEpoch: SYSTEM_PROMPT_REVISION + revisions.skillRevision + revisions.mcpRevision,
         };
         let measurement = this.contextProjector.measureFull({
           projection,
@@ -2230,6 +2306,7 @@ function redactDiagnosticEvent(event: SessionLogEvent): SessionLogEvent {
   if (
     event.eventType === 'user.message' ||
     event.eventType === 'assistant.message' ||
+    event.eventType === 'assistant.message.metadata' ||
     event.eventType === 'assistant.chunk' ||
     event.eventType === 'assistant.reasoning.chunk' ||
     event.eventType === 'assistant.reasoning'

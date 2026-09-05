@@ -10,7 +10,9 @@ import {
   Wrench,
   XCircle,
 } from 'lucide-react';
-import type { RuntimeProjection } from '@client-contracts';
+import type { RuntimeProjection, ProjectedStep } from '@client-contracts';
+import { executionActivity } from '../execution-activity';
+import { assistantMessagePhase } from '@client-contracts';
 import {
   groupExecutionPhases,
   shouldAutoExpandExecutionProcess,
@@ -53,6 +55,24 @@ export function ExecutionProcess({
       .map((step) => ({ ...step, stepIndex: nextStepIndex++ }));
     const tools = [...projection.toolCalls.values()].filter((tool) => tool.turnId === turn.id);
     const reasoning = [...projection.reasoning.values()].filter((item) => item.turnId === turn.id);
+    const messages = projection.messages.filter(
+      (message) => message.turnId === turn.id && message.role === 'assistant',
+    );
+    const commentary = messages
+      .filter((message) => message.stepId && assistantMessagePhase(message) === 'commentary')
+      .map((message) => ({
+        id: message.requestId ?? String(message.seq),
+        stepId: message.stepId!,
+        content: message.content,
+        finalized: true,
+      }));
+    const streams = [...projection.streams.values()].filter(
+      (stream) =>
+        stream.turnId === turn.id &&
+        stream.stepId &&
+        !messages.some((message) => message.requestId === stream.requestId) &&
+        ((!stream.finalized && stream.displayPhase === 'commentary') || stream.interrupted),
+    );
     const nextTurnId = turns[turnIndex + 1]?.id;
     const interaction = nextTurnId
       ? [...projection.interactions.values()].find(
@@ -63,12 +83,42 @@ export function ExecutionProcess({
     return {
       interaction,
       interactionStepIndex,
-      phases: groupExecutionPhases({ steps, tools, reasoning }),
+      phases: groupExecutionPhases({
+        steps,
+        tools,
+        reasoning,
+        commentary: [
+          ...commentary,
+          ...streams.map((stream) => ({
+            id: stream.requestId,
+            stepId: stream.stepId!,
+            content: stream.content,
+            finalized: stream.finalized,
+            interrupted: stream.interrupted,
+          })),
+        ],
+      }),
       steps,
     };
   });
   const steps = sections.flatMap((section) => section.steps);
   const interactionStepCount = sections.filter((section) => section.interaction).length;
+  const endedWithoutAnswer =
+    latestTurn.status === 'completed' &&
+    latestTurn.endReason === 'complete' &&
+    projection.messages.some(
+      (message) =>
+        message.turnId === latestTurn.id &&
+        message.role === 'assistant' &&
+        assistantMessagePhase(message) === 'commentary',
+    ) &&
+    !projection.messages.some(
+      (message) =>
+        message.turnId === latestTurn.id &&
+        message.role === 'assistant' &&
+        assistantMessagePhase(message) === 'final_answer' &&
+        message.content.trim(),
+    );
   if (sections.every((section) => section.phases.length === 0) && interactionStepCount === 0) {
     return null;
   }
@@ -89,7 +139,9 @@ export function ExecutionProcess({
             ? `已完成 ${
                 steps.filter((step) => step.status !== 'running').length + interactionStepCount
               } 步`
-            : statusText(latestTurn.status, latestTurn.endReason)}
+            : endedWithoutAnswer
+              ? '本轮已结束，未返回最终回答'
+              : statusText(latestTurn.status, latestTurn.endReason)}
         </small>
       </button>
       {expanded && (
@@ -116,6 +168,29 @@ export function ExecutionProcess({
                       </small>
                     </div>
 
+                    {phase.commentary.map((message) => (
+                      <section
+                        className="execution-commentary"
+                        aria-label="执行说明"
+                        key={message.id}
+                      >
+                        <div className="execution-section-title">
+                          <span>{message.interrupted ? '输出中断' : '执行说明'}</span>
+                          {!message.finalized && <Loader2 className="spin" size={12} />}
+                        </div>
+                        <MarkdownContent
+                          content={message.content}
+                          sessionId={sessionId}
+                          streaming={!message.finalized}
+                          onOpenError={onOpenError}
+                        />
+                      </section>
+                    ))}
+
+                    {(latestStep.status === 'running' || phase.commentary.length === 0) && (
+                      <ExecutionActivity projection={projection} step={latestStep} />
+                    )}
+
                     {phase.reasoning && (
                       <ReasoningPanel
                         content={phase.reasoning.content}
@@ -126,20 +201,24 @@ export function ExecutionProcess({
                     )}
 
                     {phase.tools.length > 0 && (
-                      <section className="tool-execution-panel" aria-label="执行内容">
-                        <div className="execution-section-title">
+                      <details className="tool-execution-panel" aria-label="执行内容">
+                        <summary className="execution-section-title execution-disclosure">
                           <Wrench size={13} />
                           <span>执行内容</span>
-                        </div>
+                          <ChevronRight className="disclosure-chevron" size={13} />
+                          {phase.tools.some((tool) => tool.status === 'running') && (
+                            <Loader2 className="spin" size={12} />
+                          )}
+                        </summary>
                         {phase.tools.map((tool) => (
                           <ToolCallCard
-                            key={`${tool.id}-${tool.status}`}
+                            key={tool.id}
                             tool={tool}
                             sessionId={sessionId}
                             onOpenError={onOpenError}
                           />
                         ))}
-                      </section>
+                      </details>
                     )}
                   </div>
                 );
@@ -163,6 +242,32 @@ export function ExecutionProcess({
   );
 }
 
+function ExecutionActivity({
+  projection,
+  step,
+}: {
+  projection: RuntimeProjection;
+  step: ProjectedStep;
+}): JSX.Element | null {
+  const [now, setNow] = useState(Date.now);
+  const running = step.status === 'running';
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running, step.id]);
+  const activity = executionActivity(projection, step);
+  if (!activity) return null;
+  const seconds = Math.max(0, Math.floor((now - Date.parse(step.startedAt)) / 1000));
+  return (
+    <p className="execution-activity" aria-label="运行状态">
+      <span>{activity}</span>
+      {running && Number.isFinite(seconds) && <small>本步骤已耗时 {seconds} 秒</small>}
+    </p>
+  );
+}
+
 function ReasoningPanel({
   content,
   finalized,
@@ -176,6 +281,7 @@ function ReasoningPanel({
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     const target = scrollRef.current;
@@ -184,35 +290,43 @@ function ReasoningPanel({
       target.scrollTop = target.scrollHeight;
     });
     return () => cancelAnimationFrame(frame);
-  }, [content]);
+  }, [content, expanded]);
 
   return (
     <section
       className={`reasoning-panel ${finalized ? 'finalized' : 'streaming'}`}
-      aria-label="思考过程"
+      aria-label="模型推理"
     >
-      <div className="execution-section-title">
-        <Brain size={13} />
-        <span>Think · 思考过程</span>
-        {!finalized && <Loader2 className="spin" size={12} />}
-      </div>
-      <div
-        className="reasoning-scroll custom-scrollbar"
-        ref={scrollRef}
-        onScroll={(event) => {
-          const target = event.currentTarget;
-          pinnedToBottom.current =
-            target.scrollHeight - target.scrollTop - target.clientHeight < 12;
-        }}
+      <button
+        type="button"
+        className="execution-section-title reasoning-toggle"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
       >
-        <MarkdownContent
-          content={content}
-          className="reasoning-markdown"
-          sessionId={sessionId}
-          streaming={!finalized}
-          onOpenError={onOpenError}
-        />
-      </div>
+        <Brain size={13} />
+        <span>模型推理</span>
+        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        {!finalized && <Loader2 className="spin" size={12} />}
+      </button>
+      {expanded && (
+        <div
+          className="reasoning-scroll custom-scrollbar"
+          ref={scrollRef}
+          onScroll={(event) => {
+            const target = event.currentTarget;
+            pinnedToBottom.current =
+              target.scrollHeight - target.scrollTop - target.clientHeight < 12;
+          }}
+        >
+          <MarkdownContent
+            content={content}
+            className="reasoning-markdown"
+            sessionId={sessionId}
+            streaming={!finalized}
+            onOpenError={onOpenError}
+          />
+        </div>
+      )}
     </section>
   );
 }
@@ -338,17 +452,12 @@ function ToolCallCard({
   sessionId: string | null;
   onOpenError?: (message: string) => void;
 }): JSX.Element {
-  const [open, setOpen] = useState(tool.status === 'running');
-
   return (
-    <details
-      className="tool-card"
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
+    <details className="tool-card">
       <summary>
         <Wrench size={14} />
         <span>{tool.name}</span>
+        <ChevronRight className="disclosure-chevron" size={13} />
         <small>{toolStatus(tool.status)}</small>
       </summary>
       <div className="tool-detail">

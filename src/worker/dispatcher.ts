@@ -33,6 +33,7 @@ import {
   modelServiceSaveParamsSchema,
   modelServiceTestParamsSchema,
   skillToggleParamsSchema,
+  skillDescriptionUpdateParamsSchema,
   skillCategorySetParamsSchema,
   mcpServerSaveParamsSchema,
   mcpServerTargetParamsSchema,
@@ -156,6 +157,12 @@ export async function dispatch(
     case 'skill.install.directory': {
       const value = parse(z.object({ sourcePath: z.string().min(1).max(4096) }).strict(), params);
       return app.installSkillDirectory(userId, value.sourcePath);
+    }
+    case 'skill.description.update':
+      return app.updateSkillDescription(userId, parse(skillDescriptionUpdateParamsSchema, params));
+    case 'skill.delete': {
+      const value = parse(skillToggleParamsSchema, params);
+      return app.deleteSkill(userId, value.skillName, value.expectedRevision);
     }
     case 'skill.category.set': {
       const value = parse(skillCategorySetParamsSchema, params);

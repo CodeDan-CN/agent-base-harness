@@ -41,6 +41,7 @@ import {
   skillManagementSnapshotSchema,
   skillCategorySetParamsSchema,
   skillToggleParamsSchema,
+  skillDescriptionUpdateParamsSchema,
 } from './management';
 import { modelCallStatisticsParamsSchema, modelCallStatisticsSnapshotSchema } from './statistics';
 
@@ -113,6 +114,8 @@ export const commandRequestSchema = z.discriminatedUnion('method', [
   command('model.discover', modelDiscoverParamsSchema),
   command('skill.enable', skillToggleParamsSchema),
   command('skill.disable', skillToggleParamsSchema),
+  command('skill.description.update', skillDescriptionUpdateParamsSchema),
+  command('skill.delete', skillToggleParamsSchema),
   command('skill.category.set', skillCategorySetParamsSchema),
   command('capability-category.create', capabilityCategoryCreateParamsSchema),
   command('capability-category.rename', capabilityCategoryRenameParamsSchema),
@@ -225,6 +228,9 @@ export function runtimeResponseSchema(method: string): z.ZodTypeAny | undefined 
     case 'skill.enable':
     case 'skill.disable':
       return z.object({ skillName: z.string(), enabled: z.boolean() }).strict();
+    case 'skill.description.update':
+    case 'skill.delete':
+      return z.object({ skillName: z.string() }).strict();
     case 'mcp-server.save':
     case 'mcp-server.archive':
       return z.object({ id: z.string() }).strict();

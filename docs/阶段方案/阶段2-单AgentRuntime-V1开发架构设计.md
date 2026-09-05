@@ -363,7 +363,7 @@ inputBudget = model.contextWindow - reservedOutputTokens - safetyMarginTokens
 
 #### Skill 设计
 
-阶段 2 兼容通用 Agent Skills 目录：`SKILL.md` 为入口，可选 `scripts/`、`references/`、`assets/`。Skill 与 MCP 在能力发现层同级：常驻 `capability_search` 同时从两类用户级 Catalog 返回有界轻量候选，Agent 在同一份结果中选择 Skill、MCP、两者或都不使用；选中 Skill 后统一 loader 才读取完整 `SKILL.md` 及其显式引用资源，选中 MCP 后由 `mcp_load` 在下一 Step 暴露完整 Tool Schema。
+阶段 2 兼容通用 Agent Skills 目录：`SKILL.md` 为入口，可选 `scripts/`、`references/`、`assets/`。Skill 与 MCP 在能力发现层同级：常驻 `capability_search` 同时从两类用户级 Catalog 返回全部可用能力的名称和完整 description，不按关键词筛选或限制数量，Agent 根据任务在同一份结果中选择 Skill、MCP、两者或都不使用；选中 Skill 后统一 loader 才读取完整 `SKILL.md` 及其显式引用资源，选中 MCP 后由 `mcp_load` 在下一 Step 暴露完整 Tool Schema。
 
 普通 Skill 不自动注册新的原生 Tool Schema，也不修改 Agent Loop。Skill 中的 Node/Python/Shell 操作通过已评审的宿主命令工具执行，解释器或依赖缺失返回明确 Tool Result，Runtime 不自动安装。
 

@@ -159,7 +159,7 @@ Schema 字段不含自由文本的理由注入（不得借 Interaction 向 Promp
 
 Skill 的 `SKILL.md` 与 MCP Tool Schema 都不直接作为完整目录常驻 Prompt：
 
-- 常驻 `capability_search` 一次同时检索当前用户启用的 Skill Catalog 和已审核启用的 MCP Catalog，分别返回有界轻量候选；两类来源在结果中显式同级。
+- 常驻 `capability_search` 一次同时检索当前用户启用的 Skill Catalog 和已审核启用的 MCP Catalog，返回全部可用能力的名称与完整 description；两类来源在结果中显式同级，不按关键词或数量筛选，由当前模型选择后再 load。
 - Agent 必须基于同一份返回结果判断使用 Skill、MCP、两者或都不使用，不能先搜索其中一类再决定是否查看另一类。
 - 选择 Skill 后调用 `skill_load` 读取完整 `SKILL.md` 及其显式引用资源（`scripts/`、`references/`、`assets/`）。
 - 选择 MCP Server 后调用 `mcp_load`，从下一 Step 暴露该 Server 已审核启用工具的完整 Schema。

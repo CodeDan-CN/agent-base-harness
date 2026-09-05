@@ -1,5 +1,9 @@
 # 单 Agent 低上下文 Runtime 打造设计
 
+阶段 4.6.0 已实现补充见[思考模式重构设计方案](阶段方案/阶段4.6.0-思考模式重构设计方案.md)。该方案增加普通消息用途归类和简短执行说明展示，保持原生工具循环、Turn 结束规则及恢复语义，不增加自动纠正请求；连续沉默时仅在下一次已有主请求中临时提醒，并展示真实运行状态（详见 4.6.0 第 11 节）。当前实现继续使用 Chat Completions；真实端点是否提前提供 phase 需实测。
+
+阶段 4.7.0 的运行宿主与交付调整见[Runtime（运行时）独立化设计](阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)：核心经能力端口独立，由服务宿主管理，CLI（命令行）/Electron（桌面）通过同一应用服务接入，Web（浏览器）与手机后续支持。客户端断开不终止任务；工作线程崩溃仍执行本文件的中断修复与未知副作用规则。本文件的单 Agent、日志、队列、权限和上下文不变量继续有效；第 16 节旧目录建议由 4.7.0 目标目录替代。
+
 ## 1. 文档目标
 
 本文档定义一个使用 Node.js、TypeScript 实现的单 Agent Runtime。它借鉴 DeepSeek Harness 的 Agent Loop、持久化 Inbox、Turn/Step、工具并行、取消与事件日志，同时吸收 Agent Base 在上下文去重、历史压缩、Schema 校验和业务结果归一化方面的经验。
@@ -475,12 +479,12 @@ inputBudget
 
 ```text
 常驻工具：capability_search、skill_load、mcp_load、必要通用工具
-统一发现：capability_search 同时检索 Skill Catalog 与 MCP Catalog，分别限制每类候选数量
+统一发现：capability_search 同时返回全部可用 Skill 与 MCP 的名称和完整 description，不按关键词筛选或限制数量
 按需展开：选中 Skill 后 skill_load；选中 MCP Server 后 mcp_load
 领域工具：mcp_load 后从下一 Step 加入当前 Turn 的 Tool Schema
 ```
 
-`capability_search` 只返回两类来源的短 ID、名称、摘要、少量能力提示和对应 loader 参数，不返回完整 `SKILL.md` 或 MCP Tool Schema。返回结果显式标记两类来源同级，Agent 在同一份结果中选择 Skill、MCP、两者或都不使用。该方案的收益必须通过真实 token 统计证明，不应仅因为“动态更灵活”就在第一版引入。
+`capability_search` 返回全部可用 Skill 的名称、完整 description 和 loader 参数；MCP 按 Server 返回名称、description、全部已审核启用工具的名称与完整 description 和 loader 参数，不返回 `SKILL.md` 正文或 MCP Tool Schema。可选 query 仅作为任务上下文原样返回，不参与筛选、相关性打分或排序；不设置候选数量上限，也不截断 description。目录按名称稳定排列，不表示相关性；两类来源同级，由当前执行任务的模型自行选择 Skill、MCP、两者或都不使用，不引入额外选择模型。用户隔离、启用状态、Skill 有效性与兼容性、MCP 工具审核边界保持不变。该方案的收益必须通过真实 token 统计证明，不应仅因为“动态更灵活”就在第一版引入。
 
 ### 9.7 Session 历史与 ConversationEvent 上下文
 

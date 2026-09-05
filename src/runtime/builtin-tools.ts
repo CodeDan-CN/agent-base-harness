@@ -1,4 +1,5 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
+import { isHistoricalConversationMessage } from '../client-contracts/assistant-output-policy';
 import path from 'node:path';
 import { z } from 'zod';
 import type { ScopedFileSystem } from '../infrastructure/filesystem/scoped-file-system';
@@ -185,7 +186,9 @@ function eventSearchTool(repos: SqliteRepositories): RuntimeTool<unknown> {
           }
           return projection.messages.some(
             (message) =>
-              message.eventId === event.id && message.content.toLocaleLowerCase().includes(query),
+              message.eventId === event.id &&
+              isHistoricalConversationMessage(message) &&
+              message.content.toLocaleLowerCase().includes(query),
           );
         })
         .slice(0, parsed.limit)
@@ -214,7 +217,9 @@ function eventReadTool(repos: SqliteRepositories): RuntimeTool<unknown> {
       if (!event) throw new ToolExecutionError('EVENT_NOT_FOUND');
       return {
         ...event,
-        messages: projection.messages.filter((message) => message.eventId === event.id),
+        messages: projection.messages.filter(
+          (message) => message.eventId === event.id && isHistoricalConversationMessage(message),
+        ),
       };
     },
   });

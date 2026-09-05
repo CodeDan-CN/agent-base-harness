@@ -86,6 +86,21 @@ export const skillToggleParamsSchema = z
   .object({ skillName: id, expectedRevision: revision })
   .strict();
 
+export const skillDescriptionUpdateParamsSchema = z
+  .object({
+    skillName: id,
+    description: z
+      .string()
+      .trim()
+      .min(1)
+      .max(4000)
+      .refine((value) => !value.includes('\u0000')),
+    expectedRevision: revision,
+  })
+  .strict();
+
+export type SkillDescriptionUpdateParams = z.infer<typeof skillDescriptionUpdateParamsSchema>;
+
 export const capabilityCategoryCreateParamsSchema = z
   .object({
     type: z.enum(['skill', 'mcp']),

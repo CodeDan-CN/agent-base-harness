@@ -1,50 +1,43 @@
 import { z } from 'zod';
 import type { SqliteRepositories } from '../infrastructure/sqlite/repositories';
-import type { McpServer, McpToolCatalogEntry } from '../shared/domain/mcp';
 import type { LocalUserId } from '../shared/domain/user';
 import { textContent, type RuntimeTool } from './tools';
 
 const capabilitySearchInput = z
   .object({
     query: z.string().max(500).default(''),
-    limitPerSource: z.number().int().min(1).max(10).default(5),
   })
   .strict();
 
-type MatchMode = 'matched' | 'browse' | 'catalog_fallback' | 'empty';
-
-interface CapabilityCandidate {
-  kind: 'skill' | 'mcp';
-  id: string;
+interface CapabilityDescription {
   name: string;
-  summary: string;
-  highlights: string[];
-  load: {
-    tool: 'skill_load' | 'mcp_load';
-    arguments: Record<string, string>;
-  };
+  description: string;
 }
 
-interface CapabilitySourceResult {
-  searched: true;
-  matchMode: MatchMode;
+interface SkillCandidate extends CapabilityDescription {
+  kind: 'skill';
+  load: { tool: 'skill_load'; arguments: { skillName: string } };
+}
+
+interface McpCandidate extends CapabilityDescription {
+  kind: 'mcp';
+  tools: CapabilityDescription[];
+  load: { tool: 'mcp_load'; arguments: { serverName: string } };
+}
+
+interface CapabilitySourceResult<Candidate> {
   totalAvailable: number;
-  candidates: CapabilityCandidate[];
+  candidates: Candidate[];
 }
 
 interface CapabilitySearchResult {
   query: string;
   priority: 'equal';
   sources: {
-    skill: CapabilitySourceResult;
-    mcp: CapabilitySourceResult;
+    skill: CapabilitySourceResult<SkillCandidate>;
+    mcp: CapabilitySourceResult<McpCandidate>;
   };
   usage: string;
-}
-
-interface McpCatalogEntry {
-  server: McpServer;
-  tool: McpToolCatalogEntry;
 }
 
 export function createCapabilitySearchTool(
@@ -53,21 +46,14 @@ export function createCapabilitySearchTool(
   return {
     name: 'capability_search',
     description:
-      '统一搜索当前用户可用的 Skill 与 MCP 能力。一次调用会同时检索两类目录，按同等优先级返回轻量候选；比较候选后再选择 skill_load、mcp_load、两者或都不使用。',
+      '同时列出当前用户全部可用的 Skill 与 MCP 名称和完整 description，由你根据任务选择。两类目录同级，不按关键词筛选、相关性打分或限制数量；选中后再调用 skill_load、mcp_load，也可以两者都选或都不使用。',
     parameters: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
           maxLength: 500,
-          description: '用户目标、能力、领域或操作关键词；省略时浏览两类目录。',
-        },
-        limitPerSource: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 10,
-          default: 5,
-          description: '每一类来源最多返回多少个候选，Skill 和 MCP 分别计算。',
+          description: '可选的任务目标，仅作为选择上下文原样返回，不用于筛选或排序目录。',
         },
       },
       additionalProperties: false,
@@ -78,7 +64,7 @@ export function createCapabilitySearchTool(
     timeoutMs: 5_000,
     async execute(raw, context) {
       const input = capabilitySearchInput.parse(raw);
-      return searchCapabilities(repos, context.userId, input.query, input.limitPerSource);
+      return searchCapabilities(repos, context.userId, input.query);
     },
     presentCall() {
       return { kind: 'generic', title: '搜索 Skill 与 MCP 能力' };
@@ -96,222 +82,65 @@ export function createCapabilitySearchTool(
 export function searchCapabilities(
   repos: SqliteRepositories,
   userId: LocalUserId,
-  rawQuery: string,
-  limitPerSource: number,
+  query = '',
 ): CapabilitySearchResult {
-  const query = rawQuery.trim().toLocaleLowerCase();
-  const terms = searchTerms(query);
-  const skill = searchSkills(repos, userId, query, terms, limitPerSource);
-  const mcp = searchMcp(repos, userId, query, terms, limitPerSource);
   return {
-    query: rawQuery,
+    query,
     priority: 'equal',
-    sources: { skill, mcp },
+    sources: { skill: listSkills(repos, userId), mcp: listMcp(repos, userId) },
     usage:
-      'Skill 与 MCP 候选同级。根据任务选择 skill_load、mcp_load、同时选择两者，或在候选均不合适时直接继续。只加载被选中的完整内容或 Schema。',
+      '这是全部可用的 Skill 与 MCP 轻量目录，不是相关性筛选结果。请根据任务和各项名称、description 自行判断，可选择 Skill、MCP、两者或都不使用。只对选中项调用对应 load；Skill 正文和 MCP 完整工具 Schema 在加载后提供，MCP 工具从下一模型步骤开始可用。',
   };
 }
 
-function searchSkills(
+function listSkills(
   repos: SqliteRepositories,
   userId: LocalUserId,
-  query: string,
-  terms: readonly string[],
-  limit: number,
-): CapabilitySourceResult {
+): CapabilitySourceResult<SkillCandidate> {
   const available = repos.skills
     .listInstallations(userId)
     .filter(
       (skill) =>
         skill.enabled && skill.status === 'valid' && skill.compatibilityStatus !== 'incompatible',
-    );
-  const ranked = available
-    .map((skill) => ({
-      skill,
-      score: candidateScore(
-        query,
-        terms,
-        skill.skillName,
-        skill.description,
-        JSON.stringify(skill.metadata),
-      ),
-    }))
-    .sort(
-      (left, right) =>
-        right.score - left.score || left.skill.skillName.localeCompare(right.skill.skillName),
-    );
-  const selected = selectRanked(ranked, query, limit);
+    )
+    .sort((left, right) => left.skillName.localeCompare(right.skillName));
   return {
-    searched: true,
-    matchMode: matchMode(available.length, query, selected.fallback),
     totalAvailable: available.length,
-    candidates: selected.items.map(({ skill }) => ({
+    candidates: available.map((skill) => ({
       kind: 'skill',
-      id: `skill:${skill.skillName}`,
       name: skill.skillName,
-      summary: conciseDescription(skill.description),
-      highlights: metadataHighlights(skill.metadata),
+      description: skill.description,
       load: { tool: 'skill_load', arguments: { skillName: skill.skillName } },
     })),
   };
 }
 
-function searchMcp(
+function listMcp(
   repos: SqliteRepositories,
   userId: LocalUserId,
-  query: string,
-  terms: readonly string[],
-  limit: number,
-): CapabilitySourceResult {
-  const servers = new Map(
-    repos.mcp
-      .listServers(userId)
-      .filter((server) => server.status === 'enabled')
-      .map((server) => [server.id, server] as const),
-  );
-  const entries = repos.mcp
-    .listTools(userId)
-    .filter(
-      (tool) => tool.enabled && tool.reviewStatus === 'approved' && servers.has(tool.serverId),
-    )
-    .map((tool) => ({ tool, server: servers.get(tool.serverId)! }));
-  const grouped = new Map<string, McpCatalogEntry[]>();
-  for (const entry of entries) {
-    const group = grouped.get(entry.server.id) ?? [];
-    group.push(entry);
-    grouped.set(entry.server.id, group);
+): CapabilitySourceResult<McpCandidate> {
+  const servers = repos.mcp
+    .listServers(userId)
+    .filter((server) => server.status === 'enabled')
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const toolsByServer = new Map<string, CapabilityDescription[]>();
+  for (const tool of repos.mcp.listTools(userId)) {
+    if (!tool.enabled || tool.reviewStatus !== 'approved') continue;
+    const group = toolsByServer.get(tool.serverId) ?? [];
+    group.push({ name: tool.rawName, description: tool.description });
+    toolsByServer.set(tool.serverId, group);
   }
-  const ranked = [...grouped.values()]
-    .map((group) => {
-      const server = group[0]!.server;
-      const scoredTools = group
-        .map((entry) => ({
-          entry,
-          score: candidateScore(
-            query,
-            terms,
-            `${server.name} ${entry.tool.rawName} ${entry.tool.publicName}`,
-            `${server.summary} ${entry.tool.description}`,
-          ),
-        }))
-        .sort(
-          (left, right) =>
-            right.score - left.score ||
-            left.entry.tool.publicName.localeCompare(right.entry.tool.publicName),
-        );
-      return {
-        server,
-        tools: scoredTools,
-        score: Math.max(
-          candidateScore(query, terms, server.name, server.summary),
-          ...scoredTools.map(({ score }) => score),
-        ),
-      };
-    })
-    .sort(
-      (left, right) =>
-        right.score - left.score || left.server.name.localeCompare(right.server.name),
-    );
-  const selected = selectRanked(ranked, query, limit);
-  return {
-    searched: true,
-    matchMode: matchMode(grouped.size, query, selected.fallback),
-    totalAvailable: grouped.size,
-    candidates: selected.items.map(({ server, tools }) => ({
+  // 保持与 mcp_load 相同的可用性边界，只提供有已审核启用工具的 Server。
+  const candidates: McpCandidate[] = servers
+    .filter((server) => toolsByServer.has(server.id))
+    .map((server) => ({
       kind: 'mcp',
-      id: `mcp:${server.name}`,
       name: server.name,
-      summary: conciseDescription(server.summary),
-      highlights: tools.slice(0, 5).map(({ entry }) => {
-        const parameters = parameterNames(entry.tool.inputSchema);
-        const suffix = parameters.length > 0 ? ` (${parameters.join(', ')})` : '';
-        return `${entry.tool.rawName}${suffix}: ${conciseDescription(entry.tool.description)}`;
-      }),
+      description: server.summary,
+      tools: toolsByServer
+        .get(server.id)!
+        .sort((left, right) => left.name.localeCompare(right.name)),
       load: { tool: 'mcp_load', arguments: { serverName: server.name } },
-    })),
-  };
-}
-
-function selectRanked<T extends { score: number }>(
-  ranked: readonly T[],
-  query: string,
-  limit: number,
-): { items: T[]; fallback: boolean } {
-  if (!query) return { items: ranked.slice(0, limit), fallback: false };
-  const matched = ranked.filter(({ score }) => score > 0);
-  if (matched.length > 0) return { items: matched.slice(0, limit), fallback: false };
-  return { items: ranked.slice(0, limit), fallback: ranked.length > 0 };
-}
-
-function matchMode(total: number, query: string, fallback: boolean): MatchMode {
-  if (total === 0) return 'empty';
-  if (!query) return 'browse';
-  return fallback ? 'catalog_fallback' : 'matched';
-}
-
-function candidateScore(
-  query: string,
-  terms: readonly string[],
-  name: string,
-  summary = '',
-  extra = '',
-): number {
-  if (!query) return 1;
-  const normalizedName = name.toLocaleLowerCase();
-  const normalizedSummary = summary.toLocaleLowerCase();
-  const normalizedExtra = extra.toLocaleLowerCase();
-  if (normalizedName === query) return 1_000;
-  let score = 0;
-  for (const term of terms) {
-    if (normalizedName.includes(term)) score += 100;
-    if (normalizedSummary.includes(term)) score += 30;
-    if (normalizedExtra.includes(term)) score += 10;
-  }
-  return score;
-}
-
-function searchTerms(query: string): string[] {
-  const terms = new Set<string>();
-  for (const token of query.match(/[a-z0-9_-]+|[\p{Script=Han}]+/gu) ?? []) {
-    if (/^[\p{Script=Han}]+$/u.test(token)) {
-      if (token.length <= 4) terms.add(token);
-      for (let index = 0; index < token.length - 1; index += 1) {
-        terms.add(token.slice(index, index + 2));
-      }
-    } else if (token.length > 1) {
-      terms.add(token);
-    }
-  }
-  if (terms.size === 0 && query) terms.add(query);
-  return [...terms];
-}
-
-function metadataHighlights(metadata: Record<string, unknown>): string[] {
-  const highlights: string[] = [];
-  for (const key of ['capabilities', 'keywords', 'tags']) {
-    const value = metadata[key];
-    if (typeof value === 'string' && value.trim()) highlights.push(value.trim());
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        if (typeof item === 'string' && item.trim()) highlights.push(item.trim());
-      }
-    }
-  }
-  return [...new Set(highlights)].slice(0, 8);
-}
-
-function conciseDescription(description: string): string {
-  const normalized = description.replace(/\s+/g, ' ').trim();
-  return normalized.length <= 300 ? normalized : `${normalized.slice(0, 297)}...`;
-}
-
-function parameterNames(schema: Record<string, unknown>): string[] {
-  const properties = asRecord(schema.properties);
-  return properties ? Object.keys(properties).slice(0, 12) : [];
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
+    }));
+  return { totalAvailable: candidates.length, candidates };
 }

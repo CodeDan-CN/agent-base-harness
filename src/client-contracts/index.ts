@@ -5,6 +5,7 @@
 export * from './projection';
 export * from './runtime';
 export * from './model-output-policy';
+export * from './assistant-output-policy';
 
 export type { BootstrapLocalUser, BootstrapResult } from '../shared/contracts/bootstrap';
 export type {

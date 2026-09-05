@@ -163,7 +163,7 @@
 
 | ID         | 优先级/类型      | 场景                    | 关键步骤                 | 预期结果                               |
 | ---------- | ---------------- | ----------------------- | ------------------------ | -------------------------------------- |
-| S2-M06-001 | P0 / Integration | 统一能力概览             | 调用 `capability_search` | 同时返回 Skill/MCP 两类有界轻量候选，标记同级且无正文/完整 Schema |
+| S2-M06-001 | P0 / Integration | 统一能力概览             | 调用 `capability_search` | 同时返回全部可用 Skill/MCP 名称和完整 description，标记同级且无正文/完整 Schema，不受查询词或数量限制 |
 | S2-M06-002 | P0 / Integration | 按需加载                | 选择 Skill 后读 SKILL.md | 正文按需进入当前用户上下文             |
 | S2-M06-003 | P0 / Security    | Skill 越界资源          | 引用 `../`/外部链接      | 拒绝且不读取外部内容                   |
 | S2-M06-004 | P0 / Security    | Skill 用户隔离          | A 启用、B 未安装         | B Catalog/loader 不可见                |

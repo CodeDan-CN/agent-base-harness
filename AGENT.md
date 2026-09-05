@@ -16,6 +16,8 @@
 
 ## 2. 当前状态
 
+阶段 4.7.0 已确定为 Runtime（运行时）独立化，首批支持 CLI（命令行客户端）与 Electron（桌面客户端），Web（浏览器）和手机应用后续接入。详见[4.7.0 开发架构设计](docs/阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)。当前代码仍以桌面主进程承载工作线程；下述既有目录是实现基线，不能把设计状态描述成已实现。
+
 本项目是一个 **Client 应用开发项目**。阶段 1 的 Client 基础运行平台、阶段 2 的 Headless 单 Agent Runtime V1 和阶段 3 的正式 Client UI 主链路已经完成；阶段 4“模型能力与上下文管理”已形成实施方案，阶段 4.5“通用 MCP 接入、首个外部记忆 MCP 与 Pi 基础工具参考”也已完成开发架构和测试设计。实际开发以当前阶段对应设计和测试文档为准。
 
 仓库当前主要包含：
@@ -33,15 +35,15 @@
 
 > 视觉参考 `reference_ui`，业务逻辑与运行语义遵循设计文档并重新实现。
 
-这里的 Runtime 是 Client 应用的核心执行引擎，不是本项目脱离客户端产品后单独交付的通用 Runtime 库。所有 Runtime、持久化、API/命令接口和事件投影设计，最终都服务于完整的客户端用户体验。
+从 4.7.0 起，Runtime 是独立 Agent 服务的核心执行引擎。完整服务由 Gateway（网关）、Application（应用服务）、Runtime（核心）和 Infrastructure（基础设施适配器）组成，通过 Host（运行宿主）装配；CLI 与 Electron 共用 Client SDK（客户端开发工具包）。独立服务可以单独交付，不要求将内部每一层分别发布。
 
 ## 3. 项目背景
 
 本项目计划使用 Node.js 和 TypeScript 构建一个完整的 Agent Client 应用。应用包含两个内置本地用户、单 Agent Runtime、本地持久化、模型与工具集成、事件投影，以及面向用户的聊天和设置界面。
 
-项目的交付主体是可供用户直接使用的 Client，而不是纯后端服务、SDK、框架或命令行 Harness。单 Agent Runtime 是 Client 内部最重要的基础能力，负责驱动会话、模型调用、工具执行、队列、取消、恢复和上下文管理；客户端 UI 负责将这些能力组织成一致、可观察、可操作的产品体验。
+4.7.0 的交付主体包括可独立安装的服务与 CLI，以及接入同一服务的 Electron 客户端。Runtime 负责会话、模型调用、工具执行、队列、取消、恢复和上下文管理；客户端负责一致、可观察、可操作的交互体验。服务拥有任务生命周期，客户端断开不等于取消。
 
-当前技术方案采用 Electron + React + Vite，单 Agent Runtime 运行在独立 Node Worker 中，数据使用单个 SQLite 数据库。项目不是 Web SaaS 后端或独立 Runtime 服务。
+当前实现采用 Electron + React + Vite，单 Agent Runtime 运行在桌面创建的 Node Worker（工作线程）中，数据使用单个 SQLite 数据库。4.7.0 将改为独立 Node.js 服务进程管理工作线程，桌面经共享客户端连接；不在此阶段扩展为云账号、多租户或 Web SaaS（在线软件服务）平台。
 
 项目吸收两个已有 Runtime 的成熟经验：
 
@@ -103,7 +105,7 @@
 
 ## 6. 未来项目结构
 
-项目采用常规的单包 Node.js + TypeScript Client 脚手架，不使用 monorepo。客户端外壳已经确定为 Electron Main + Preload + React Renderer，单 Agent Runtime 位于独立 Node Worker。
+项目保留单源码包 Node.js + TypeScript 开发方式，不引入 monorepo（多包工作区）管理。4.7.0 按领域、端口、协议、核心、应用、网关、宿主、适配器、SDK 和客户端分离目录，由独立构建入口生成服务 npm 包与桌面产物。目标目录和依赖约束以 4.7.0 方案第 5 节为准；下图保留为当前实现的迁移基线。
 
 ```text
 .
@@ -139,7 +141,7 @@
 
 各一级源码目录的职责如下：
 
-- `src/main`、`src/preload`、`src/worker` 共同组成安全进程边界；Renderer 不直接访问 Node、SQLite 或任意 IPC。
+- 当前 `src/main`、`src/preload`、`src/worker` 构成桌面进程边界；4.7.0 将工作线程所有权迁入独立宿主。Renderer 始终不能直接访问 Node、SQLite 或任意 IPC。
 - `ui` 是 `reference_ui` 的正式复刻位置，负责页面和用户交互，但不自行维护 Runtime 事实；不得直接导入 `src/main`、`src/preload`、`src/worker`、`src/runtime` 或 `src/infrastructure`。
 - `src/client-contracts` 是 UI 唯一允许静态导入的核心侧目录，只能包含跨进程 DTO、运行时 Schema 和无宿主权限的纯投影逻辑。
 - `src/runtime` 保存设计文档定义的 Agent 执行内核。其内部 Turn、Step、Inbox、Context、Tool 等目录等技术方案确定后再拆分。
@@ -153,7 +155,7 @@
 
 - `ui/src` 内部的正式 feature、组件和设计 token 进一步分层。
 - `src/runtime` 随实现规模增长后的进一步模块拆分。
-- Runtime 是否在未来具备独立复用价值；现阶段不拆独立 package。
+- 4.7.0 已确定服务独立交付；内部各层按模块隔离，服务 npm 包先包含 CLI，SDK 独立发布留待后续。
 
 后续按技术解决方案的阶段计划逐步细化目录，不一次性创建尚未使用的空模块。
 

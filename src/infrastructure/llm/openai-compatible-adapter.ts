@@ -8,6 +8,7 @@ import type {
 } from '../../runtime/model';
 import { validateModelResponse } from '../../runtime/model';
 import { OpenAiStreamNormalizer } from '../../runtime/provider-normalizers';
+import { readAssistantPhase } from '../../client-contracts/assistant-output-policy';
 
 type FetchFn = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -160,6 +161,7 @@ function parseCompletion(value: unknown): ModelResponse {
   const message = record(choiceRecord?.message);
   if (!choiceRecord || !message) throw providerError('MODEL_PROVIDER_INVALID_RESPONSE');
   const rawContent = stringAt(message, 'content') ?? '';
+  const phase = readAssistantPhase(message.phase);
   const explicitReasoning =
     stringAt(message, 'reasoning_content') ?? stringAt(message, 'reasoning') ?? '';
   const split = splitThinkContent(rawContent);
@@ -179,6 +181,7 @@ function parseCompletion(value: unknown): ModelResponse {
   const usage = record(root?.usage);
   return validateModelResponse({
     content,
+    ...(phase ? { phase } : {}),
     ...(reasoning ? { reasoning } : {}),
     toolCalls,
     usage: {

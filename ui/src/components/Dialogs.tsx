@@ -44,11 +44,7 @@ export function ConfirmDialog({
       className="dialog-backdrop"
       onMouseDown={(event) => event.target === event.currentTarget && !busy && onCancel()}
     >
-      <section
-        className={`app-dialog confirm-dialog ${tone}`}
-        role="alertdialog"
-        aria-modal="true"
-      >
+      <section className={`app-dialog confirm-dialog ${tone}`} role="alertdialog" aria-modal="true">
         <div className={`dialog-symbol ${tone}`}>
           <AlertTriangle size={18} />
         </div>
@@ -134,6 +130,8 @@ export function TextPromptDialog({
   confirmLabel = '保存',
   maxLength = 2000,
   multiline = false,
+  busy = false,
+  className = '',
   onChange,
   onCancel,
   onConfirm,
@@ -146,6 +144,8 @@ export function TextPromptDialog({
   confirmLabel?: string;
   maxLength?: number;
   multiline?: boolean;
+  busy?: boolean;
+  className?: string;
   onChange(value: string): void;
   onCancel(): void;
   onConfirm(): void;
@@ -155,24 +155,27 @@ export function TextPromptDialog({
     if (!open) return;
     inputRef.current?.focus();
     inputRef.current?.select();
-    const close = (event: KeyboardEvent) => event.key === 'Escape' && onCancel();
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: KeyboardEvent) => event.key === 'Escape' && !busy && onCancel();
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
-  }, [onCancel, open]);
+  }, [busy, onCancel, open]);
   if (!open) return null;
   const valid = value.trim().length > 0 && value.trim().length <= maxLength;
   return (
     <div
       className="dialog-backdrop"
-      onMouseDown={(event) => event.target === event.currentTarget && onCancel()}
+      onMouseDown={(event) => event.target === event.currentTarget && !busy && onCancel()}
     >
       <form
-        className="app-dialog prompt-dialog"
+        className={`app-dialog prompt-dialog ${className}`}
         role="dialog"
         aria-modal="true"
         onSubmit={(event) => {
           event.preventDefault();
-          if (valid) onConfirm();
+          if (valid && !busy) onConfirm();
         }}
       >
         <div className="app-dialog-copy">
@@ -182,6 +185,7 @@ export function TextPromptDialog({
         <button
           type="button"
           className="dialog-close icon-button"
+          disabled={busy}
           onClick={onCancel}
           aria-label="关闭"
         >
@@ -195,6 +199,7 @@ export function TextPromptDialog({
               value={value}
               maxLength={maxLength}
               rows={5}
+              disabled={busy}
               onChange={(event) => onChange(event.target.value)}
             />
           ) : (
@@ -202,6 +207,7 @@ export function TextPromptDialog({
               ref={inputRef}
               value={value}
               maxLength={maxLength}
+              disabled={busy}
               onChange={(event) => onChange(event.target.value)}
             />
           )}
@@ -210,10 +216,11 @@ export function TextPromptDialog({
           </small>
         </label>
         <div className="app-dialog-actions">
-          <button type="button" className="secondary-button" onClick={onCancel}>
+          <button type="button" className="secondary-button" disabled={busy} onClick={onCancel}>
             取消
           </button>
-          <button type="submit" className="dark-button" disabled={!valid}>
+          <button type="submit" className="dark-button" disabled={!valid || busy}>
+            {busy && <Loader2 className="spin" size={14} />}
             {confirmLabel}
           </button>
         </div>

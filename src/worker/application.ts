@@ -12,6 +12,7 @@ import { ScopedFileSystem } from '../infrastructure/filesystem/scoped-file-syste
 import { ensureUserMemoryProfile } from '../infrastructure/workspace/session-workspace';
 import { EnvironmentDetector } from '../infrastructure/process/environment-detector';
 import { SkillCatalogService } from './skill-catalog-service';
+import { SkillManagementService } from './skill-management-service';
 import { parseSkillDirectory } from '../infrastructure/skills/parser';
 import {
   BUILTIN_SKILL_CREATOR_NAME,
@@ -67,6 +68,7 @@ import type {
   ModelServiceSaveParams,
   ModelServiceTestParams,
   SkillManagementSnapshot,
+  SkillDescriptionUpdateParams,
   McpManagementSnapshot,
   McpServerSaveParams,
   McpServerTestParams,
@@ -138,6 +140,15 @@ export interface WorkerApplication {
   ): { modelId: string };
   discoverModels(userId: LocalUserId, serviceId: string): Promise<ModelDiscoveryResult>;
   skillManagement(userId: LocalUserId): SkillManagementSnapshot;
+  updateSkillDescription(
+    userId: LocalUserId,
+    input: SkillDescriptionUpdateParams,
+  ): { skillName: string };
+  deleteSkill(
+    userId: LocalUserId,
+    skillName: string,
+    expectedRevision: number,
+  ): { skillName: string };
   setSkillEnabled(
     userId: LocalUserId,
     skillName: string,
@@ -251,6 +262,12 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
 
   const skillRoot = (userId: LocalUserId) => path.join(deps.appDataDir, 'skills', userId);
   const skillCatalog = new SkillCatalogService({ repos, skillRoot, clock });
+  const skillManagement = new SkillManagementService({
+    repos,
+    skillRoot,
+    clock,
+    appDataDir: deps.appDataDir,
+  });
   const ids = deps.idProvider ?? new UuidIdProvider();
   const generatedSkills = new GeneratedSkillPublisher({
     appDataDir: deps.appDataDir,
@@ -748,6 +765,14 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
             metadata: skill.metadata,
           })),
       };
+    },
+
+    updateSkillDescription(userId, input) {
+      return skillManagement.updateDescription(userId, input);
+    },
+
+    deleteSkill(userId, skillName, expectedRevision) {
+      return skillManagement.delete(userId, skillName, expectedRevision);
     },
 
     setSkillEnabled(userId, skillName, enabled, expectedRevision) {

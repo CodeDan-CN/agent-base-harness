@@ -2,6 +2,10 @@
 
 单 Agent Client 应用与低上下文 Runtime。
 
+已实现：[阶段 4.6.0：思考模式重构设计方案](docs/阶段方案/阶段4.6.0-思考模式重构设计方案.md)，采用 Codex 的原生 phase 优先与未知兼容原则，包含流式展示、提示词变化、修改步骤和示例。
+
+新增待实施设计：[阶段 4.7.0：Runtime（运行时）独立化开发架构设计](docs/阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)。4.7.0 将交付独立 Node.js 服务及 CLI（命令行）/Electron（桌面）双客户端，Web（浏览器）和手机端后续接入；包含组件内部结构、迁移工作包和关键时序图。以下已完成能力仍描述当前代码，不表示独立服务已经上线。
+
 ## 项目状态
 
 阶段 1 Client 基础平台、阶段 2 Headless 单 Agent Runtime V1 和阶段 3 Client 主界面已完成；界面状态和交互均来自真实 Bridge、Runtime Projection 与管理快照，不使用参考项目的 Mock 逻辑。阶段 4 聚焦模型能力目录、DeepSeek/百炼供应商预制和完整上下文管理；阶段 4.5 已接入通用 MCP Tool Bridge，并将官方 Memory MCP 作为默认本地服务，同时参考 Pi Agent 定义 `read`、`write`、`edit`、`bash` 四个第一方基础工具。

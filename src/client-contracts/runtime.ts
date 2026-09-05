@@ -159,6 +159,7 @@ export type RuntimeEventType =
   | 'assistant.reasoning'
   | 'assistant.chunk'
   | 'assistant.message'
+  | 'assistant.message.metadata'
   | 'tool.call'
   | 'tool.result'
   | 'interaction.requested'
@@ -193,6 +194,7 @@ export const RUNTIME_EVENT_TYPES: readonly RuntimeEventType[] = [
   'assistant.reasoning',
   'assistant.chunk',
   'assistant.message',
+  'assistant.message.metadata',
   'tool.call',
   'tool.result',
   'interaction.requested',
@@ -294,7 +296,12 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
         z.object({ name: id, contentDigest: id, enabled: z.boolean() }).strict(),
       ),
       // maxStepsPerTurn 仅为旧事件兼容字段；当前 Agent Loop 不设 Step 数量上限。
-      runtimeConfig: z.object({ maxStepsPerTurn: z.number().int().positive().optional() }).strict(),
+      runtimeConfig: z
+        .object({
+          maxStepsPerTurn: z.number().int().positive().optional(),
+          progressReminder: z.boolean().optional(),
+        })
+        .strict(),
     })
     .strict(),
   'user.message': messageSchema().extend({ inboxItemId: id, exchangeId: id }).strict(),
@@ -327,6 +334,15 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
       content: z.string(),
     })
     .strict(),
+  'assistant.message.metadata': z
+    .object({
+      requestId: id,
+      stepId: id,
+      turnId: id,
+      eventId: id,
+      phase: z.enum(['commentary', 'final_answer']),
+    })
+    .strict(),
   'assistant.message': messageSchema()
     .extend({
       requestId: id,
@@ -334,6 +350,8 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
       inputTokens: z.number().int().nonnegative(),
       outputTokens: z.number().int().nonnegative(),
       stopReason: z.enum(['complete', 'tool_calls', 'length']),
+      phase: z.enum(['commentary', 'final_answer']).optional(),
+      phaseSource: z.enum(['provider', 'compatibility']).optional(),
       requestStartedAt: z.string().optional(),
       firstTokenAt: z.string().optional(),
       completedAt: z.string().optional(),

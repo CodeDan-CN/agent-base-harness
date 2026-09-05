@@ -1,8 +1,16 @@
 import type { SessionLogEvent } from '../shared/domain/session';
+import {
+  readAssistantPhase,
+  type AssistantMessagePhase,
+  type AssistantPhaseSource,
+} from './assistant-output-policy';
 import { inboxSplicedPayloadSchema, validateAndUpcastRuntimeEvent } from './runtime';
 import type { InboxItem } from './runtime';
 
 export interface ProjectedMessage {
+  requestId?: string;
+  phase?: AssistantMessagePhase;
+  phaseSource?: AssistantPhaseSource;
   seq: number;
   role: 'user' | 'assistant' | 'tool';
   content: string;
@@ -93,6 +101,7 @@ export interface ProjectedStep {
   endedAt: string | null;
   requestContext: {
     requestId: string;
+    progressReminder?: boolean;
     modelId: string | null;
     configRevision: number | null;
     promptEpoch: number;
@@ -129,6 +138,12 @@ export interface ProjectedToolCall {
 
 export interface ProjectedStream {
   requestId: string;
+  stepId?: string;
+  turnId?: string;
+  phase?: AssistantMessagePhase;
+  /** Frozen when prose starts, so late metadata cannot move text mid-stream. */
+  displayPhase?: AssistantMessagePhase;
+  interrupted?: boolean;
   content: string;
   chunkCount: number;
   finalized: boolean;
@@ -515,6 +530,7 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
       if (target) {
         target.requestContext = {
           requestId: stringAt(payload, 'requestId') ?? '',
+          progressReminder: asRecord(payload?.runtimeConfig)?.progressReminder === true,
           modelId: stringAt(model, 'modelId') ?? null,
           configRevision: numberAt(model, 'configRevision') ?? null,
           promptEpoch: numberAt(payload, 'promptEpoch') ?? 0,
@@ -550,20 +566,48 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
         target.status = status;
         target.endedAt = event.occurredAt;
         target.endReason = stringAt(payload, 'reason') ?? null;
+        for (const stream of state.streams.values()) {
+          if (stream.turnId === id && !stream.finalized) {
+            stream.finalized = true;
+            stream.interrupted = true;
+          }
+        }
+        for (const stream of state.reasoning.values()) {
+          if (stream.turnId === id) stream.finalized = true;
+        }
         if (state.activeTurn?.id === id) state.activeTurn = null;
       }
+      break;
+    }
+    case 'assistant.message.metadata': {
+      const requestId = stringAt(payload, 'requestId');
+      const phase = readAssistantPhase(payload?.phase);
+      if (!requestId || !phase) break;
+      const stream: ProjectedStream = state.streams.get(requestId) ?? {
+        requestId,
+        content: '',
+        chunkCount: 0,
+        finalized: false,
+      };
+      stream.stepId = stringAt(payload, 'stepId');
+      stream.turnId = stringAt(payload, 'turnId');
+      stream.phase = phase;
+      if (stream.chunkCount === 0) stream.displayPhase = phase;
+      state.streams.set(requestId, stream);
       break;
     }
     case 'assistant.chunk': {
       const requestId = stringAt(payload, 'requestId');
       if (!requestId) break;
-      const current = state.streams.get(requestId) ?? {
+      const current: ProjectedStream = state.streams.get(requestId) ?? {
         requestId,
         content: '',
         chunkCount: 0,
         finalized: false,
       };
       current.content += stringAt(payload, 'content') ?? '';
+      current.stepId = stringAt(payload, 'stepId');
+      current.turnId = stringAt(payload, 'turnId');
       current.chunkCount += 1;
       state.streams.set(requestId, current);
       break;
@@ -628,11 +672,23 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
         inboxItemId,
         interactionId: sourceInteraction?.id,
         stepId: stringAt(payload, 'stepId'),
+        ...(event.eventType === 'assistant.message'
+          ? {
+              requestId: stringAt(payload, 'requestId'),
+              phase: readAssistantPhase(payload?.phase),
+              phaseSource:
+                payload?.phaseSource === 'provider'
+                  ? ('provider' as const)
+                  : payload?.phaseSource === 'compatibility'
+                    ? ('compatibility' as const)
+                    : undefined,
+            }
+          : {}),
       });
       if (event.eventType === 'assistant.message') {
         const requestId = stringAt(payload, 'requestId');
         if (requestId) {
-          const stream = state.streams.get(requestId) ?? {
+          const stream: ProjectedStream = state.streams.get(requestId) ?? {
             requestId,
             content,
             chunkCount: 0,
@@ -640,6 +696,10 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
           };
           stream.content = content;
           stream.finalized = true;
+          stream.stepId = stringAt(payload, 'stepId');
+          stream.turnId = turnId;
+          stream.phase = readAssistantPhase(payload?.phase) ?? stream.phase;
+          stream.displayPhase = stream.phase;
           state.streams.set(requestId, stream);
         }
         state.usage.modelRequests += 1;

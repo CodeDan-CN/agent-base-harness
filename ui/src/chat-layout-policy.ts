@@ -1,3 +1,5 @@
+import { assistantMessagePhase, type AssistantMessagePhase } from '@client-contracts';
+
 export interface MessageExecutionPlacement {
   messageTurnId: string;
   streamingTurnId: string | null;
@@ -61,35 +63,41 @@ export function shouldRenderStandaloneExecution(input: {
 export function isExecutionProcessAssistant(input: {
   role: string;
   toolCallCount: number;
+  phase?: AssistantMessagePhase;
 }): boolean {
-  return input.role === 'assistant' && input.toolCallCount > 0;
+  return (
+    input.role === 'assistant' &&
+    (input.phase ?? (input.toolCallCount > 0 ? 'commentary' : 'final_answer')) === 'commentary'
+  );
 }
 
-export function selectTemporaryAssistantMessage<
+/** 同一交互续接链只保留一个过程入口，避免说明与后续回答重复承载执行卡片。 */
+export function selectChatMessages<
   Message extends {
-    seq: number;
     role: string;
     turnId: string;
-    content: string;
+    interactionId?: string;
+    phase?: AssistantMessagePhase;
     toolCalls?: readonly unknown[];
   },
->(input: {
-  messages: readonly Message[];
-  executionTurnId: string | null;
-  hasRunningStream: boolean;
-  hasFinalAssistant: boolean;
-}): Message | null {
-  if (!input.executionTurnId || input.hasRunningStream || input.hasFinalAssistant) return null;
-  return (
-    input.messages
-      .filter(
-        (message) =>
-          message.role === 'assistant' &&
-          message.turnId === input.executionTurnId &&
-          (message.toolCalls?.length ?? 0) > 0 &&
-          Boolean(message.content.trim()),
-      )
-      .sort((left, right) => left.seq - right.seq)
-      .at(-1) ?? null
+>(messages: readonly Message[], interactions: readonly InteractionTurnLink[] = []): Message[] {
+  const groupId = (turnId: string) =>
+    interactionExecutionTurnIds(interactions, turnId)[0] ?? turnId;
+  const answered = new Set(
+    messages
+      .filter((m) => m.role === 'assistant' && assistantMessagePhase(m) === 'final_answer')
+      .map((m) => groupId(m.turnId)),
+  );
+  const anchors = new Map<string, Message>();
+  for (const message of messages) {
+    if (message.role === 'assistant' && !answered.has(groupId(message.turnId)))
+      anchors.set(groupId(message.turnId), message);
+  }
+  return messages.filter(
+    (message) =>
+      (message.role === 'user' && !message.interactionId) ||
+      (message.role === 'assistant' &&
+        (assistantMessagePhase(message) === 'final_answer' ||
+          anchors.get(groupId(message.turnId)) === message)),
   );
 }

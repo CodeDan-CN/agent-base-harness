@@ -65,6 +65,8 @@ export type CommandMethod =
   | 'model.discover'
   | 'skill.enable'
   | 'skill.disable'
+  | 'skill.description.update'
+  | 'skill.delete'
   | 'skill.category.set'
   | 'capability-category.create'
   | 'capability-category.rename'
