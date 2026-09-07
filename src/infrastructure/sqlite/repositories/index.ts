@@ -6,6 +6,7 @@ import { SkillRepository } from './skill-repository';
 import { ProjectionRepository } from './projection-repository';
 import { McpRepository } from './mcp-repository';
 import { CapabilityCategoryRepository } from './capability-category-repository';
+import { AuthRepository } from './auth-repository';
 
 /**
  * SQLite 仓储聚合。所有业务读取都携带 userId 作用域，不提供无 Scope 查询。
@@ -18,6 +19,7 @@ export class SqliteRepositories {
   readonly projections: ProjectionRepository;
   readonly mcp: McpRepository;
   readonly categories: CapabilityCategoryRepository;
+  readonly auth: AuthRepository;
 
   constructor(db: SqliteDatabase) {
     this.users = new UserRepository(db);
@@ -27,6 +29,7 @@ export class SqliteRepositories {
     this.projections = new ProjectionRepository(db);
     this.mcp = new McpRepository(db);
     this.categories = new CapabilityCategoryRepository(db);
+    this.auth = new AuthRepository(db);
   }
 }
 
@@ -37,3 +40,5 @@ export { SkillRepository } from './skill-repository';
 export { ProjectionRepository } from './projection-repository';
 export { McpRepository } from './mcp-repository';
 export { CapabilityCategoryRepository } from './capability-category-repository';
+export { AuthRepository } from './auth-repository';
+export type { LocalAuthCredential, PasswordDigestParams } from './auth-repository';

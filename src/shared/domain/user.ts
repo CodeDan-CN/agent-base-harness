@@ -14,7 +14,7 @@ export interface LocalUser {
   updatedAt: string;
 }
 
-/** 应用固定的两个内置本地用户。 */
+/** 应用首次启动时确保存在的两个预置本地用户。 */
 export const BUILTIN_USERS: ReadonlyArray<{
   id: LocalUserId;
   displayName: string;

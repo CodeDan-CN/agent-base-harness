@@ -102,6 +102,7 @@ export function ExecutionProcess({
     };
   });
   const steps = sections.flatMap((section) => section.steps);
+  const latestContextStep = [...steps].reverse().find((step) => step.requestContext);
   const interactionStepCount = sections.filter((section) => section.interaction).length;
   const endedWithoutAnswer =
     latestTurn.status === 'completed' &&
@@ -124,26 +125,40 @@ export function ExecutionProcess({
   }
   return (
     <section className="execution-card" aria-label="执行过程">
-      <button
-        className="execution-header"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((current) => !current)}
-      >
-        <span>
-          {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-          {latestTurn.status === 'running' && <Loader2 className="spin" size={16} />}
-          执行过程
-        </span>
-        <small>
-          {latestTurn.status === 'running'
-            ? `已完成 ${
-                steps.filter((step) => step.status !== 'running').length + interactionStepCount
-              } 步`
-            : endedWithoutAnswer
-              ? '本轮已结束，未返回最终回答'
-              : statusText(latestTurn.status, latestTurn.endReason)}
-        </small>
-      </button>
+      <div className="execution-header">
+        <button
+          className="execution-header-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span>
+            {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            {latestTurn.status === 'running' && <Loader2 className="spin" size={16} />}
+            执行过程
+          </span>
+          <small>
+            {latestTurn.status === 'running'
+              ? `已完成 ${
+                  steps.filter((step) => step.status !== 'running').length + interactionStepCount
+                } 步`
+              : endedWithoutAnswer
+                ? '本轮已结束，未返回最终回答'
+                : statusText(latestTurn.status, latestTurn.endReason)}
+          </small>
+        </button>
+        <div className="execution-context-summary">
+          <span className="execution-context-label">
+            {latestContextStep?.requestContext
+              ? `上下文约 ${latestContextStep.requestContext.estimatedInputTokens} Token`
+              : '上下文待计算'}
+          </span>
+          <ExecutionContextTokenIndicator
+            projection={projection}
+            turnIds={turns.map((turn) => turn.id)}
+            steps={steps}
+          />
+        </div>
+      </div>
       {expanded && (
         <div className="execution-body">
           {sections.map((section, sectionIndex) => (
@@ -161,11 +176,6 @@ export function ExecutionProcess({
                     <div className="step-heading">
                       <StatusIcon status={latestStep.status} />
                       <span>{stepLabel}</span>
-                      <small>
-                        {latestStep.requestContext
-                          ? `上下文约 ${latestStep.requestContext.estimatedInputTokens} Token`
-                          : '准备模型请求'}
-                      </small>
                     </div>
 
                     {phase.commentary.map((message) => (
@@ -231,11 +241,6 @@ export function ExecutionProcess({
               )}
             </div>
           ))}
-          <ExecutionContextTokenIndicator
-            projection={projection}
-            turnIds={turns.map((turn) => turn.id)}
-            steps={steps}
-          />
         </div>
       )}
     </section>
@@ -401,7 +406,7 @@ function ExecutionContextTokenIndicator({
   const compressed = replacements.length > 0;
 
   return (
-    <div className="execution-context-footer">
+    <div className="execution-context-control">
       <ContextTokenRing
         name="当前 Turn 步骤上下文"
         used={used}

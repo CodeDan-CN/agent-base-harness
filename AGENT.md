@@ -1,5 +1,7 @@
 # Agent Base Harness 项目协作指南
 
+> 4.7.5 目标更新（待实施）：同等级 AgentProfile 支持直接问答与授权调用，Dylan 是每用户初始默认档案；智能体只在设置中创建管理，首页列表通过独立展示关系选择已有档案。模型通过统一 capability_search 有界检索 Skill/MCP/可调用 Agent，再分别进入 skill_load、mcp_load、agent_call。委派采用单层星型结构，只有直接会话可调用其他 Agent，受派会话返回报告后由调用方决定是否再调用另一 Agent，不建立嵌套调用链。本文早期“只有一个 Agent / 不引入 Subagent”约束仅适用于 Runtime V1。每 Session 单 Driver、低上下文、原生 Tool Call 和独立服务边界继续成立。Agent 浅层记忆采用独立 MD，一个 builtin-memory 定义通过 Host MCP 实例管理器按 Agent 私有/用户共享作用域按需运行，普通 MCP 用户级复用，Node/Python 安装应用级共享。最新范围与验收以 [4.7.5 方案](docs/阶段方案/阶段4.7.5-多智能体档案与会话归属开发架构设计.md) 为准，下文保留早期实现基线，不据此宣称多 Agent 已实现。
+
 ## 1. 文档用途
 
 本文档用于帮助参与本仓库的开发者和编码 Agent 快速理解项目背景、目标、边界、参考资料以及协作规范。
@@ -39,7 +41,7 @@
 
 ## 3. 项目背景
 
-本项目计划使用 Node.js 和 TypeScript 构建一个完整的 Agent Client 应用。应用包含两个内置本地用户、单 Agent Runtime、本地持久化、模型与工具集成、事件投影，以及面向用户的聊天和设置界面。
+本项目计划使用 Node.js 和 TypeScript 构建一个完整的 Agent Client 应用。应用预置两个本地用户并支持继续注册、单 Agent Runtime、本地持久化、模型与工具集成、事件投影，以及面向用户的聊天和设置界面。
 
 4.7.0 的交付主体包括可独立安装的服务与 CLI，以及接入同一服务的 Electron 客户端。Runtime 负责会话、模型调用、工具执行、队列、取消、恢复和上下文管理；客户端负责一致、可观察、可操作的交互体验。服务拥有任务生命周期，客户端断开不等于取消。
 
@@ -72,7 +74,7 @@
 - 通过 Context Projector 贯彻“存全，发少”，控制模型上下文增长。
 - 采集 provider 返回的精确 usage，并单独记录上下文组成估算。
 - UI、执行轨迹、Inbox 和 Token 统计都应由持久事件投影得到，而不是依赖前端临时状态成为事实。
-- Client 内置两个本地用户；会话、事件、模型、Skill、凭据引用和 Agent 上下文必须按 `userId` 隔离。
+- Client 预置两个本地用户并支持继续注册；会话、事件、模型、Skill、凭据引用和 Agent 上下文必须按 `userId` 隔离。
 - Client 应用必须提供完整的会话、输入、运行过程、队列、停止、模型配置和能力管理体验，而不是只实现不可交互的 Runtime 核心。
 - 模型管理和 Skill 管理是正式 Client 产品模块，必须覆盖持久化、校验、凭据/授权、启停、用户隔离和 Runtime 配置快照，不能只做静态设置页面。
 - Runtime 与 UI 必须通过明确的命令和事件/Projection 契约连接，使客户端刷新或重启后仍能恢复一致状态。
@@ -83,7 +85,7 @@
 
 实现和命名应统一使用设计文档中的概念：
 
-- `LocalUser`：两个内置本地用户之一，是 Session、模型、Skill 和其他用户私有数据的顶层作用域。
+- `LocalUser`：预置或注册产生的本地用户，是 Session、模型、Skill 和其他用户私有数据的顶层作用域。
 - `Session`：一段可持久化会话；同时最多存在一个活动 Driver。
 - `Inbox`：已接纳但尚未在安全边界领取的输入，目标为 `next-turn` 或 `next-step`。
 - `ExecutionTurn`：Agent 对一条排队请求的完整执行过程。

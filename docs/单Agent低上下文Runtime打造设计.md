@@ -1,8 +1,10 @@
 # 单 Agent 低上下文 Runtime 打造设计
 
+> 4.7.5 目标更新（待实施）：同等级 AgentProfile 支持直接问答与授权调用，Dylan 是每用户初始默认档案；智能体只在设置中创建管理，首页列表通过独立展示关系选择已有档案。委派采用单层星型结构，只有直接会话可调用其他 Agent，受派会话返回报告后由调用方决定是否再调用另一 Agent，不建立嵌套调用链。本文早期“只有一个 Agent / 不引入 Subagent”约束仅适用于 Runtime V1。每 Session 单 Driver、低上下文、原生 Tool Call 和独立服务边界继续成立。Agent 浅层记忆采用独立 MD，一个 builtin-memory 定义通过 Host MCP 实例管理器按 Agent 私有/用户共享作用域按需运行，普通 MCP 用户级复用，Node/Python 安装应用级共享。最新范围与验收以 [4.7.5 方案](阶段方案/阶段4.7.5-多智能体档案与会话归属开发架构设计.md) 为准，下文保留早期实现基线，不据此宣称多 Agent 已实现。
+
 阶段 4.6.0 已实现补充见[思考模式重构设计方案](阶段方案/阶段4.6.0-思考模式重构设计方案.md)。该方案增加普通消息用途归类和简短执行说明展示，保持原生工具循环、Turn 结束规则及恢复语义，不增加自动纠正请求；连续沉默时仅在下一次已有主请求中临时提醒，并展示真实运行状态（详见 4.6.0 第 11 节）。当前实现继续使用 Chat Completions；真实端点是否提前提供 phase 需实测。
 
-阶段 4.7.0 的运行宿主与交付调整见[Runtime（运行时）独立化设计](阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)：核心经能力端口独立，由服务宿主管理，CLI（命令行）/Electron（桌面）通过同一应用服务接入，Web（浏览器）与手机后续支持。客户端断开不终止任务；工作线程崩溃仍执行本文件的中断修复与未知副作用规则。本文件的单 Agent、日志、队列、权限和上下文不变量继续有效；第 16 节旧目录建议由 4.7.0 目标目录替代。
+阶段 4.7.0 的运行宿主与交付调整见[Runtime 独立化与 CLI/Electron 双端接入](阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)：Gateway 与 Runtime 代码分层，但默认在同一个 Node.js 进程和 npm 发布物中运行；CLI（命令行）与 Electron（桌面）通过同一 Gateway 接入，Web（浏览器）与手机后续支持。客户端断开不终止任务；服务重启仍执行本文件的中断修复与未知副作用规则。本文件的单 Agent、日志、队列、权限和上下文不变量继续有效；内部 Worker 化或更细目录拆分由后续实测决定。
 
 ## 1. 文档目标
 
@@ -475,16 +477,16 @@ inputBudget
 
 工具数量较少时，全部稳定注册往往比动态路由更省 token，因为不需要额外的能力发现 Step。
 
-只有当 Tool Schema 已成为上下文主要成本时，才引入两级能力加载。Skill 与 MCP 在发现层使用同一个轻量入口，不分别建立有先后暗示的搜索链路：
+只有当 Tool Schema 已成为上下文主要成本时，才引入两级能力加载。4.7.5 起，Skill、MCP 与可调用 Agent 在发现层使用同一个轻量入口，不分别建立有先后暗示的搜索链路：
 
 ```text
 常驻工具：capability_search、skill_load、mcp_load、必要通用工具
-统一发现：capability_search 同时返回全部可用 Skill 与 MCP 的名称和完整 description，不按关键词筛选或限制数量
-按需展开：选中 Skill 后 skill_load；选中 MCP Server 后 mcp_load
+统一发现：capability_search 检索当前执行快照中的 Skill、MCP 与可调用 Agent
+按需展开：Skill → skill_load；MCP → mcp_load；Agent → agent_call
 领域工具：mcp_load 后从下一 Step 加入当前 Turn 的 Tool Schema
 ```
 
-`capability_search` 返回全部可用 Skill 的名称、完整 description 和 loader 参数；MCP 按 Server 返回名称、description、全部已审核启用工具的名称与完整 description 和 loader 参数，不返回 `SKILL.md` 正文或 MCP Tool Schema。可选 query 仅作为任务上下文原样返回，不参与筛选、相关性打分或排序；不设置候选数量上限，也不截断 description。目录按名称稳定排列，不表示相关性；两类来源同级，由当前执行任务的模型自行选择 Skill、MCP、两者或都不使用，不引入额外选择模型。用户隔离、启用状态、Skill 有效性与兼容性、MCP 工具审核边界保持不变。该方案的收益必须通过真实 token 统计证明，不应仅因为“动态更灵活”就在第一版引入。
+4.7.5 起，`capability_search` 使用 `query`、可选 `kinds` 和有界 `limit`，对当前 Agent 已授权的 Skill/MCP/Agent 名称、简介和标签做本地确定性匹配，不调用额外选择模型或向量服务。结果只返回 kind、capabilityId、name、description、action 和必要作用域标签，不返回 `SKILL.md` 正文、MCP Tool Schema、Agent 核心指令/记忆/会话。三类来源同级，分别通过 `skill_load`、`mcp_load`、`agent_call` 执行；每个执行入口重新校验当前 Step 快照。delegated Session 的搜索结果排除 Agent 且不暴露 agent_call，以保持单层委派。具体边界以 4.7.5 阶段方案为准。
 
 ### 9.7 Session 历史与 ConversationEvent 上下文
 
@@ -745,7 +747,7 @@ export type TurnEndReason =
 
 ### 12.1 最小存储模型
 
-Runtime 逻辑上只需要 Session 与 Session Event 两类核心持久事实。集成到本项目 Agent Client 时，使用单个 SQLite 数据库承载两个内置本地用户，并在所有用户私有表中增加 `user_id` 作用域；完整用户隔离方案见 [`Agent Client完整技术解决方案.md`](Agent%20Client完整技术解决方案.md)。
+Runtime 逻辑上只需要 Session 与 Session Event 两类核心持久事实。集成到本项目 Agent Client 时，使用单个 SQLite 数据库承载全部本地用户，并在所有用户私有表中增加 `user_id` 作用域；完整用户隔离方案见 [`Agent Client完整技术解决方案.md`](Agent%20Client完整技术解决方案.md)。
 
 ```text
 local_users

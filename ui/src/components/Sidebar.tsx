@@ -9,7 +9,7 @@ import {
   Plus,
   Search,
   Settings,
-  Users,
+  LogOut,
 } from 'lucide-react';
 import type { BootstrapLocalUser, Session } from '@client-contracts';
 
@@ -17,15 +17,13 @@ interface SidebarProps {
   sessions: Session[];
   activeSessionId: string | null;
   activeUser: BootstrapLocalUser;
-  users: BootstrapLocalUser[];
-  switchingUser: boolean;
   onSelectSession(id: string): void;
   onNewSession(): void;
   onRename(session: Session): void;
   onArchive(session: Session): void;
   onToggle(): void;
   onOpenSettings(): void;
-  onSwitchUser(userId: string): void;
+  onLogout(): void;
 }
 
 export function Sidebar(props: SidebarProps): JSX.Element {
@@ -168,24 +166,6 @@ export function Sidebar(props: SidebarProps): JSX.Element {
       <div ref={profileAreaRef} className="profile-area">
         {profileOpen && (
           <div className="profile-menu" role="menu">
-            <div className="profile-menu-title">
-              <Users size={14} /> 切换本地用户
-            </div>
-            {props.users.map((user) => (
-              <button
-                key={user.id}
-                disabled={props.switchingUser || user.id === props.activeUser.id}
-                onClick={() => {
-                  setProfileOpen(false);
-                  props.onSwitchUser(user.id);
-                }}
-              >
-                <span className="mini-avatar">{user.displayName.slice(0, 2)}</span>
-                <span>{user.displayName}</span>
-                {user.id === props.activeUser.id && <span className="current-dot" />}
-              </button>
-            ))}
-            <div className="profile-menu-separator" />
             <button
               onClick={() => {
                 setProfileOpen(false);
@@ -193,6 +173,14 @@ export function Sidebar(props: SidebarProps): JSX.Element {
               }}
             >
               <Settings size={15} /> 设置
+            </button>
+            <button
+              onClick={() => {
+                setProfileOpen(false);
+                props.onLogout();
+              }}
+            >
+              <LogOut size={15} /> 退出登录
             </button>
           </div>
         )}

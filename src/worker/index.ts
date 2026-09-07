@@ -7,6 +7,7 @@ import { dispatch } from './dispatcher';
 import { toErrorPayload } from '../shared/contracts/errors';
 import type { WorkerControlMessage, WorkerEventMessage } from '../shared/contracts/worker-messages';
 import type { BundledRuntimeSnapshot } from '../infrastructure/runtime/bundled-runtime-registry';
+import { DEFAULT_USER_ID } from '../shared/domain/user';
 
 export interface WorkerBootstrapData {
   appDataDir: string;
@@ -84,7 +85,7 @@ post({
   type: 'ready',
   workerGeneration: data.generation,
   schemaVersion: app.schemaVersion,
-  activeUserId: app.activeUserId,
+  activeUserId: DEFAULT_USER_ID,
   capabilities: { model: 'foundation', skill: 'foundation', runtime: 'ready' },
 });
 

@@ -39,6 +39,7 @@ lerna-debug.log*
 # Tool caches and local state
 .cache/
 .runtime-cache/
+.service-cache/
 .vite/
 .eslintcache
 *.tsbuildinfo
@@ -58,6 +59,9 @@ reference_ui/
 scripts/*
 !scripts/agent-travel-benchmark.mjs
 !scripts/generate-travel-agent-comparison.mjs
+!scripts/build.mjs
+!scripts/prepare-server-package.mjs
+!scripts/prepare-service-runtime.mjs
 
 tests/*
 !tests/unit/
@@ -68,3 +72,10 @@ tests/unit/*
 !tests/unit/assistant-output-policy.test.ts
 !tests/unit/capability-discovery.test.ts
 !tests/unit/skill-management.test.ts
+!tests/unit/stage47-auth.test.ts
+!tests/unit/stage47-lifecycle.test.ts
+!tests/unit/stage47-electron-boundary.test.ts
+!tests/unit/stage47-package.test.ts
+!tests/integration/
+tests/integration/*
+!tests/integration/stage47-gateway.test.ts

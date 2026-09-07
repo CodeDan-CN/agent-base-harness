@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, currentSchemaVersion } from '../infrastructure/sqlite/connection';
 import { runMigrations } from '../infrastructure/sqlite/migration';
-import { STAGE45_MIGRATIONS } from '../infrastructure/sqlite/schema';
+import { STAGE47_MIGRATIONS } from '../infrastructure/sqlite/schema';
 import { SqliteRepositories } from '../infrastructure/sqlite/repositories';
 import { ProcessRunner } from '../infrastructure/process/process-runner';
 import { ShellExecutor } from '../infrastructure/process/shell-executor';
@@ -28,7 +28,7 @@ import {
 } from '../infrastructure/credential/credential-store';
 import { SystemClock, UuidIdProvider } from '../shared/domain/ports';
 import type { Clock, IdProvider } from '../shared/domain/ports';
-import { isBuiltinUser } from '../shared/domain/user';
+import { DEFAULT_USER_ID } from '../shared/domain/user';
 import type { LocalUserId } from '../shared/domain/user';
 import type { CapabilityCategoryType } from '../shared/domain/capability-category';
 import { BridgeError } from '../shared/contracts/errors';
@@ -107,7 +107,6 @@ export interface CreateWorkerAppDeps {
 export interface WorkerApplication {
   readonly generation: number;
   readonly schemaVersion: number;
-  readonly activeUserId: LocalUserId;
   readonly repos: SqliteRepositories;
   readonly credentialStore: CredentialStore;
   readonly processRunner: ProcessRunner;
@@ -116,9 +115,9 @@ export interface WorkerApplication {
   readonly appDataDir: string;
   readonly runtime: RuntimeService;
   readonly mcp: McpManager;
+  initializeUser(userId: LocalUserId): Promise<void>;
   bootstrap(userId: LocalUserId): BootstrapResult;
   health(userId: LocalUserId): Promise<HealthSnapshot>;
-  switchUser(userId: LocalUserId): BootstrapResult;
   skillCatalog(userId: LocalUserId): SkillCatalogSnapshot;
   modelManagement(userId: LocalUserId): Promise<ModelManagementSnapshot>;
   modelCallStatistics(
@@ -214,7 +213,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
 
   let schemaVersion: number;
   try {
-    schemaVersion = runMigrations(db, STAGE45_MIGRATIONS, { clock: () => clock.nowIso() });
+    schemaVersion = runMigrations(db, STAGE47_MIGRATIONS, { clock: () => clock.nowIso() });
   } catch (err) {
     try {
       db.close();
@@ -232,7 +231,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
     ensureUserMemoryProfile(deps.appDataDir, user.id);
   }
   seedBundledMemoryServers(repos, deps.runtime, clock.nowIso());
-  const activeUserId = repos.users.repairActiveUserId(clock.nowIso());
+  const initialUserId = DEFAULT_USER_ID;
 
   const processRunner = new ProcessRunner({ allowedRoots: [deps.appDataDir, os.tmpdir()] });
   const detector = new EnvironmentDetector(
@@ -276,7 +275,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
     ids,
     skillRoot,
   });
-  skillCatalog.refresh(activeUserId);
+  skillCatalog.refresh(initialUserId);
   generatedSkills.seedBuiltinCreator(repos.users.listUsers().map((user) => user.id));
 
   const llmAdapters = deps.llmAdapters ?? new LlmAdapterRegistry();
@@ -324,7 +323,6 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
   const app: WorkerApplication = {
     generation: deps.generation,
     schemaVersion,
-    activeUserId,
     repos,
     credentialStore,
     processRunner,
@@ -333,6 +331,31 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
     appDataDir: deps.appDataDir,
     runtime,
     mcp,
+
+    async initializeUser(userId: LocalUserId): Promise<void> {
+      const now = clock.nowIso();
+      repos.categories.ensureDefaults(userId, 'skill', now);
+      repos.categories.ensureDefaults(userId, 'mcp', now);
+      ensureUserMemoryProfile(deps.appDataDir, userId);
+      seedBundledMemoryServers(repos, deps.runtime, now);
+      generatedSkills.seedBuiltinCreator([userId]);
+      skillCatalog.refresh(userId);
+      mcp.rebuildUserTools(userId);
+      await Promise.all(
+        repos.mcp
+          .listServers(userId)
+          .filter((server) => server.status === 'enabled')
+          .map((server) =>
+            mcp.refreshServer(userId, server.id).catch((error) => {
+              logger.warn('MCP account initialization failed', {
+                userId,
+                serverId: server.id,
+                errorCode: error instanceof Error ? error.name : 'UNKNOWN',
+              });
+            }),
+          ),
+      );
+    },
 
     bootstrap(userId: LocalUserId): BootstrapResult {
       const user = repos.users.getUser(userId);
@@ -365,15 +388,6 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
           shell: toHealth(interpreters.shell),
         },
       };
-    },
-
-    switchUser(userId: LocalUserId): BootstrapResult {
-      if (!isBuiltinUser(userId)) {
-        throw new BridgeError('USER_NOT_FOUND', 'User not found');
-      }
-      repos.users.setActiveUserId(userId, clock.nowIso());
-      skillCatalog.refresh(userId);
-      return app.bootstrap(userId);
     },
 
     skillCatalog(userId: LocalUserId): SkillCatalogSnapshot {

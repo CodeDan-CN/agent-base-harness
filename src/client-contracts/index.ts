@@ -31,6 +31,7 @@ export type {
   ModelCallStatisticsParams,
   ModelCallStatisticsSnapshot,
 } from '../shared/contracts/statistics';
+export type { AuthResult, AuthSessionView, AuthenticatedUser } from '../shared/contracts/auth';
 export type { Session, SessionLogEvent } from '../shared/domain/session';
 export type {
   ApprovalResolution,

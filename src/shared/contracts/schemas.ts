@@ -114,6 +114,10 @@ export const commandRequestSchema = z.discriminatedUnion('method', [
   command('model.discover', modelDiscoverParamsSchema),
   command('skill.enable', skillToggleParamsSchema),
   command('skill.disable', skillToggleParamsSchema),
+  command(
+    'skill.install.directory',
+    z.object({ sourcePath: z.string().min(1).max(4096) }).strict(),
+  ),
   command('skill.description.update', skillDescriptionUpdateParamsSchema),
   command('skill.delete', skillToggleParamsSchema),
   command('skill.category.set', skillCategorySetParamsSchema),
@@ -228,6 +232,8 @@ export function runtimeResponseSchema(method: string): z.ZodTypeAny | undefined 
     case 'skill.enable':
     case 'skill.disable':
       return z.object({ skillName: z.string(), enabled: z.boolean() }).strict();
+    case 'skill.install.directory':
+      return z.object({ skillName: z.string() }).strict();
     case 'skill.description.update':
     case 'skill.delete':
       return z.object({ skillName: z.string() }).strict();

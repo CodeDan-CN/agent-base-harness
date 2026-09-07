@@ -62,6 +62,133 @@ select:focus-visible {
   height: 100%;
   background: #fff;
 }
+.auth-screen {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: #f0f4f9;
+  padding: 20px;
+}
+.auth-card {
+  width: min(560px, 100%);
+  padding: 32px 42px 28px;
+  border-radius: 14px;
+  background: #fff;
+}
+.auth-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: #3c4043;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+}
+.auth-brand-mark {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  color: #0b57d0;
+  background: #e8f0fe;
+  border-radius: 7px;
+  font-size: 15px;
+}
+.auth-card form {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+}
+.auth-card label {
+  display: grid;
+  gap: 8px;
+  color: #3c4043;
+  font-size: 13px;
+  font-weight: 500;
+}
+.auth-card input,
+.auth-card select {
+  width: 100%;
+  height: 48px;
+  padding: 0 15px;
+  border: 1px solid #747775;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 15px;
+  outline: none;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+.auth-card input:focus,
+.auth-card select:focus {
+  border-color: #0b57d0;
+  box-shadow: 0 0 0 1px #0b57d0;
+}
+.auth-card input:focus-visible {
+  outline: none;
+}
+.auth-card input::placeholder {
+  color: #80868b;
+}
+.auth-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 6px;
+}
+.auth-switch {
+  min-height: 40px;
+  padding: 0;
+  color: #0b57d0;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+}
+.auth-switch:hover {
+  text-decoration: underline;
+}
+.auth-submit {
+  min-width: 82px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 24px;
+  color: #fff;
+  background: #0b57d0;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.auth-submit:hover:not(:disabled) {
+  background: #0842a0;
+  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.3);
+}
+.auth-error {
+  padding: 11px 13px;
+  color: #b3261e;
+  background: #fce8e6;
+  border-radius: 6px;
+  font-size: 13px;
+}
+@media (max-width: 520px) {
+  .auth-screen {
+    padding: 0;
+    background: #fff;
+  }
+  .auth-card {
+    width: 100%;
+    padding: 28px 24px;
+    border-radius: 0;
+  }
+  .auth-actions {
+    align-items: flex-start;
+  }
+}
 .icon-button {
   width: 32px;
   height: 32px;
@@ -268,8 +395,7 @@ select:focus-visible {
 .profile-button:hover {
   background: #ececf1;
 }
-.avatar,
-.mini-avatar {
+.avatar {
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -281,11 +407,6 @@ select:focus-visible {
   height: 32px;
   font-size: 11px;
   font-weight: 700;
-}
-.mini-avatar {
-  width: 24px;
-  height: 24px;
-  font-size: 9px;
 }
 .profile-copy {
   display: flex;
@@ -312,14 +433,6 @@ select:focus-visible {
   background: #fff;
   box-shadow: 0 12px 32px rgba(30, 30, 45, 0.14);
 }
-.profile-menu-title {
-  display: flex;
-  gap: 7px;
-  align-items: center;
-  padding: 6px 8px;
-  color: #858895;
-  font-size: 10px;
-}
 .profile-menu button {
   width: 100%;
   display: flex;
@@ -332,18 +445,6 @@ select:focus-visible {
 }
 .profile-menu button:hover:not(:disabled) {
   background: #f4f4f7;
-}
-.current-dot {
-  width: 6px;
-  height: 6px;
-  margin-left: auto;
-  border-radius: 50%;
-  background: #45b96e;
-}
-.profile-menu-separator {
-  height: 1px;
-  background: #eeeef2;
-  margin: 5px 2px;
 }
 
 /* 主聊天区 */
@@ -749,16 +850,21 @@ select:focus-visible {
   justify-content: space-between;
   padding: 0 12px;
   color: #454958;
+}
+.execution-header-toggle {
+  display: flex;
+  align-items: center;
+  gap: 14px;
   text-align: left;
 }
-.execution-header > span {
+.execution-header-toggle > span {
   display: flex;
   align-items: center;
   gap: 7px;
   font-size: 12px;
   font-weight: 650;
 }
-.execution-header small {
+.execution-header-toggle small {
   color: #999ca8;
   font-size: 10px;
 }
@@ -816,10 +922,6 @@ select:focus-visible {
   position: absolute;
   left: -8px;
   background: #fafafd;
-}
-.step-heading small {
-  color: #a0a3ad;
-  margin-left: auto;
 }
 .status-success {
   color: #44aa68;
@@ -2439,8 +2541,7 @@ textarea:focus-visible,
   border-radius: 9px;
 }
 
-.avatar,
-.mini-avatar {
+.avatar {
   background: #2f3135;
 }
 
@@ -2715,18 +2816,27 @@ textarea:focus-visible,
   box-shadow: 0 0 0 2px rgba(62, 115, 170, 0.12);
 }
 
-.execution-context-footer {
+.execution-context-summary {
   display: flex;
-  justify-content: flex-end;
-  padding-top: 3px;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: #a0a3ad;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
-.execution-context-footer .context-token-wrap {
+.execution-context-control,
+.execution-context-summary .context-token-wrap {
+  display: flex;
+  align-items: center;
   margin-left: 0;
 }
 
-.execution-context-footer .context-token-popover {
+.execution-context-summary .context-token-popover {
+  top: calc(100% + 10px);
   right: 0;
+  bottom: auto;
 }
 
 .context-token-popover {
@@ -2924,29 +3034,35 @@ textarea:focus-visible,
   border: 0;
   border-radius: 0;
   background: transparent;
+  overflow: visible;
 }
 
 .execution-header {
   min-height: 32px;
-  width: fit-content;
-  gap: 14px;
-  padding: 0 6px 0 0;
-  border-radius: 7px;
+  width: 100%;
+  gap: 18px;
+  padding: 0;
   color: #686a66;
 }
 
-.execution-header:hover {
+.execution-header-toggle {
+  min-height: 32px;
+  padding: 0 6px 0 0;
+  border-radius: 7px;
+}
+
+.execution-header-toggle:hover {
   color: #343639;
   background: #f3f3f0;
 }
 
-.execution-header > span {
+.execution-header-toggle > span {
   gap: 6px;
   font-size: 13px;
   font-weight: 570;
 }
 
-.execution-header small {
+.execution-header-toggle small {
   font-size: 11px;
 }
 
@@ -4327,8 +4443,7 @@ details[open] > summary > .disclosure-chevron {
   }
 
   .session-menu button,
-  .profile-menu button,
-  .profile-menu-title {
+  .profile-menu button {
     color: #dedfdd;
   }
 
@@ -4345,14 +4460,12 @@ details[open] > summary > .disclosure-chevron {
     color: #ef7470;
   }
 
-  .profile-area,
-  .profile-menu-separator {
+  .profile-area {
     border-color: #414240;
     background-color: transparent;
   }
 
-  .avatar,
-  .mini-avatar {
+  .avatar {
     color: #f1f1f1;
     background: #1e1f1e;
     border: 1px solid #50514e;
@@ -4590,7 +4703,7 @@ details[open] > summary > .disclosure-chevron {
     color: #a7a9a5;
   }
 
-  .execution-header:hover {
+  .execution-header-toggle:hover {
     color: #efefef;
     background: #2d2e2c;
   }
@@ -4599,9 +4712,9 @@ details[open] > summary > .disclosure-chevron {
     border-left-color: #444542;
   }
 
-  .step-heading small,
   .execution-placeholder,
-  .tool-card summary small {
+  .tool-card summary small,
+  .execution-context-summary {
     color: #898b87;
   }
 
@@ -5667,10 +5780,10 @@ select,
   margin-top: 2px;
 }
 
-.message-column .execution-header > span,
-.message-column .execution-header small,
+.message-column .execution-header-toggle > span,
+.message-column .execution-header-toggle small,
+.message-column .execution-context-label,
 .message-column .step-heading,
-.message-column .step-heading small,
 .message-column .execution-section-title,
 .message-column .execution-placeholder,
 .message-column .tool-card summary,

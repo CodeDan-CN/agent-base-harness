@@ -4,7 +4,7 @@
 
 已实现：[阶段 4.6.0：思考模式重构设计方案](docs/阶段方案/阶段4.6.0-思考模式重构设计方案.md)，采用 Codex 的原生 phase 优先与未知兼容原则，包含流式展示、提示词变化、修改步骤和示例。
 
-新增待实施设计：[阶段 4.7.0：Runtime（运行时）独立化开发架构设计](docs/阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)。4.7.0 将交付独立 Node.js 服务及 CLI（命令行）/Electron（桌面）双客户端，Web（浏览器）和手机端后续接入；包含组件内部结构、迁移工作包和关键时序图。以下已完成能力仍描述当前代码，不表示独立服务已经上线。
+新增待实施设计：[阶段 4.7.0：Runtime 独立化与 CLI/Electron 双端接入](docs/阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)，配套验证见 [4.7.0 测试用例](docs/阶段方案/阶段4.7.0-Runtime独立化测试用例.md)。4.7.0 将 Gateway 与 Runtime 作为同一 Node.js 进程、同一 npm 发布物中的两个代码模块，由 Gateway 提供本地账号注册与登录，并预置 `user_a`、`user_b`（密码均为 `123456`）；首批交付 CLI（命令行）/Electron（桌面）双端接入与顺序切换，Web（浏览器）、手机端、多端实时协同和微服务拆分留待后续。以下已完成能力仍描述当前代码，不表示独立服务已经上线。
 
 ## 项目状态
 
@@ -19,7 +19,7 @@
 - Credential：macOS Keychain 适配器接入生产链路，health 返回真实可用状态
 - ProcessRunner：真实路径（realpath）校验 symlink 逃逸、环境变量 allowlist 约束
 - macOS arm64 Runtime Pack：固定 Node.js 24.20.0 与 Python 3.13.15，国内/官方双源下载、SHA-256 校验、应用内离线执行
-- 默认 Memory MCP：固定 `@modelcontextprotocol/server-memory@2026.7.4`，随 Runtime Pack 离线运行，为两个本地用户分别预置、存储和发现工具
+- 默认 Memory MCP：固定 `@modelcontextprotocol/server-memory@2026.7.4`，随 Runtime Pack 离线运行，为每个本地用户分别预置、存储和发现工具
 - 单 Agent Session Driver：Turn/Step、Queue、Steer、队列项“立刻介入”、Cancel、Interaction 与跨 Session 并行
 - SQLite V2：持久 Inbox、输入幂等、Session lease、ConversationEvent/Exchange 与可重建 Projection
 - Runtime：稳定 Prompt、上下文预算、Event 压缩、History Tool、Skill 按需加载和宿主命令工具

@@ -39,8 +39,15 @@ export function userMessage(error: unknown): string {
         return '配置已在其他位置更新，请刷新后重试。';
       case 'INVALID_REQUEST':
         return '填写内容无效，请检查后重试。';
+      case 'CONFLICT':
+        return '该账号已存在，请换一个账号名。';
       case 'SESSION_BUSY':
         return '当前会话正在运行，请先停止任务。';
+      case 'AUTHENTICATION_REQUIRED':
+      case 'AUTHENTICATION_FAILED':
+        return '登录已失效或凭据不正确，请重新登录。';
+      case 'RATE_LIMITED':
+        return '登录尝试过于频繁，请稍后再试。';
       case 'RUNTIME_NOT_READY':
       case 'RUNTIME_UNAVAILABLE':
       case 'RUNTIME_RESTARTED':

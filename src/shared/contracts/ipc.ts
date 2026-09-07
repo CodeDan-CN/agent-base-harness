@@ -7,6 +7,10 @@ import type { SessionLogEvent } from '../domain/session';
 
 /** Preload 固化的 channel，Renderer 无法构造任意 channel。 */
 export const IPC_CHANNELS = {
+  authRegister: 'agent-client:auth-register',
+  authLogin: 'agent-client:auth-login',
+  authLogout: 'agent-client:auth-logout',
+  authMe: 'agent-client:auth-me',
   query: 'agent-client:query',
   command: 'agent-client:command',
   subscribe: 'agent-client:subscribe',
@@ -65,6 +69,7 @@ export type CommandMethod =
   | 'model.discover'
   | 'skill.enable'
   | 'skill.disable'
+  | 'skill.install.directory'
   | 'skill.description.update'
   | 'skill.delete'
   | 'skill.category.set'
@@ -89,6 +94,10 @@ export interface CommandRequest {
 
 /** Renderer 可见的 Bridge 客户端 API（Preload 通过 contextBridge 暴露）。 */
 export interface AgentClientApi {
+  register(input: { loginName: string; password: string }): Promise<RpcEnvelope>;
+  login(input: { loginName: string; password: string }): Promise<RpcEnvelope>;
+  logout(): Promise<RpcEnvelope>;
+  currentAuth(): Promise<RpcEnvelope>;
   query(method: QueryMethod, params?: unknown): Promise<RpcEnvelope>;
   command(method: CommandMethod, params?: unknown): Promise<RpcEnvelope>;
   subscribeLifecycle(listener: (event: LifecycleEvent) => void): () => void;

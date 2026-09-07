@@ -12,6 +12,7 @@ import type {
 } from '@client-contracts';
 import { ClientApiError, command, query, requireClient, userMessage } from './client';
 import { ChatArea } from './components/ChatArea';
+import { AuthScreen } from './components/AuthScreen';
 import { ConfirmDialog, TextPromptDialog } from './components/Dialogs';
 import { SettingsModal } from './components/SettingsModal';
 import { Sidebar } from './components/Sidebar';
@@ -27,6 +28,41 @@ import {
 import type { BannerState, SessionSnapshotPayload } from './types';
 
 export function App(): JSX.Element {
+  const [authentication, setAuthentication] = useState<'checking' | 'required' | 'ready'>(
+    'checking',
+  );
+
+  useEffect(() => {
+    const client = window.agentClient;
+    if (!client) {
+      setAuthentication('required');
+      return;
+    }
+    void client
+      .currentAuth()
+      .then((envelope) => setAuthentication(envelope.ok ? 'ready' : 'required'))
+      .catch(() => setAuthentication('required'));
+  }, []);
+
+  if (authentication === 'checking') {
+    return (
+      <div className="boot-screen">
+        <Loader2 className="spin" />
+        <strong>正在连接本机 Runtime...</strong>
+      </div>
+    );
+  }
+  if (authentication === 'required') {
+    return <AuthScreen onAuthenticated={() => setAuthentication('ready')} />;
+  }
+  return <RuntimeApp onAuthenticationRequired={() => setAuthentication('required')} />;
+}
+
+function RuntimeApp({
+  onAuthenticationRequired,
+}: {
+  onAuthenticationRequired(): void;
+}): JSX.Element {
   const [bootstrap, setBootstrap] = useState<BootstrapResult | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -43,7 +79,7 @@ export function App(): JSX.Element {
   const [renameTitle, setRenameTitle] = useState('');
   const [renaming, setRenaming] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [switchingUser, setSwitchingUser] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const [pendingPermissionPreset, setPendingPermissionPreset] = useState<PermissionPreset | null>(
     null,
@@ -121,6 +157,10 @@ export function App(): JSX.Element {
         await applyBootstrap(boot);
       } catch (error) {
         document.documentElement.dataset.smoke = 'error';
+        if (error instanceof ClientApiError && error.code === 'AUTHENTICATION_REQUIRED') {
+          onAuthenticationRequired();
+          return;
+        }
         if (error instanceof ClientApiError && error.code === 'RUNTIME_NOT_READY') return;
         const message = userMessage(error);
         setBootError(message);
@@ -137,7 +177,7 @@ export function App(): JSX.Element {
       if (initializeRef.current === task) initializeRef.current = null;
     });
     return task;
-  }, [applyBootstrap, notify]);
+  }, [applyBootstrap, notify, onAuthenticationRequired]);
 
   useEffect(() => {
     void initialize();
@@ -177,8 +217,10 @@ export function App(): JSX.Element {
     setBootError(null);
     setRuntimeStatus('starting');
     try {
-      const boot = await command<BootstrapResult>('runtime.retry');
-      await applyBootstrap(boot);
+      // Runtime is an independent service. Main reconnects/restarts it from
+      // the lifecycle probe; reloading lets the auth/bootstrap flow run again
+      // without exposing a legacy runtime.retry command through Gateway.
+      window.location.reload();
     } catch (error) {
       const message = userMessage(error);
       setRuntimeStatus('failed');
@@ -360,6 +402,23 @@ export function App(): JSX.Element {
     }
   };
 
+  const logout = () => {
+    setLoggingOut(true);
+    setProjection(null);
+    void requireClient()
+      .logout()
+      .then((envelope) => {
+        if (!envelope.ok) {
+          throw new ClientApiError(envelope.error.code, envelope.error.message);
+        }
+        userEpochRef.current += 1;
+        setActiveSessionId(null);
+        onAuthenticationRequired();
+      })
+      .catch((error) => notify(userMessage(error), 'error'))
+      .finally(() => setLoggingOut(false));
+  };
+
   if (!bootstrap) {
     const failed = runtimeStatus === 'failed';
     return (
@@ -390,29 +449,13 @@ export function App(): JSX.Element {
           sessions={sessions}
           activeSessionId={activeSessionId}
           activeUser={bootstrap.activeUser}
-          users={bootstrap.users}
-          switchingUser={switchingUser}
           onSelectSession={setActiveSessionId}
           onNewSession={() => void createSession()}
           onRename={openRename}
           onArchive={setArchiveTarget}
           onToggle={() => setSidebarOpen(false)}
           onOpenSettings={() => setSettingsOpen(true)}
-          onSwitchUser={(userId) => {
-            setSwitchingUser(true);
-            setProjection(null);
-            void command<BootstrapResult>('user.switch', { userId })
-              .then(async (next) => {
-                userEpochRef.current += 1;
-                setBootstrap(next);
-                setRuntimeStatus(next.runtime.status);
-                setActiveSessionId(null);
-                await loadSessions(null);
-                await loadModelSnapshot();
-              })
-              .catch((error) => notify(userMessage(error), 'error'))
-              .finally(() => setSwitchingUser(false));
-          }}
+          onLogout={logout}
         />
       )}
       <ChatArea
@@ -482,9 +525,9 @@ export function App(): JSX.Element {
         }}
       />
       {banner && <Banner banner={banner} onClose={() => setBanner(null)} />}
-      {switchingUser && (
+      {loggingOut && (
         <div className="switch-overlay">
-          <Loader2 className="spin" /> 正在切换用户作用域...
+          <Loader2 className="spin" /> 正在退出登录...
         </div>
       )}
       {settingsOpen && (

@@ -542,3 +542,26 @@ DELETE FROM capability_categories
 `,
   },
 ];
+
+/** 阶段 4.7.0 本机登录凭据。登录会话只驻留服务内存，不进入数据库。 */
+const V14_SQL = `
+CREATE TABLE local_auth_credentials (
+  user_id               TEXT PRIMARY KEY,
+  login_name            TEXT NOT NULL,
+  normalized_login_name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  password_digest       TEXT NOT NULL,
+  password_salt         TEXT NOT NULL,
+  password_params_json  TEXT NOT NULL CHECK (json_valid(password_params_json)),
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES local_users(id)
+);
+
+CREATE UNIQUE INDEX idx_local_auth_credentials_login
+  ON local_auth_credentials(normalized_login_name);
+`;
+
+export const STAGE47_MIGRATIONS: readonly Migration[] = [
+  ...STAGE45_MIGRATIONS,
+  { version: 14, name: 'local-auth-credentials', sql: V14_SQL },
+];

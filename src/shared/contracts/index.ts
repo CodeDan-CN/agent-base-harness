@@ -6,3 +6,5 @@ export * from './health';
 export * from './worker-messages';
 export * from './management';
 export * from './statistics';
+export * from './auth';
+export * from './version';

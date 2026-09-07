@@ -1,5 +1,7 @@
 # Agent Client 完整技术解决方案
 
+> 4.7.5 目标更新（待实施）：同等级 AgentProfile 支持直接问答与授权调用，Dylan 是每用户初始默认档案；智能体只在设置中创建管理，首页列表通过独立展示关系选择已有档案。委派采用单层星型结构，只有直接会话可调用其他 Agent，受派会话返回报告后由调用方决定是否再调用另一 Agent，不建立嵌套调用链。本文早期“只有一个 Agent / 不引入 Subagent”约束仅适用于 Runtime V1。每 Session 单 Driver、低上下文、原生 Tool Call 和独立服务边界继续成立。Agent 浅层记忆采用独立 MD，一个 builtin-memory 定义通过 Host MCP 实例管理器按 Agent 私有/用户共享作用域按需运行，普通 MCP 用户级复用，Node/Python 安装应用级共享。最新范围与验收以 [4.7.5 方案](阶段方案/阶段4.7.5-多智能体档案与会话归属开发架构设计.md) 为准，下文保留早期实现基线，不据此宣称多 Agent 已实现。
+
 ## 1. 文档定位
 
 阶段 4.7.0 已定为 **Runtime（运行时）独立化**，首批交付 CLI（命令行）与 Electron（桌面）双客户端；Web（浏览器）和手机后续接入。详细设计见[4.7.0 开发架构设计](阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)。该阶段仍待实施。本文保留的桌面内 Worker（工作线程）、全局活动用户与 Main（主进程）直连流程是阶段 1～4.5.5 的历史实现基线；4.7.0 的目标启动、连接身份、服务生命周期与交付方式以本文第 6.0 节及阶段方案为准。
@@ -29,11 +31,11 @@ Client 技术解决方案
 
 ## 2. 项目背景
 
-本项目从 4.7.0 起交付可独立安装的 Agent 服务、CLI（命令行客户端）与 Electron（桌面客户端）。服务内置网关、应用服务、核心 Runtime（运行时）与基础设施适配器；用户可以不启动桌面而运行任务。
+本项目从 4.7.0 起交付可独立启动的 Agent 服务、CLI（命令行客户端）与 Electron（桌面客户端）。服务采用模块化单体：Gateway（网关）与 Runtime（运行时）代码分层，但默认运行在同一个 Node.js 进程、打包为同一个 npm 发布物；Gateway 提供本地账号注册与登录，并预置两个可直接使用的账号，用户可以不启动桌面而运行任务。
 
-Client 内部包含一个单 Agent Runtime，并内置两个可切换的本地用户。每个用户拥有独立的会话、模型配置、模型凭据、Skill、工具注册表、附件和运行统计。Runtime 需要在本地长期管理模型调用、工具执行、用户追加、软打断、取消、历史压缩、事件回放和崩溃恢复，同时为界面提供可重建的聊天、执行过程、队列和统计数据。
+Client 内部包含一个单 Agent Runtime，默认预置两个可切换的本地用户，并允许继续注册本地账号。每个用户拥有独立的会话、模型配置、模型凭据、Skill、工具注册表、附件和运行统计。Runtime 需要在本地长期管理模型调用、工具执行、用户追加、软打断、取消、历史压缩、事件回放和崩溃恢复，同时为界面提供可重建的聊天、执行过程、队列和统计数据。
 
-两个内置用户属于同一操作系统账号下的应用级身份，不是云端账号或强认证安全边界。数据采用单个 SQLite 数据库、同库同表的 `user_id` 字段隔离；敏感凭据继续使用操作系统 Credential Store，并按用户命名空间隔离。
+所有本地用户都属于同一操作系统账号下的应用级身份，不是云端账号或强认证安全边界。数据采用单个 SQLite 数据库、同库同表的 `user_id` 字段隔离；敏感凭据继续使用操作系统 Credential Store，并按用户命名空间隔离。
 
 项目主要借鉴三个来源：
 
@@ -48,7 +50,7 @@ Client 内部包含一个单 Agent Runtime，并内置两个可切换的本地�
 ### 3.1 产品目的
 
 - 提供完整的本地 Agent 对话和任务执行体验。
-- 提供两个内置本地用户及清晰的用户切换入口。
+- 提供本地账号注册、登录和清晰的用户切换入口，并预置两个可直接登录的账号。
 - 切换用户后，会话、模型和 Agent 可使用的 Skill 完全按用户隔离。
 - 让用户能够查看模型回答、工具步骤、排队任务和明确的停止状态。
 - 支持模型服务配置、模型选择、工具或技能能力管理。
@@ -85,7 +87,7 @@ Client 内部包含一个单 Agent Runtime，并内置两个可切换的本地�
 
 - Electron 桌面应用壳，以及 4.7.0 独立服务与 CLI（命令行客户端）。
 - 会话创建、切换、重命名和删除。
-- 两个内置本地用户的切换和用户级数据隔离。
+- 预置账号与后续注册账号的切换和用户级数据隔离。
 - 流式聊天和 Markdown 内容展示。
 - 执行过程、Step、Tool Call/Result 和结束原因展示。
 - Queue、Steer、队列项立刻介入、Cancel 以及队列项管理。
@@ -102,7 +104,7 @@ Client 内部包含一个单 Agent Runtime，并内置两个可切换的本地�
 ### 4.2 第一稳定版不包含
 
 - Worker、Subagent、多 Agent 路由和多 Agent 结果合并。
-- 云端账号、登录注册、组织、计费和服务端会话同步。
+- 云端账号、远程注册登录、第三方登录、组织、计费和云端会话同步；4.7.0 的注册与登录仅限本机应用账号。
 - 工作流编排器或独立任务调度平台。
 - 任意插件修改 Agent Loop 的能力。
 - 外部副作用的无条件 exactly-once 承诺。
@@ -149,25 +151,21 @@ Electron 的主要成本是安装包体积、内存和安全面。方案通过�
 
 ```mermaid
 flowchart LR
-  C["CLI（命令行）"] --> S["Client SDK（共享客户端）"]
-  E["Electron（桌面主进程）"] --> S
-  S --> G["Gateway（内置网关）"]
-  G --> A["Application（应用服务）"]
-  A --> R["Runtime（核心运行时）"]
-  A --> P["Ports（能力接口）"]
-  R --> P
-  I["Infrastructure（基础设施适配器）"] -.->|"实现"| P
-  H["Host（独立运行宿主）"] -.-> G
-  H -.-> A
-  H -.-> I
+  C["CLI（命令行）"] -->|"HTTP / SSE"| G
+  E["Electron（桌面主进程）"] -->|"HTTP / SSE"| G
+  subgraph S["同一个 Node.js 服务与发布物"]
+    G["Gateway（内置网关）"] --> R["Runtime（核心运行时）"]
+    R --> I["SQLite / 模型 / MCP / 本地工具"]
+  end
 ```
 
-- 服务为独立 Node.js 进程，宿主主线程承载网关，服务工作线程承载应用服务、核心和数据库。Electron 不再创建 Runtime 工作线程或加载数据库原生模块。
+- 服务采用模块化单体：Gateway 与 Runtime 保持代码职责边界，通过 TypeScript 门面直接调用，不拆成微服务或内部 RPC。首版默认运行在一个 Node.js 进程；是否增加 Worker 由实际阻塞测量决定。Electron 不再创建 Runtime 工作线程或加载数据库原生模块。
 - 首版提供本机 HTTP（超文本传输协议）命令/查询与 SSE（服务端事件流），桌面仍通过 Preload（安全桥）保护渲染进程。
-- 身份按连接绑定；两个本地用户仍是同一操作系统账号的应用档案。取消全局活动用户，单个客户端切换不影响其他连接。
+- Gateway 提供本地注册、登录、当前用户和退出接口；登录令牌按连接绑定对应本地用户数据域。本地用户仍属于同一操作系统账号，不扩展为云账号系统。取消全局活动用户，单个客户端切换不影响其他连接。
 - 服务拥有任务，客户端断开不取消；关闭服务、取消指定轮次与退出客户端是三个不同操作。
 - 保持既有事件日志、收件箱、工具调度、审批和恢复语义。接口独立不表示具备远程执行或云端多用户能力。
-- 保留单源码包，通过独立构建清单产生服务 npm（Node 包分发）包和桌面产物；内部模块不强制分别发布。
+- 保留单源码包和单一服务构建；服务 npm（Node 包分发）包包含 Gateway、Runtime 与 CLI，Electron 复用同一服务产物。
+- 继续参考 Codex app-server、app-server-client、ThreadManager、ThreadStore 和 exec-server 的职责划分，但不在 4.7.0 复制其多进程、daemon、远程执行或通用 RPC 形态。
 - 第 6.1～6.5、7、8.1～8.3、10.1～10.2 中的桌面启动/全局身份流程保留作迁移依据；实现 4.7.0 时由阶段方案的新流程替代，其他领域不变量继续适用。
 
 ### 6.1 总体技术架构图
@@ -184,7 +182,7 @@ flowchart LR
 2. **客户端接入层**包含视图状态与事件订阅、预加载安全桥、主进程与应用生命周期。它负责把 Renderer 与本地 Node 能力隔离，并把用户操作转化为白名单、强类型的命令和查询。
 3. **应用服务层**是 Client 用例入口，包含命令服务、查询与订阅服务、本地用户上下文、模型、Skill 和 MCP 管理服务。它负责用户切换、会话提交、取消、各类能力配置和订阅管理，并把可信 `userId` 注入所有 Runtime 操作。
 4. **单 Agent Runtime 核心层**包含输入接纳与持久 Inbox、Session Driver 与 Turn/Step Loop、Context Projector 与 LLM Adapter、Tool Registry/Scheduler/Interaction、事件 Projection 与崩溃恢复。这一层实现设计文档定义的核心运行语义。
-5. **数据与基础设施层**提供单一 SQLite Event Store、模型/Skill/MCP 配置 Repository、操作系统 Credential Store、Agent Skills 目录、MCP Client/Supervisor、附件目录、宿主机命令执行、日志、迁移和诊断。外部 MCP 自己持有的业务数据不进入 Client 核心模型。两个内置用户共享 SQLite 文件和表结构，但所有私有数据按 `user_id` 隔离。
+5. **数据与基础设施层**提供单一 SQLite Event Store、模型/Skill/MCP 配置 Repository、操作系统 Credential Store、Agent Skills 目录、MCP Client/Supervisor、附件目录、宿主机命令执行、日志、迁移和诊断。外部 MCP 自己持有的业务数据不进入 Client 核心模型。所有本地用户共享 SQLite 文件和表结构，但所有私有数据按 `user_id` 隔离。
 6. **外部能力**包括大模型服务、本地与远程工具以及操作系统能力。它们只能通过 Runtime 中的适配器和权限边界被调用，不能被 Renderer 直接访问。
 
 进程部署与上述职责对应：展示层运行在 Renderer；预加载桥和主进程承担客户端接入；应用服务、Runtime 核心和 SQLite 访问运行在独立 Node Worker；模型、工具和系统资源位于 Client 边界之外。图中的命令服务、查询与订阅服务是统一用例入口，模型管理和 Skill 管理是其内部独立业务组件，具体职责见 8.13 和 8.14。
@@ -216,16 +214,17 @@ flowchart LR
 
 ### 6.3 总体数据流
 
-系统存在七条主要数据流：
+系统存在九条主要数据流：
 
 1. **用户命令流**：用户操作 → 展示层 → Preload → Electron Main → Command Service → Local User Context → Runtime。该链路承载提交、Queue、Steer、Queue Item 提升、Cancel、用户切换和设置保存。
 2. **Agent 执行流**：Input Admission 先持久化输入 → Session Driver 开启 Turn/Step → Context Projector 组装模型请求 → LLM Adapter 获得文本或 Tool Call → Tool Scheduler 执行 → 结果写入 Event Store → 进入下一 Step 或结束 Turn。
 3. **事件投影流**：Runtime 事实写入 SQLite → Projection Service 按 seq 更新 Chat、Trajectory、Inbox 和 usage → Query/Subscription Service 发送 Snapshot 与增量 → Renderer 更新界面。
 4. **用户隔离流**：Main 注入可信 `userId` → Local User Context 生成 `(userId, sessionId)` Scope → Repository、Model Registry、Tool Registry、Credential Reference 和历史检索都使用相同 Scope。
 5. **模型配置流**：用户维护模型服务 → Credential Service 分离保存密钥 → Model Management 校验、测试连接并发现或手工维护模型 → 事务更新用户配置版本 → Model Registry 在下一个安全边界加载新快照。
-6. **Skill 生命周期流**：用户导入或安装标准 Agent Skill → Skill Management 校验 `SKILL.md` 和目录边界并登记来源 → 当前用户确认后启用 → Runtime 在下一个安全边界更新 Skill Catalog → `capability_search` 与 MCP Catalog 同级返回轻量候选 → 模型选中后按需加载正文与资源；若指令要求执行脚本，则通过宿主机命令执行能力运行。
-7. **MCP 能力流**：用户配置并测试 Server → MCP Client 分页发现工具 → 管理目录保存 Schema 与 digest → 用户逐项审核启用 → `capability_search` 与 Skill Catalog 同级返回 Server/工具轻量候选 → 模型选中后调用 `mcp_load`，下一 Step ToolCatalogSnapshot 暴露稳定完整 Tool Schema → 调用结果作为事件事实保存并有界投影。
-8. **外部能力流**：Context/LLM Adapter 调用大模型；Tool Scheduler 调用当前用户已启用的本地、远程或 MCP 工具；审批、选择和表单通过 Interaction Event 返回展示层。
+6. **Skill 生命周期流**：用户导入或安装标准 Agent Skill → Skill Management 校验 `SKILL.md` 和目录边界并登记来源 → 当前用户确认后启用 → Runtime 在下一个安全边界更新 Skill Catalog → `capability_search` 统一检索轻量候选 → 模型选中后通过 `skill_load` 按需加载正文与资源；若指令要求执行脚本，则通过宿主机命令执行能力运行。
+7. **MCP 能力流**：用户配置并测试 Server → MCP Client 分页发现工具 → 管理目录保存 Schema 与 digest → 用户逐项审核启用 → `capability_search` 统一检索 Server/工具轻量候选 → 模型选中后调用 `mcp_load`，下一 Step ToolCatalogSnapshot 暴露稳定完整 Tool Schema → 调用结果作为事件事实保存并有界投影。
+8. **Agent 能力流**：当前 direct Session 的执行快照解析有向调用授权 → `capability_search` 以名称、简介和标签返回可调用 Agent 轻量候选 → 模型选中后调用 `agent_call` → 受派 Session 独立执行并把有界报告返回调用方；delegated Session 不再发现或调用 Agent。
+9. **外部能力流**：Context/LLM Adapter 调用大模型；Tool Scheduler 调用当前用户已启用的本地、远程或 MCP 工具；审批、选择和表单通过 Interaction Event 返回展示层。
 
 数据流的核心闭环是：
 
@@ -244,7 +243,7 @@ flowchart LR
 | 核心难点                                   | 架构决策                                                                            | 解决的问题                                                 |
 | ------------------------------------------ | ----------------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | Renderer 既要流畅又不能直接拥有本地权限    | Electron Main + Preload 白名单桥 + Runtime Worker                                   | 隔离 Node 能力，避免模型、工具和 SQLite 阻塞 UI            |
-| 两个用户共享一个 SQLite 但不能串数据       | 所有私有表带 `user_id`，复合外键、作用域 Repository、负向测试                       | 隔离 Session、模型、Skill、附件、历史和 Projection         |
+| 本地用户共享一个 SQLite 但不能串数据       | 所有私有表带 `user_id`，复合外键、作用域 Repository、负向测试                       | 隔离 Session、模型、Skill、附件、历史和 Projection         |
 | 运行中追加、介入、软打断和取消容易产生竞态 | Durable Inbox + Session 单 Driver + 原子 Queue 提升 + 安全 Step 边界 + AbortSignal  | 保证 Queue、Promote、Steer、Cancel 的确定语义              |
 | UI、恢复和模型历史容易形成多套事实         | Append-only Event Log + 可重建 Projection + Surface                                 | 统一运行事实，支持刷新和崩溃恢复                           |
 | 长会话上下文持续增长                       | ConversationEvent/Exchange + Context Budget + Summary/raw tail                      | 降低重复上下文，保持历史可审计                             |
@@ -383,8 +382,8 @@ export interface AgentClientApi {
 
 - 所有 IPC 输入和输出必须通过 Schema 校验。
 - Renderer 不能传入任意事件名、文件路径或可执行命令。
-- Electron Main 维护当前活动 `userId`。除显式用户切换命令外，Renderer 不直接决定业务 Command 的用户作用域；Main/Bridge 将可信 User Context 注入 Worker 请求。
-- 用户切换命令只能选择两个已注册的内置用户，不能通过任意 `userId` 构造隐藏用户或越权读取。
+- 4.7.0 之前由 Electron Main 维护当前活动 `userId`；4.7.0 起由 Gateway 登录会话绑定 `userId`。Renderer 不直接决定业务 Command 的用户作用域。
+- 用户切换在 4.7.0 起表现为退出当前本地账号并登录另一个本地账号；普通请求不能通过任意 `userId` 构造隐藏用户或越权读取。
 - 每个 Command 带 `requestId`；接纳用户输入的命令额外带 `idempotencyKey`。
 - Command 返回“已接纳的持久事实”，不能只返回前端临时成功状态。
 - 所有增量事件都带 `userId` 和递增 cursor/revision；Session 相关 Projection Event 额外带 `sessionId` 与 seq，配置事件额外带配置域与 revision。Renderer 只消费当前用户订阅的事件。
@@ -413,7 +412,7 @@ export interface AgentClientApi {
 主要功能区：
 
 - 会话侧栏：新建、搜索、分组、切换、重命名和删除。
-- 用户切换：展示当前本地用户，在两个内置用户之间切换并重新加载各自的会话与设置。
+- 用户切换：展示当前本地用户，在已有本地账号之间切换并重新加载各自的会话与设置。
 - 聊天区：用户消息、流式助手回答、工具卡片和回答操作。
 - 执行过程：Turn/Step、工具调用、状态、耗时和结束原因。
 - 输入区：普通发送、Queue、队列项“立刻介入”、Steer、Cancel 和附件入口。
@@ -430,17 +429,17 @@ UI 状态分两类：
 
 ### 8.3 Local User Context
 
-Client 首次初始化时创建两个稳定 ID 的内置本地用户。用户可修改显示名称和头像，但第一稳定版不支持创建、删除或远程登录用户。
+Client 首次初始化时创建两个稳定 ID 的内置本地用户。用户可修改显示名称和头像，但第一稳定版不支持创建、删除用户或远程登录；4.7.0 只为这两个既有档案增加本地登录名、密码摘要和登录会话。
 
 Local User Context 负责：
 
 - 解析并校验当前活动 `userId`。
 - 为 Session、Event、Projection、附件、模型和 Skill Repository 提供强制用户作用域。
 - 按用户构建 Model Registry、Skill/Tool Registry、Runtime Settings 和 prompt epoch。
-- 维护 `(userId, sessionId)` Driver Key，允许两个用户的不同 Session 在后台独立运行。
+- 维护 `(userId, sessionId)` Driver Key，允许不同用户的 Session 在后台独立运行。
 - 在用户切换时停止旧用户的 UI 订阅并建立新用户的 Snapshot/Subscription，不默认取消旧用户正在执行的 Turn。
 
-用户隔离是应用级数据边界。因为两个用户运行在同一操作系统账号和同一应用进程内，本方案不宣称它能够抵御本机文件读取或进程调试；需要更强隔离时再引入口令、数据库加密或操作系统账号绑定。
+用户隔离是应用级数据边界。因为本地用户运行在同一操作系统账号和同一应用进程内，本方案不宣称它能够抵御本机文件读取或进程调试；需要更强隔离时再引入口令、数据库加密或操作系统账号绑定。
 
 ### 8.4 Input Admission
 
@@ -504,7 +503,7 @@ Tool Registry 保存：
 - 并发安全分类函数。
 - 是否可恢复重放、幂等要求和可选 Interaction 能力。
 
-每个用户拥有独立的 Skill 安装/启用状态、执行授权和 SkillCatalogSnapshot。Skill 通过指令指导模型使用 Runtime 已有工具，不因安装而自动注册新的原生 Tool Schema；MCP 管理目录保存审核后的完整 Schema，但不默认全部进入 Prompt。常驻 `capability_search` 一次返回全部可用 Skill/MCP 的名称和完整 description 并显式标记同级；MCP 按 Server 分组列出其全部已审核启用工具的名称和 description。目录不按关键词筛选、相关性打分、限制数量或截断描述，由当前模型根据任务选择后分别通过 `skill_load` 或 `mcp_load` 展开，不增加独立选择模型。Tool Registry 由 Client 内置工具与当前 Turn 已加载的 MCP Tools 构建，并在 Step 开始时冻结为不可变 ToolCatalogSnapshot。
+每个用户拥有独立的 Skill 安装状态、MCP 定义和 AgentProfile，每个 Agent 通过 binding 获得自己的有效能力快照。Skill 通过指令指导模型使用 Runtime 已有工具，不因安装而自动注册新的原生 Tool Schema；MCP 管理目录保存审核后的完整 Schema，但不默认全部进入 Prompt。4.7.5 起，常驻 `capability_search` 对当前快照中的 Skill/MCP/可调用 Agent 名称、简介和标签做本地确定性、有界检索并显式标记 kind；不返回 Skill 正文、MCP 完整 Schema 或 Agent 指令/记忆。模型选择后分别通过 `skill_load`、`mcp_load` 或 `agent_call` 执行，不增加独立选择模型。Tool Registry 由 Client 内置工具与当前 Turn 已加载的 MCP Tools 构建，并在 Step 开始时冻结为不可变 ToolCatalogSnapshot。
 
 Tool Scheduler 负责：
 
@@ -519,7 +518,7 @@ Tool Scheduler 负责：
 
 ### 8.9 Event Store
 
-Event Store 是运行事实来源，第一版使用一个 SQLite 数据库。两个内置用户共享数据库文件和表结构，通过 `user_id` 行级作用域隔离，不为每个用户创建独立数据库。
+Event Store 是运行事实来源，第一版使用一个 SQLite 数据库。所有本地用户共享数据库文件和表结构，通过 `user_id` 行级作用域隔离，不为每个用户创建独立数据库。
 
 核心能力：
 
@@ -679,7 +678,7 @@ Skill Management 负责兼容通用 Agent Skills，并管理 Skill 对当前用�
 - 识别以 `SKILL.md` 为入口的 Skill 目录，并允许可选的 `scripts/`、`references/`、`assets/` 及其他辅助文件。
 - 解析 `name`、`description`、`compatibility` 等通用元数据；未知扩展字段保留但不擅自赋予权限。
 - 展示当前用户的 Skill 列表、搜索、启用状态、来源、兼容性、正文和受控资源预览。
-- 初始上下文不常驻投影完整 Skill 列表；模型需要专门流程或外部能力时调用统一 `capability_search`，一次获得 Skill/MCP 两类同级轻量候选，命中 Skill 后再按需加载完整 `SKILL.md` 并按正文显式引用读取资源。
+- 初始上下文不常驻投影完整能力列表；模型需要专门流程或外部能力时调用统一 `capability_search`，从当前快照有界检索 Skill/MCP/可调用 Agent 三类同级轻量候选，命中后分别进入 `skill_load`、`mcp_load` 或 `agent_call`。
 - Skill 本身不动态注册一块常驻 Runtime。指令需要执行 `scripts/` 时，模型通过 Runtime 已有的通用命令能力调用 Client 内置优先的 Node.js/Python 或宿主 Shell。
 - macOS arm64 首个发行目标随 `.app` 固定交付经摘要校验的 Node/Python Runtime Pack；它们是 `bash` 背后的 Host Capability，不增加模型可见 `node`/`python` Tool。开发模式在 Runtime Pack 未准备时可以回退宿主解释器，正式包缺失或目标架构不匹配则启动失败。
 - 客户端负责版本锁、解释器检测、首次执行确认、命令超时与取消、stdout/stderr/退出码采集、受控工作目录、环境变量收敛和审计；不把第三方依赖预装进全局 Runtime，也不静默执行 npm/pip 安装。
@@ -737,7 +736,7 @@ erDiagram
   TOOL_CALL ||--|| TOOL_RESULT : resolves_to
 ```
 
-- LocalUser 是两个内置本地用户之一，是所有用户私有数据的顶层作用域。
+- LocalUser 是预置或注册产生的本地用户，是所有用户私有数据的顶层作用域。
 - Session 是属于一个 LocalUser 的持久会话容器。
 - SessionLogEvent 是技术事实，不可原地修改。
 - ConversationEvent 是围绕同一事项的用户可见问答集合。
@@ -786,9 +785,9 @@ app-data/
 
 | 数据或能力                  | 作用域                 | 说明                                                 |
 | --------------------------- | ---------------------- | ---------------------------------------------------- |
-| 内置用户目录                | 应用级                 | 固定两个用户，保存显示信息和状态                     |
-| 当前活动用户                | 4.7.0 起为连接级       | 每个 CLI/桌面连接独立选择；最近选择仅为客户端偏好     |
-| 窗口、主题、更新设置        | 应用级                 | 可由两个用户共享；若未来需要用户偏好再单独下沉       |
+| 本地用户目录                | 应用级                 | 预置两个并允许注册新增，保存显示信息和状态           |
+| 当前登录用户                | 4.7.0 起为连接级       | Gateway 令牌绑定用户；CLI/桌面分别登录，互不改变       |
+| 窗口、主题、更新设置        | 应用级                 | 可由本地用户共享；若未来需要用户偏好再单独下沉       |
 | Session、Event、Projection  | 用户级                 | 同表 `user_id` 隔离，所有读取和写入强制 User Context |
 | 模型服务、模型与默认模型    | 用户级                 | 模型 ID 只能在所属用户内解析                         |
 | Skill、Tool Registry 与授权 | 用户级                 | Agent 只获得当前用户启用的 Tool Schema               |
@@ -835,16 +834,18 @@ sequenceDiagram
 - Inbox 中合法的 `next-turn` 在修复完成后继续执行。
 - 修复、唤醒和 Projection 重建都以 `(userId, sessionId)` 为边界，不能把一个用户的开放运行归入另一个用户。
 
-### 10.2 内置用户切换
+### 10.2 本地账号注册、登录与切换
 
-1. UI 触发 `user.switch`，目标只能是两个已注册内置用户之一。
-2. Electron Main 校验目标用户并更新当前活动 User Context。
-3. Renderer 取消旧用户的 Session/Projection 订阅，清除旧用户的 Runtime View State；输入草稿是否按用户保留由 UI 配置决定。
-4. Runtime 返回新用户的会话、模型、Skill 和设置 Snapshot，并建立带 `userId` 的增量订阅。
-5. 旧用户已经开始的 Turn 默认继续在 Worker 后台执行；切换用户不等于 Cancel。
-6. 用户切回后，从持久 cursor 恢复该用户的最新流式回答、队列和执行状态。
+1. 服务为既有 `user-a`、`user-b` 数据域幂等预置 `user_a`、`user_b` 两个登录名，默认密码均为 `123456`。
+2. 用户也可以直接输入账号和密码注册；注册成功时创建新的稳定 userId 和完整用户数据域，并直接返回已登录会话。
+3. CLI 或 Electron 向 Gateway 登录，Gateway 校验密码摘要并返回绑定该数据域的访问令牌。
+4. Gateway 从访问令牌构造可信 User Context，普通 Command 中的 `userId` 不作为授权依据。
+5. Electron 切换账号时先撤销当前登录会话，再登录另一个本地账号；CLI 和其他窗口的登录不受影响。
+6. Renderer 清除旧账号的 Runtime View State，再读取新账号的会话、模型、Skill 和设置 Snapshot，并从对应 cursor 订阅。
+7. 旧账号已经开始的 Turn 继续在独立服务中执行；退出登录或切换账号不等于 Cancel。
+8. 用户再次登录后，从持久 cursor 恢复该账号的最新流式回答、队列和执行状态。
 
-切换期间所有普通 Command 都由 Main 注入当前活动 `userId`。用户切换前已经接纳的 Command 保留原 User Context，不因活动用户改变而转移所有权。
+账号切换前已经接纳的 Command 保留原 User Context，不因客户端登录状态改变而转移所有权。
 
 ### 10.3 空闲状态提交消息
 
@@ -987,8 +988,8 @@ cancel current Turn
 1. UI 读取当前用户的 SkillManagementSnapshot，展示搜索、启用状态、来源、兼容性、环境提示和详情入口。
 2. Skill 来源适配器把本地目录或后续 ModelScope/ClawHub 下载结果转换为标准 Agent Skill 目录；目录必须包含合法 `SKILL.md`，可选包含 `scripts/`、`references/` 和 `assets/`。
 3. Skill Management 校验目录边界、文件基本安全和必填 frontmatter，计算内容摘要并创建当前用户的安装记录；安装阶段不执行脚本、不自动安装依赖。
-4. 启用后更新该用户的 `skill_revision`。新 Step 获取不可变 SkillCatalogSnapshot；常驻 Prompt 不展开 Skill 列表或正文，`capability_search` 返回 Skill/MCP 两类完整轻量目录（名称与完整 description），由当前模型选择后再 load；query 仅用于表达任务上下文，不筛选目录，也不设置数量上限。
-5. 模型在同一份能力搜索结果中判断使用 Skill、MCP、两者或都不使用；选择 Skill 后调用统一 Skill loader 加载完整 `SKILL.md`，其中显式引用的资料和资源再按需读取。
+4. 启用后更新该用户的 `skill_revision`。新 Step 获取不可变 Agent 能力快照；常驻 Prompt 不展开完整能力目录或正文，`capability_search` 按 query、kinds 和有界 limit 检索 Skill/MCP/可调用 Agent 的名称、简介及标签。
+5. 模型在同一份能力搜索结果中判断使用 Skill、MCP、Agent、组合或都不使用；选择后分别调用 `skill_load`、`mcp_load`、`agent_call`，执行入口重新校验当前快照。Skill loader 只加载选中项的完整 `SKILL.md`，其中显式引用的资料和资源再按需读取。
 6. 当 Skill 指令要求运行脚本时，模型调用已有 `bash` 工具。Runtime Worker 先解析应用内固定版本的 `node`、`python3`、`python`，开发模式才回退宿主解释器；第三方依赖缺失时返回明确错误，不静默安装。
 7. 首次执行脚本前按当前用户和 Skill 内容摘要确认风险；执行统一经过超时、取消、输出限制、工作目录、环境变量收敛和日志审计。敏感凭据只有经明确授权才按名称注入。
 8. 新 Step 固定 SkillCatalogSnapshot；运行中的 Step 不因启停、升级或目录变化而静默替换已加载内容。
@@ -1125,8 +1126,8 @@ MCP 服务页面包含：
 - 外部 MCP 的工作目录、数据范围和 Credential 按 `userId/serverId` 隔离；MCP 子进程不继承模型凭据。
 - 诊断导出前对敏感字段执行明确脱敏。
 - 长期记忆正文和摘要默认不进入普通日志或诊断包，只有用户显式选择时才能导出。
-- 两个内置用户属于应用级隔离，不构成对同一操作系统账号的强安全边界。
-- 第一版不声称数据库静态加密；如产品需要两个用户之间的强隐私边界，应单独评估登录口令、SQLCipher、密钥生命周期和迁移方案。
+- 本地用户属于应用级隔离，不构成对同一操作系统账号的强安全边界。
+- 本地登录口令用于 Gateway 身份绑定，不使同一操作系统账号下的本地用户形成强安全边界。第一版不声称数据库静态加密；如产品需要强隐私隔离，应另行评估 SQLCipher、独立密钥生命周期和数据迁移。
 
 ## 13. 可观测性与诊断
 
@@ -1166,7 +1167,7 @@ promptEpoch
 - 脱敏后的配置摘要。
 - 指定时间范围内的结构化日志。
 - 选定 Session 的事件元数据或完整事件（需要明确提示隐私风险）。
-- 诊断导出必须明确选择用户，默认不把两个用户的会话内容合并进同一个诊断包。
+- 诊断导出必须明确选择用户，默认不把多个用户的会话内容合并进同一个诊断包。
 - 数据库完整性检查结果。
 
 ## 14. 测试与质量保障
@@ -1218,6 +1219,8 @@ promptEpoch
 
 本项目不采用“先做最小 Runtime，再逐阶段重构为完整能力”的演进方式。Inbox、Turn/Step、事件模型、用户隔离、工具协议、Context、Projection 和恢复机制相互耦合，如果先省略后补，会反复修改数据库 Schema、Driver、IPC 和 UI Contract。
 
+这一原则约束 Runtime 业务语义，不能用于提前实现尚未需要的部署形态。4.7.0 独立化保持完整业务语义，但 Gateway、Runtime、存储和执行环境先作为同一 Node.js 服务中的代码模块交付；Worker 化、微服务化、远程执行和多版本 daemon 必须由后续真实约束或测量结果触发。
+
 实施采用以下原则：
 
 - **不设置阶段 0**：不在正式开发前一次性生成和评审全部子系统详细设计，也不设置 D0 文档门禁。
@@ -1263,7 +1266,7 @@ promptEpoch
 阶段验收：
 
 - 四个运行入口及安全边界与目标架构一致，不存在后续需要替换的临时通信路径。
-- 单 SQLite 能初始化两个用户，复合外键和负向测试能阻止跨用户访问。
+- 单 SQLite 能初始化预置用户并注册新用户，复合外键和负向测试能阻止跨用户访问。
 - EventStore 的追加、回放、版本冲突和 Projection 重建通过确定性测试。
 - 模型/Skill Repository、用户配置 revision、凭据命名空间和配置 Snapshot 通过双用户隔离测试。
 - Bridge、Worker 重启、Credential、Skill 发现/加载、宿主机命令执行和数据目录均通过 Contract/Integration Test。
@@ -1375,7 +1378,7 @@ promptEpoch
 
 - 两种 transport、动态发现、Tool 审核、generation 切换、结果投影和重连均有确定行为；Server 故障不结束无关会话。
 - 只有当前用户启用且审核通过的 Tool Schema 进入下一 Step，运行中 Step 的定义和路由不漂移。
-- 两个用户的 MCP 配置、Credential、Catalog、连接、进程和 UI 完全隔离。
+- 不同用户的 MCP 配置、Credential、Catalog、连接、进程和 UI 完全隔离。
 - 默认记忆 MCP 可离线启动，并通过普通 MCP 配置、审核和调用流程完成跨 Session 召回，同一用户之外不可见。
 - 外部记忆正文由外部 Server 独立持久化，主 SQLite 不成为记忆内容事实源。
 - Client 不把外部记忆 MCP 包装成 `MemoryProvider`、`memory_*` 或 `user-memory` Skill。
@@ -1412,25 +1415,28 @@ promptEpoch
 
 ### 阶段 4.7.0：Runtime（运行时）独立化
 
-目标：将当前桌面内 Runtime 提取为可独立安装和启动的服务，首批支持 CLI（命令行）与 Electron（桌面）同时接入；Web（浏览器）和手机端后续交付。
+目标：将当前桌面内 Runtime 提取为模块化单体的本地 Node.js 服务，首批支持 CLI（命令行）与 Electron（桌面）分别接入和顺序切换；Web（浏览器）和手机端后续交付。
 
-阶段实施文档：[4.7.0 开发架构设计](阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)。4.6.0 的思考模式与展示工作独立验收，本阶段不增加模型调用或更改执行结束规则。
+阶段实施文档：[4.7.0 开发架构设计](阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)；配套验证文档：[4.7.0 测试用例](阶段方案/阶段4.7.0-Runtime独立化测试用例.md)。4.6.0 的思考模式与展示工作独立验收，本阶段不增加模型调用或更改执行结束规则。
 
 主要工作：
 
-- 拆分领域、能力端口、公开协议、应用服务、网关与运行宿主，继续使用 TypeScript/Node.js。
-- 将工作线程监护和资源装配迁入独立服务，建立目录独占、服务发现、协议协商与关闭语义。
-- 消除全局活动用户，建立按连接绑定的可信用户上下文与资源授权。
-- 实现 HTTP/SSE（请求与事件流）、持久命令回执、快照与序号追赶、有界缓冲及跨端审批。
-- 交付共享客户端和 CLI，Electron 主进程改为连接服务，平台文件选择与安装业务分离。
-- 生成可实际安装的服务 npm 包，复用到桌面，完成 Node 原生依赖、旧目录接管与迁移验证。
+- 在现有 Runtime 外增加最小 Gateway；二者代码分层、直接调用、同进程运行并作为一个发布物交付。
+- 将 Runtime 和 SQLite 所有权从 Electron 迁入独立服务，建立目录独占、服务发现和明确关闭语义。
+- Gateway 增加本地注册、登录、当前用户和退出接口；CLI 与 Electron 增加相应交互。
+- 消除全局活动用户，由登录会话建立按连接绑定的可信用户上下文与资源授权。
+- 复用现有命令、查询和事件语义，实现本机 HTTP/SSE、快照与序号追赶、基本流控及顺序跨端审批恢复。
+- 交付轻量共享客户端和最小 CLI，Electron 主进程改为连接服务；不借迁移重写 Runtime 主循环。
+- 生成包含服务与 CLI 的单一 npm 包，复用到桌面并完成 Node 原生依赖的干净安装冒烟。
 
 阶段验收：
 
-- 不安装 Electron 也能通过 CLI 配置模型、运行任务、处理审批并查询历史。
-- CLI 与桌面共享同一服务，两端状态一致；关闭桌面不终止已接纳任务。
-- 用户隔离、输入去重、事件追赶、未知副作用恢复、安装包和原生依赖验证全部通过。
+- 不安装 Electron 也能通过 CLI 登录、配置模型、运行任务、处理审批并查询历史。
+- CLI 与桌面共享同一服务和权威状态，可先后使用；关闭桌面不终止已接纳任务。
+- 注册登录、用户隔离、输入去重、事件追赶、未知副作用恢复和原生依赖冒烟全部通过。
 - 不保留同目录双后端写入路径，客户端不直接访问数据库；Web、手机和远程执行仅预留边界。
+- Gateway、Runtime、存储和执行环境不拆成微服务；Worker 化、多版本服务、升级与回退由后续证据或阶段 5 决定。
+- 不把 Presence、共享草稿、操作来源展示或多端实时协同作为本阶段验收内容；偶然连接重叠只要求不启动双 Runtime、不损坏数据、不越权。
 
 ### 阶段 5：发布工程与交付
 
@@ -1504,7 +1510,7 @@ promptEpoch
 - 首批内置工具、权限等级和文件访问根目录。
 - 附件格式、大小上限、清理和导出策略。
 - 是否需要全库加密和用户可配置的数据目录。
-- 两个内置用户的默认名称、头像、是否允许重命名，以及未来是否允许新增用户。
+- 本地账号的显示名称、头像、重命名与删除策略。
 - Skill 来源接入顺序（本地目录、ModelScope、ClawHub）和安装更新方式；基础格式已确定兼容通用 Agent Skills，以 `SKILL.md` 为入口并允许 `scripts/`、`references/`、`assets/`。
 - 第三方记忆 MCP 的选型、数据迁移与 OAuth 方式；阶段 4.5 只通过通用 MCP Tool Bridge 接入一个外部记忆 MCP，不建立 Client 内部 Memory Provider。
 - UI 状态库是否必要；在 Projection 复杂度证明前优先使用简单订阅层。
@@ -1512,7 +1518,7 @@ promptEpoch
 ## 19. 实施原则总结
 
 1. Client 是最终产品，Runtime 是 Client 内核。
-2. 两个内置用户共享单个 SQLite，但所有私有数据、模型、Skill 和运行上下文按 `userId` 严格隔离。
+2. 所有本地用户共享单个 SQLite，但所有私有数据、模型、Skill 和运行上下文按 `userId` 严格隔离。
 3. 视觉复刻 `reference_ui`，业务语义重新实现。
 4. Session Event Log 是运行事实来源；模型、Skill 与 MCP 配置表是用户配置事实来源；外部 MCP 数据和长期记忆正文由各外部 Server 持有，UI 与模型上下文只通过正式 Contract 访问。
 5. 一个 Step 只有一次主模型调用，不建立隐式第二 Agent Loop。

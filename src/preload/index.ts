@@ -15,6 +15,18 @@ import type {
 import { API_VERSION } from '../shared/contracts/schemas';
 
 const api: AgentClientApi = {
+  register(input): Promise<RpcEnvelope> {
+    return ipcRenderer.invoke(IPC_CHANNELS.authRegister, input);
+  },
+  login(input): Promise<RpcEnvelope> {
+    return ipcRenderer.invoke(IPC_CHANNELS.authLogin, input);
+  },
+  logout(): Promise<RpcEnvelope> {
+    return ipcRenderer.invoke(IPC_CHANNELS.authLogout);
+  },
+  currentAuth(): Promise<RpcEnvelope> {
+    return ipcRenderer.invoke(IPC_CHANNELS.authMe);
+  },
   query(method: QueryMethod, params?: unknown): Promise<RpcEnvelope> {
     return ipcRenderer.invoke(IPC_CHANNELS.query, { apiVersion: API_VERSION, method, params });
   },

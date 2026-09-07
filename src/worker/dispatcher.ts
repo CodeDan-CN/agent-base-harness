@@ -1,5 +1,4 @@
 import type { LocalUserId } from '../shared/domain/user';
-import { switchUserParamsSchema } from '../shared/contracts/schemas';
 import {
   eventReadParamsSchema,
   eventsPageParamsSchema,
@@ -54,11 +53,7 @@ export async function dispatch(
     case 'system.health':
       return app.health(userId);
     case 'user.switch': {
-      const parsed = switchUserParamsSchema.safeParse(params);
-      if (!parsed.success) {
-        throw new BridgeError('INVALID_REQUEST', 'Invalid params');
-      }
-      return app.switchUser(parsed.data.userId);
+      throw new BridgeError('INVALID_REQUEST', 'User switching requires a new login session');
     }
     case 'session.create': {
       const value = parse(sessionCreateParamsSchema, params);
