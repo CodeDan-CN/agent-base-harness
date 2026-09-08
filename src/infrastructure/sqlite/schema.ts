@@ -564,4 +564,169 @@ CREATE UNIQUE INDEX idx_local_auth_credentials_login
 export const STAGE47_MIGRATIONS: readonly Migration[] = [
   ...STAGE45_MIGRATIONS,
   { version: 14, name: 'local-auth-credentials', sql: V14_SQL },
+  {
+    version: 15,
+    name: 'multi-agent-profiles-and-session-ownership',
+    sql: `
+ALTER TABLE user_config_revisions
+  ADD COLUMN agent_revision INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE agent_profiles (
+  id                 TEXT NOT NULL,
+  user_id            TEXT NOT NULL,
+  name               TEXT NOT NULL,
+  description        TEXT NOT NULL DEFAULT '',
+  avatar_key         TEXT,
+  instructions       TEXT NOT NULL DEFAULT '',
+  default_model_id   TEXT,
+  permission_preset  TEXT NOT NULL DEFAULT 'workspace-write'
+    CHECK (permission_preset IN ('read-only', 'workspace-write', 'danger-full-access')),
+  status             TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'archived')),
+  is_default         INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+  revision           INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL,
+  PRIMARY KEY (user_id, id),
+  FOREIGN KEY (user_id) REFERENCES local_users(id),
+  FOREIGN KEY (user_id, default_model_id) REFERENCES models(user_id, id)
+);
+
+CREATE UNIQUE INDEX idx_agent_profiles_active_default
+  ON agent_profiles(user_id) WHERE status = 'active' AND is_default = 1;
+CREATE INDEX idx_agent_profiles_user_status_name
+  ON agent_profiles(user_id, status, name, id);
+
+CREATE TABLE agent_home_items (
+  user_id     TEXT NOT NULL,
+  agent_id    TEXT NOT NULL,
+  sort_order  INTEGER NOT NULL CHECK (sort_order >= 0),
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (user_id, agent_id),
+  UNIQUE (user_id, sort_order),
+  FOREIGN KEY (user_id, agent_id) REFERENCES agent_profiles(user_id, id)
+);
+
+CREATE TABLE agent_skill_bindings (
+  user_id     TEXT NOT NULL,
+  agent_id    TEXT NOT NULL,
+  skill_id    TEXT NOT NULL,
+  enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (user_id, agent_id, skill_id),
+  FOREIGN KEY (user_id, agent_id) REFERENCES agent_profiles(user_id, id),
+  FOREIGN KEY (user_id, skill_id) REFERENCES skill_installations(user_id, id)
+);
+
+CREATE TABLE agent_mcp_bindings (
+  user_id      TEXT NOT NULL,
+  agent_id     TEXT NOT NULL,
+  server_id    TEXT NOT NULL,
+  access_scope TEXT NOT NULL CHECK (access_scope IN ('user', 'agent')),
+  enabled      INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (user_id, agent_id, server_id, access_scope),
+  FOREIGN KEY (user_id, agent_id) REFERENCES agent_profiles(user_id, id),
+  FOREIGN KEY (user_id, server_id) REFERENCES mcp_servers(user_id, id)
+);
+
+CREATE TABLE agent_delegate_bindings (
+  user_id         TEXT NOT NULL,
+  caller_agent_id TEXT NOT NULL,
+  callee_agent_id TEXT NOT NULL,
+  enabled          INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (user_id, caller_agent_id, callee_agent_id),
+  CHECK (caller_agent_id <> callee_agent_id),
+  FOREIGN KEY (user_id, caller_agent_id) REFERENCES agent_profiles(user_id, id),
+  FOREIGN KEY (user_id, callee_agent_id) REFERENCES agent_profiles(user_id, id)
+);
+
+ALTER TABLE sessions ADD COLUMN agent_id TEXT;
+ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'direct'
+  CHECK (origin IN ('direct', 'delegated'));
+ALTER TABLE sessions ADD COLUMN parent_session_id TEXT;
+
+INSERT INTO agent_profiles
+  (id, user_id, name, description, avatar_key, instructions, default_model_id,
+   permission_preset, status, is_default, revision, created_at, updated_at)
+SELECT 'dylan', id, 'Dylan', '默认通用智能体', avatar_key, '', NULL,
+       session_permission_preset, 'active', 1, 0, created_at, updated_at
+FROM local_users;
+
+INSERT INTO agent_home_items (user_id, agent_id, sort_order, created_at)
+SELECT id, 'dylan', 0, created_at FROM local_users;
+
+UPDATE sessions SET agent_id = 'dylan', origin = 'direct', parent_session_id = NULL;
+
+CREATE INDEX idx_agent_home_items_user_sort
+  ON agent_home_items(user_id, sort_order);
+CREATE INDEX idx_sessions_user_agent_origin_status_updated
+  ON sessions(user_id, agent_id, origin, status, updated_at DESC);
+
+CREATE TRIGGER trg_agent_home_active_insert
+BEFORE INSERT ON agent_home_items
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM agent_profiles
+    WHERE user_id = NEW.user_id AND id = NEW.agent_id AND status = 'active'
+  ) THEN RAISE(ABORT, 'agent home item requires active agent') END;
+END;
+
+CREATE TRIGGER trg_sessions_agent_scope_insert
+BEFORE INSERT ON sessions
+BEGIN
+  SELECT CASE WHEN NEW.agent_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM agent_profiles
+    WHERE user_id = NEW.user_id AND id = NEW.agent_id AND status = 'active'
+  ) THEN RAISE(ABORT, 'session requires active agent') END;
+  SELECT CASE WHEN
+    (NEW.origin = 'direct' AND NEW.parent_session_id IS NOT NULL) OR
+    (NEW.origin = 'delegated' AND NEW.parent_session_id IS NULL)
+  THEN RAISE(ABORT, 'invalid session origin') END;
+  SELECT CASE WHEN NEW.origin = 'delegated' AND NOT EXISTS (
+    SELECT 1 FROM sessions
+    WHERE user_id = NEW.user_id AND id = NEW.parent_session_id
+      AND origin = 'direct'
+  ) THEN RAISE(ABORT, 'delegated parent must be direct') END;
+END;
+
+CREATE TRIGGER trg_sessions_agent_scope_immutable
+BEFORE UPDATE OF agent_id, origin, parent_session_id ON sessions
+WHEN OLD.agent_id IS NOT NEW.agent_id
+  OR OLD.origin IS NOT NEW.origin
+  OR OLD.parent_session_id IS NOT NEW.parent_session_id
+BEGIN
+  SELECT RAISE(ABORT, 'session agent scope is immutable');
+END;
+
+CREATE TABLE agent_delegations (
+  id                    TEXT NOT NULL,
+  user_id               TEXT NOT NULL,
+  parent_session_id     TEXT NOT NULL,
+  parent_turn_id        TEXT NOT NULL,
+  parent_tool_call_id   TEXT NOT NULL,
+  delegated_session_id  TEXT NOT NULL,
+  target_agent_id       TEXT NOT NULL,
+  status                TEXT NOT NULL
+    CHECK (status IN ('accepted', 'running', 'awaiting_user', 'completed', 'failed', 'cancelled', 'interrupted')),
+  deadline              TEXT NOT NULL,
+  result_event_ref      TEXT,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, parent_tool_call_id),
+  UNIQUE (user_id, delegated_session_id),
+  FOREIGN KEY (user_id, parent_session_id) REFERENCES sessions(user_id, id),
+  FOREIGN KEY (user_id, delegated_session_id) REFERENCES sessions(user_id, id),
+  FOREIGN KEY (user_id, target_agent_id) REFERENCES agent_profiles(user_id, id)
+);
+
+CREATE INDEX idx_agent_delegations_parent_turn
+  ON agent_delegations(user_id, parent_session_id, parent_turn_id, status);
+`,
+  },
 ];

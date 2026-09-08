@@ -79,6 +79,10 @@ import type {
   ModelCallStatisticsSnapshot,
 } from '../shared/contracts/statistics';
 import { buildModelCallStatistics } from './model-call-statistics';
+import { AgentManagementService } from './agent-management-service';
+import { AgentNavigationService } from './agent-navigation-service';
+import { createAgentCallTool } from '../runtime/delegation/agent-call-tool';
+import { createModelCapabilitySelector } from '../runtime/capability-selector';
 import {
   maximumManualOutputBudget,
   recommendedOutputBudget,
@@ -115,6 +119,8 @@ export interface WorkerApplication {
   readonly appDataDir: string;
   readonly runtime: RuntimeService;
   readonly mcp: McpManager;
+  readonly agentManagement: AgentManagementService;
+  readonly agentNavigation: AgentNavigationService;
   initializeUser(userId: LocalUserId): Promise<void>;
   bootstrap(userId: LocalUserId): BootstrapResult;
   health(userId: LocalUserId): Promise<HealthSnapshot>;
@@ -277,6 +283,14 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
   });
   skillCatalog.refresh(initialUserId);
   generatedSkills.seedBuiltinCreator(repos.users.listUsers().map((user) => user.id));
+  const agentManagement = new AgentManagementService({
+    repos,
+    appDataDir: deps.appDataDir,
+    clock,
+    ids,
+  });
+  const agentNavigation = new AgentNavigationService(repos);
+  for (const user of repos.users.listUsers()) agentManagement.initializeUser(user.id);
 
   const llmAdapters = deps.llmAdapters ?? new LlmAdapterRegistry();
   if (!deps.llmAdapters) {
@@ -284,16 +298,20 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
       new OpenAiCompatibleAdapter({
         credentialStore,
         onCredentialLoaded: (secret) => logger.registerSecret(secret),
+        logger: logger.child({ component: 'model-provider' }),
       }),
     );
   }
   const tools = deps.tools ?? new ToolRegistry();
+  const resolveModel = (userId: LocalUserId, agentId: string) =>
+    resolveRuntimeModel(repos, modelCatalog, userId, agentId);
   if (!deps.tools) {
     registerBuiltinRuntimeTools(tools, {
       appDataDir: deps.appDataDir,
       repos,
       fileSystem,
       shell,
+      selectCapabilities: createModelCapabilitySelector({ llmAdapters, resolveModel, ids }),
       publishSkill: (userId, input) => generatedSkills.publish(userId, input),
     });
   }
@@ -306,10 +324,11 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
     workerId: `worker-${deps.generation}`,
     llmAdapters,
     tools,
-    resolveModel: (userId) => resolveRuntimeModel(repos, modelCatalog, userId),
+    resolveModel,
     options: deps.runtimeOptions,
     onEventsAppended: deps.onEventsAppended,
   });
+  tools.register(createAgentCallTool((context, input) => runtime.delegateAgent(context, input)));
   const mcp = new McpManager({
     repos,
     tools,
@@ -331,6 +350,8 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
     appDataDir: deps.appDataDir,
     runtime,
     mcp,
+    agentManagement,
+    agentNavigation,
 
     async initializeUser(userId: LocalUserId): Promise<void> {
       const now = clock.nowIso();
@@ -339,22 +360,9 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
       ensureUserMemoryProfile(deps.appDataDir, userId);
       seedBundledMemoryServers(repos, deps.runtime, now);
       generatedSkills.seedBuiltinCreator([userId]);
+      agentManagement.initializeUser(userId);
       skillCatalog.refresh(userId);
       mcp.rebuildUserTools(userId);
-      await Promise.all(
-        repos.mcp
-          .listServers(userId)
-          .filter((server) => server.status === 'enabled')
-          .map((server) =>
-            mcp.refreshServer(userId, server.id).catch((error) => {
-              logger.warn('MCP account initialization failed', {
-                userId,
-                serverId: server.id,
-                errorCode: error instanceof Error ? error.name : 'UNKNOWN',
-              });
-            }),
-          ),
-      );
     },
 
     bootstrap(userId: LocalUserId): BootstrapResult {
@@ -367,8 +375,16 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
         users: repos.users.listUsers(),
         runtime: { status: 'ready', generation: deps.generation },
         schemaVersion,
+        defaultAgentId: repos.agents.getDefault(userId).id,
         revisions: repos.users.getRevisions(userId),
-        capabilities: { model: 'foundation', skill: 'foundation', runtime: 'ready' },
+        capabilities: {
+          model: 'foundation',
+          skill: 'foundation',
+          runtime: 'ready',
+          agentProfiles: 'ready',
+          agentDelegation: 'ready',
+          scopedMcpInstances: 'pending',
+        },
       };
     },
 
@@ -886,6 +902,16 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
             };
           }),
         ),
+        instances: mcp.instanceSnapshot(userId).map((instance) => ({
+          serverId: instance.key.serverId,
+          scopeType: instance.key.scopeType,
+          scopeId: instance.key.scopeId,
+          status: instance.status,
+          generation: instance.generation,
+          activeCalls: instance.activeCalls,
+          lastUsed: instance.lastUsed,
+          error: instance.error,
+        })),
         tools: tools.map((tool) => ({
           serverId: tool.serverId,
           rawName: tool.rawName,
@@ -1114,8 +1140,10 @@ function resolveRuntimeModel(
   repos: SqliteRepositories,
   modelCatalog: ModelCatalog,
   userId: LocalUserId,
+  agentId?: string,
 ): ModelSnapshot {
-  const modelId = repos.models.getDefaultModelId(userId);
+  const agentModelId = agentId ? repos.agents.requireActive(userId, agentId).defaultModelId : null;
+  const modelId = agentModelId ?? repos.models.getDefaultModelId(userId);
   if (!modelId) throw new BridgeError('MODEL_NOT_CONFIGURED', 'Default model is not configured');
   const model = repos.models.getModel(userId, modelId);
   if (!model || model.status !== 'enabled') {

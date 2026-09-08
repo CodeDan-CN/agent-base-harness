@@ -2,12 +2,16 @@
 
 import type { LocalUserId } from './user';
 import type { PermissionPreset } from './permission';
+import type { SessionOrigin } from './agent';
 
 export type SessionStatus = 'active' | 'archived';
 
 export interface Session {
   id: string;
   userId: LocalUserId;
+  agentId: string;
+  origin: SessionOrigin;
+  parentSessionId: string | null;
   title: string;
   status: SessionStatus;
   permissionPreset: PermissionPreset;

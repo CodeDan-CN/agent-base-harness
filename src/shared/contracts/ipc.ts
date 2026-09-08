@@ -44,7 +44,10 @@ export type QueryMethod =
   | 'model-management.snapshot'
   | 'model-call-statistics.query'
   | 'skill-management.snapshot'
-  | 'mcp-management.snapshot';
+  | 'mcp-management.snapshot'
+  | 'agent-management.snapshot'
+  | 'agent.navigation'
+  | 'agent.delegation.get';
 export type CommandMethod =
   | 'user.switch'
   | 'runtime.retry'
@@ -80,7 +83,18 @@ export type CommandMethod =
   | 'mcp-server.test'
   | 'mcp-server.archive'
   | 'mcp-server.refresh'
-  | 'mcp-tool.toggle';
+  | 'mcp-tool.toggle'
+  | 'agent.create'
+  | 'agent.update'
+  | 'agent.runtime.defaults.set'
+  | 'agent.archive'
+  | 'agent.default.set'
+  | 'agent.home.add'
+  | 'agent.home.remove'
+  | 'agent.home.reorder'
+  | 'agent.skill.toggle'
+  | 'agent.mcp.toggle'
+  | 'agent.delegate.toggle';
 
 export interface QueryRequest {
   method: QueryMethod;

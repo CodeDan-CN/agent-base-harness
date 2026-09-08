@@ -64,6 +64,7 @@ export interface ToolResult {
 
 export interface ToolExecutionContext {
   userId: string;
+  agentId: string;
   sessionId: string;
   eventId: string;
   turnId: string;
@@ -72,6 +73,14 @@ export interface ToolExecutionContext {
   permissionPreset: PermissionPreset;
   approvalGranted?: boolean;
   signal: AbortSignal;
+  reportProgress?(progress: ToolExecutionProgress): void;
+}
+
+export interface ToolExecutionProgress {
+  toolCallId: string;
+  progress: number;
+  total?: number;
+  message?: string;
 }
 
 export interface RuntimeToolOutput<Value = unknown> {
@@ -169,8 +178,13 @@ export class ToolRegistry {
     this.clearUserTurnToolExposure(userId);
   }
 
-  exposeTurnTools(userId: string, turnId: string, tools: readonly RuntimeTool<unknown>[]): void {
-    const key = turnToolExposureKey(userId, turnId);
+  exposeTurnTools(
+    userId: string,
+    sessionId: string,
+    turnId: string,
+    tools: readonly RuntimeTool<unknown>[],
+  ): void {
+    const key = turnToolExposureKey(userId, sessionId, turnId);
     const exposed = new Map(this.turnExposedTools.get(key));
     for (const tool of tools) {
       if (this.globalTools.has(tool.name) || this.userTools.get(userId)?.has(tool.name)) {
@@ -181,26 +195,32 @@ export class ToolRegistry {
     this.turnExposedTools.set(key, exposed);
   }
 
-  clearTurnToolExposure(userId: string, turnId: string): void {
-    this.turnExposedTools.delete(turnToolExposureKey(userId, turnId));
+  clearTurnToolExposure(userId: string, sessionId: string, turnId: string): void {
+    this.turnExposedTools.delete(turnToolExposureKey(userId, sessionId, turnId));
   }
 
-  get(name: string, userId?: string, turnId?: string): RuntimeTool<unknown> | undefined {
+  get(
+    name: string,
+    userId?: string,
+    sessionId?: string,
+    turnId?: string,
+  ): RuntimeTool<unknown> | undefined {
     return (
-      (userId && turnId
-        ? this.turnExposedTools.get(turnToolExposureKey(userId, turnId))?.get(name)
+      (userId && sessionId && turnId
+        ? this.turnExposedTools.get(turnToolExposureKey(userId, sessionId, turnId))?.get(name)
         : undefined) ??
       (userId ? this.userTools.get(userId)?.get(name) : undefined) ??
       this.globalTools.get(name)
     );
   }
 
-  definitions(userId?: string, turnId?: string): ModelToolDefinition[] {
+  definitions(userId?: string, sessionId?: string, turnId?: string): ModelToolDefinition[] {
     const tools = [
       ...this.globalTools.values(),
       ...(userId ? (this.userTools.get(userId)?.values() ?? []) : []),
-      ...(userId && turnId
-        ? (this.turnExposedTools.get(turnToolExposureKey(userId, turnId))?.values() ?? [])
+      ...(userId && sessionId && turnId
+        ? (this.turnExposedTools.get(turnToolExposureKey(userId, sessionId, turnId))?.values() ??
+          [])
         : []),
     ];
     return tools
@@ -219,8 +239,8 @@ export class ToolRegistry {
   }
 }
 
-function turnToolExposureKey(userId: string, turnId: string): string {
-  return `${userId}\0${turnId}`;
+function turnToolExposureKey(userId: string, sessionId: string, turnId: string): string {
+  return `${userId}\0${sessionId}\0${turnId}`;
 }
 
 export class ToolScheduler {
@@ -236,7 +256,7 @@ export class ToolScheduler {
   ): Promise<ScheduledToolResult[]> {
     const output: ScheduledToolResult[] = new Array(calls.length);
     const resolvedTools = calls.map((call) =>
-      this.registry.get(call.name, context.userId, context.turnId),
+      this.registry.get(call.name, context.userId, context.sessionId, context.turnId),
     );
     let start = 0;
     while (start < calls.length) {

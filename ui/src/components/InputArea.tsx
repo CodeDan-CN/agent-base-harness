@@ -7,11 +7,12 @@ import {
   Edit3,
   Paperclip,
   Shield,
+  Sparkles,
   Square,
   X,
   Zap,
 } from 'lucide-react';
-import type { InboxItem, PermissionPreset } from '@client-contracts';
+import type { InboxItem, ModelManagementSnapshot, PermissionPreset } from '@client-contracts';
 import { shouldSubmitComposerOnKeyDown } from '../composer-input-policy';
 import { ContextTokenRing, formatCompactToken, formatOptionalToken } from './ContextTokenRing';
 
@@ -20,6 +21,9 @@ interface InputAreaProps {
   disabled: boolean;
   queue: InboxItem[];
   busyActionId: string | null;
+  modelId: string | null;
+  modelLabel: string;
+  models: ModelManagementSnapshot['models'];
   permissionPreset: PermissionPreset;
   contextStats: ContextTokenStats | null;
   onSend(text: string, mode: 'queue' | 'steer'): Promise<boolean>;
@@ -28,6 +32,7 @@ interface InputAreaProps {
   onReplace(item: InboxItem): void;
   onPromote(item: InboxItem): void;
   onPermissionPresetChange(preset: PermissionPreset): void;
+  onModelChange(modelId: string): void;
 }
 
 interface ContextTokenStats {
@@ -45,6 +50,7 @@ const COMPOSER_TEXTAREA_MAX_HEIGHT = 176;
 export function InputArea(props: InputAreaProps): JSX.Element {
   const [text, setText] = useState('');
   const [permissionOpen, setPermissionOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const permissionRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
@@ -60,19 +66,25 @@ export function InputArea(props: InputAreaProps): JSX.Element {
   }, [text]);
 
   useEffect(() => {
-    if (!permissionOpen) return;
+    if (!permissionOpen && !modelOpen) return;
     const close = (event: PointerEvent) => {
-      if (!permissionRef.current?.contains(event.target as Node)) setPermissionOpen(false);
+      const target = event.target as Node;
+      if (!permissionRef.current?.contains(target)) setPermissionOpen(false);
+      if (!(target instanceof Element) || !target.closest('.model-picker')) setModelOpen(false);
     };
-    const escape = (event: globalThis.KeyboardEvent) =>
-      event.key === 'Escape' && setPermissionOpen(false);
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPermissionOpen(false);
+        setModelOpen(false);
+      }
+    };
     window.addEventListener('pointerdown', close);
     window.addEventListener('keydown', escape);
     return () => {
       window.removeEventListener('pointerdown', close);
       window.removeEventListener('keydown', escape);
     };
-  }, [permissionOpen]);
+  }, [permissionOpen, modelOpen]);
 
   const submit = async (mode: 'queue' | 'steer') => {
     const content = text.trim();
@@ -213,6 +225,50 @@ export function InputArea(props: InputAreaProps): JSX.Element {
                   </button>
                 ))}
                 {props.processing && <p>停止当前任务后可切换访问范围。</p>}
+              </div>
+            )}
+          </div>
+          <div className="model-picker">
+            <button
+              className={['model-trigger', modelOpen ? 'active' : ''].filter(Boolean).join(' ')}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={modelOpen}
+              disabled={props.processing}
+              onClick={() => {
+                setPermissionOpen(false);
+                setModelOpen((open) => !open);
+              }}
+            >
+              <Sparkles size={14} />
+              <span>{props.modelLabel}</span>
+            </button>
+            {modelOpen && (
+              <div className="model-popover" role="menu">
+                {props.models.length === 0 ? (
+                  <p>请先在模型配置中添加可用模型。</p>
+                ) : (
+                  props.models
+                    .filter((model) => model.status === 'enabled')
+                    .map((model) => (
+                      <button
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={props.modelId === model.id}
+                        key={model.id}
+                        onClick={() => {
+                          props.onModelChange(model.id);
+                          setModelOpen(false);
+                        }}
+                      >
+                        <span>
+                          <strong>{model.displayName}</strong>
+                          <small>{model.remoteModelId}</small>
+                        </span>
+                        {props.modelId === model.id && <Check size={14} />}
+                      </button>
+                    ))
+                )}
               </div>
             )}
           </div>

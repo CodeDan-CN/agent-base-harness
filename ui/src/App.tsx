@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 import { AlertCircle, CheckCircle2, Info, Loader2, X } from 'lucide-react';
 import type {
   BootstrapResult,
+  AgentNavigationSnapshot,
   InboxItem,
   ModelManagementSnapshot,
   PermissionPreset,
@@ -65,12 +66,15 @@ function RuntimeApp({
 }): JSX.Element {
   const [bootstrap, setBootstrap] = useState<BootstrapResult | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [navigation, setNavigation] = useState<AgentNavigationSnapshot | null>(null);
+  const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [projection, setProjection] = useState<RuntimeProjection | null>(null);
   const [modelSnapshot, setModelSnapshot] = useState<ModelManagementSnapshot | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeWorkerStatus>('starting');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'agents' | undefined>();
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
   const [renameTarget, setRenameTarget] = useState<Session | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<Session | null>(null);
@@ -115,17 +119,35 @@ function RuntimeApp({
     return () => systemTheme.removeEventListener('change', syncSystemTheme);
   }, [themePreference]);
 
-  const loadSessions = useCallback(async (preferred?: string | null) => {
-    const next = await query<Session[]>('session.list');
-    setSessions(next);
-    const active = next.filter((session) => session.status === 'active');
-    const target =
-      preferred && active.some((session) => session.id === preferred)
-        ? preferred
-        : (active[0]?.id ?? null);
-    setActiveSessionId(target);
-    return target;
-  }, []);
+  const loadSessions = useCallback(
+    async (preferred?: string | null, preferredAgent?: string | null) => {
+      const nextNavigation = await query<AgentNavigationSnapshot>('agent.navigation', {
+        sessionsPerAgent: 50,
+      });
+      setNavigation(nextNavigation);
+      const next: Session[] = nextNavigation.items.flatMap((item) => item.sessions);
+      setSessions(next);
+      const active = next.filter((session) => session.status === 'active');
+      const preferredSession = preferred
+        ? active.find((session) => session.id === preferred)
+        : undefined;
+      const homeIds = new Set(nextNavigation.items.map((item) => item.agent.id));
+      const targetAgent =
+        preferredSession?.agentId ??
+        (preferredAgent && homeIds.has(preferredAgent) ? preferredAgent : null) ??
+        (homeIds.has(nextNavigation.defaultAgentId) ? nextNavigation.defaultAgentId : null) ??
+        nextNavigation.items[0]?.agent.id ??
+        null;
+      setActiveAgentId(targetAgent);
+      const target =
+        preferredSession?.id ??
+        active.find((session) => session.agentId === targetAgent)?.id ??
+        null;
+      setActiveSessionId(target);
+      return target;
+    },
+    [],
+  );
 
   const loadModelSnapshot = useCallback(async () => {
     try {
@@ -140,12 +162,12 @@ function RuntimeApp({
       setBootstrap(boot);
       setRuntimeStatus(boot.runtime.status);
       setBootError(null);
-      const target = await loadSessions(activeSessionId);
+      const target = await loadSessions(activeSessionId, activeAgentId ?? boot.defaultAgentId);
       await loadModelSnapshot();
       if (!target) setProjection(null);
       document.documentElement.dataset.smoke = 'ok';
     },
-    [activeSessionId, loadModelSnapshot, loadSessions],
+    [activeAgentId, activeSessionId, loadModelSnapshot, loadSessions],
   );
 
   const initialize = useCallback((): Promise<void> => {
@@ -279,25 +301,40 @@ function RuntimeApp({
     return unsubscribe;
   }, [activeSessionId, Boolean(projection), loadSessions, loadSnapshot, runtimeStatus]);
 
-  const createSession = useCallback(async (): Promise<Session | null> => {
-    try {
-      const session = await command<Session>('session.create', {
-        sessionId: crypto.randomUUID(),
-        title: '新对话',
-      });
-      setSessions((items) => [session, ...items]);
-      setActiveSessionId(session.id);
-      return session;
-    } catch (error) {
-      notify(userMessage(error), 'error');
-      return null;
-    }
-  }, [notify]);
+  const createSession = useCallback(
+    async (agentId = activeAgentId): Promise<Session | null> => {
+      if (!agentId) {
+        notify('请先把一个智能体加入首页。', 'info');
+        return null;
+      }
+      try {
+        const session = await command<Session>('session.create', {
+          sessionId: crypto.randomUUID(),
+          agentId,
+          title: '新对话',
+        });
+        setSessions((items) => [session, ...items]);
+        setActiveAgentId(agentId);
+        setActiveSessionId(session.id);
+        void loadSessions(session.id, agentId).catch(() => undefined);
+        return session;
+      } catch (error) {
+        notify(userMessage(error), 'error');
+        return null;
+      }
+    },
+    [activeAgentId, loadSessions, notify],
+  );
 
   const activeSession = sessions.find((session) => session.id === activeSessionId) ?? null;
+  const activeAgentProfile =
+    navigation?.items.find((item) => item.agent.id === activeAgentId)?.agent ?? null;
+  const activeAgentPermission =
+    activeAgentProfile?.permissionPreset ?? activeSession?.permissionPreset ?? 'guarded';
+  const activeModelId = activeAgentProfile?.defaultModelId ?? modelSnapshot?.defaultModelId ?? null;
   const activeModel = useMemo(
-    () => modelSnapshot?.models.find((item) => item.id === modelSnapshot.defaultModelId) ?? null,
-    [modelSnapshot],
+    () => modelSnapshot?.models.find((item) => item.id === activeModelId) ?? null,
+    [activeModelId, modelSnapshot],
   );
   const modelLabel = useMemo(() => {
     return activeModel?.displayName ?? '未配置模型';
@@ -343,21 +380,36 @@ function RuntimeApp({
     }
   };
 
-  const changePermissionPreset = async (preset: PermissionPreset) => {
-    if (!activeSessionId) return;
+  const changeAgentRuntimeDefaults = async (input: {
+    permissionPreset?: PermissionPreset;
+    defaultModelId?: string | null;
+  }) => {
+    if (!activeAgentProfile || !navigation) return;
     setPermissionBusy(true);
     try {
-      await command('permission.preset.set', { sessionId: activeSessionId, preset });
-      if (preset === 'full-access' && bootstrap?.activeUser.id) {
+      await command('agent.runtime.defaults.set', {
+        agentId: activeAgentProfile.id,
+        defaultModelId:
+          input.defaultModelId === undefined
+            ? activeAgentProfile.defaultModelId
+            : input.defaultModelId,
+        permissionPreset: input.permissionPreset ?? activeAgentProfile.permissionPreset,
+        expectedProfileRevision: activeAgentProfile.revision,
+        expectedRevision: navigation.revision,
+      });
+      const nextPermission = input.permissionPreset ?? activeAgentProfile.permissionPreset;
+      if (nextPermission === 'full-access' && bootstrap?.activeUser.id) {
         rememberFullAccessAcknowledgement(bootstrap.activeUser.id);
       }
-      await loadSessions(activeSessionId);
+      await loadSessions(activeSessionId, activeAgentId);
       notify(
-        preset === 'approval-required'
-          ? '已切换为请求批准。'
-          : preset === 'guarded'
-            ? '已切换为受控自动。'
-            : '已开启完全访问。',
+        input.defaultModelId !== undefined && input.permissionPreset === undefined
+          ? '当前智能体模型已更新。'
+          : nextPermission === 'approval-required'
+            ? '已切换为请求批准。'
+            : nextPermission === 'guarded'
+              ? '已切换为受控自动。'
+              : '已开启完全访问。',
         'success',
       );
     } catch (error) {
@@ -446,15 +498,47 @@ function RuntimeApp({
     <div className="app-shell">
       {sidebarOpen && (
         <Sidebar
-          sessions={sessions}
+          navigation={navigation}
+          activeAgentId={activeAgentId}
           activeSessionId={activeSessionId}
           activeUser={bootstrap.activeUser}
-          onSelectSession={setActiveSessionId}
+          onSelectSession={(id) => {
+            const session = sessions.find((candidate) => candidate.id === id);
+            if (session) setActiveAgentId(session.agentId);
+            setActiveSessionId(id);
+          }}
+          onSelectAgent={(agentId) => {
+            setActiveAgentId(agentId);
+            setActiveSessionId(
+              sessions.find((session) => session.agentId === agentId && session.status === 'active')
+                ?.id ?? null,
+            );
+          }}
           onNewSession={() => void createSession()}
+          onNewAgentSession={(agentId) => void createSession(agentId)}
+          onAddAgent={async (agentId) => {
+            if (!navigation) return;
+            try {
+              await command('agent.home.add', {
+                agentId,
+                expectedRevision: navigation.revision,
+              });
+              await loadSessions(null, agentId);
+            } catch (error) {
+              notify(userMessage(error), 'error');
+            }
+          }}
+          onCreateAgent={() => {
+            setSettingsInitialTab('agents');
+            setSettingsOpen(true);
+          }}
           onRename={openRename}
           onArchive={setArchiveTarget}
           onToggle={() => setSidebarOpen(false)}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => {
+            setSettingsInitialTab(undefined);
+            setSettingsOpen(true);
+          }}
           onLogout={logout}
         />
       )}
@@ -462,13 +546,15 @@ function RuntimeApp({
         sessionId={activeSessionId}
         title={activeSession?.title ?? '新对话'}
         modelLabel={modelLabel}
+        modelId={activeModelId}
+        models={modelSnapshot?.models ?? []}
         modelContextLimit={modelContextLimit}
         sidebarOpen={sidebarOpen}
         loading={loading}
         runtimeReady={runtimeStatus === 'ready'}
         projection={projection}
         busyActionId={busyActionId}
-        permissionPreset={activeSession?.permissionPreset ?? 'guarded'}
+        permissionPreset={activeAgentPermission}
         onToggleSidebar={() => setSidebarOpen(true)}
         onRename={() => openRename()}
         onNotifyError={(message) => notify(message, 'error')}
@@ -512,8 +598,12 @@ function RuntimeApp({
             idempotencyKey: crypto.randomUUID(),
           }).catch((error) => notify(userMessage(error), 'error'));
         }}
+        onModelChange={(modelId) => {
+          if (modelId === activeModelId) return;
+          void changeAgentRuntimeDefaults({ defaultModelId: modelId });
+        }}
         onPermissionPresetChange={(preset) => {
-          if (preset === activeSession?.permissionPreset) return;
+          if (preset === activeAgentPermission) return;
           if (
             preset === 'full-access' &&
             (!bootstrap?.activeUser.id || !hasAcknowledgedFullAccess(bootstrap.activeUser.id))
@@ -521,7 +611,7 @@ function RuntimeApp({
             setPendingPermissionPreset(preset);
             return;
           }
-          void changePermissionPreset(preset);
+          void changeAgentRuntimeDefaults({ permissionPreset: preset });
         }}
       />
       {banner && <Banner banner={banner} onClose={() => setBanner(null)} />}
@@ -532,9 +622,14 @@ function RuntimeApp({
       )}
       {settingsOpen && (
         <SettingsModal
+          initialTab={settingsInitialTab}
           themePreference={themePreference}
           onThemePreferenceChange={setThemePreference}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            setSettingsInitialTab(undefined);
+            void loadSessions(activeSessionId, activeAgentId).catch(() => undefined);
+          }}
           onModelChanged={setModelSnapshot}
           onNotify={(message, tone = 'info') => notify(message, tone)}
         />
@@ -557,7 +652,7 @@ function RuntimeApp({
         tone="warning"
         busy={permissionBusy}
         onCancel={() => !permissionBusy && setPendingPermissionPreset(null)}
-        onConfirm={() => void changePermissionPreset('full-access')}
+        onConfirm={() => void changeAgentRuntimeDefaults({ permissionPreset: 'full-access' })}
       />
       <ConfirmDialog
         open={Boolean(archiveTarget)}

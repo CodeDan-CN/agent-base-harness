@@ -18,7 +18,13 @@ export function executionActivity(
   const pending = tools.filter((tool) => tool.status === 'running');
   if (step.status === 'running' && pending.length) {
     const actions = [...new Set(pending.map(toolAction))];
-    return `正在执行：${actions.slice(0, 2).join('、')}${actions.length > 2 ? ` 等 ${actions.length} 项操作` : ''}`;
+    const action = `${actions.slice(0, 2).join('、')}${actions.length > 2 ? ` 等 ${actions.length} 项操作` : ''}`;
+    const latestProgress = [...pending]
+      .filter((tool) => tool.progress?.message)
+      .sort((left, right) =>
+        (right.progress?.updatedAt ?? '').localeCompare(left.progress?.updatedAt ?? ''),
+      )[0]?.progress?.message;
+    return latestProgress ? `正在执行：${action} · ${latestProgress}` : `正在执行：${action}`;
   }
   if (tools.length) {
     const succeeded = tools.filter((tool) => tool.status === 'success').length;

@@ -16,6 +16,7 @@ import {
 import type {
   ApprovalResolution,
   InboxItem,
+  ModelManagementSnapshot,
   PermissionPreset,
   RuntimeProjection,
 } from '@client-contracts';
@@ -37,6 +38,8 @@ interface ChatAreaProps {
   sessionId: string | null;
   title: string;
   modelLabel: string;
+  modelId: string | null;
+  models: ModelManagementSnapshot['models'];
   modelContextLimit: number | null;
   sidebarOpen: boolean;
   loading: boolean;
@@ -59,6 +62,7 @@ interface ChatAreaProps {
   ): void;
   onResolveApproval(id: string, resolution: ApprovalResolution): void;
   onPermissionPresetChange(preset: PermissionPreset): void;
+  onModelChange(modelId: string): void;
 }
 
 export function ChatArea(props: ChatAreaProps): JSX.Element {
@@ -349,6 +353,9 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
           disabled={!projection || !props.runtimeReady}
           queue={projection?.inbox ?? []}
           busyActionId={props.busyActionId}
+          modelId={props.modelId}
+          modelLabel={props.modelLabel}
+          models={props.models}
           permissionPreset={props.permissionPreset}
           contextStats={contextStats}
           onSend={props.onSend}
@@ -357,6 +364,7 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
           onReplace={props.onReplace}
           onPromote={props.onPromote}
           onPermissionPresetChange={props.onPermissionPresetChange}
+          onModelChange={props.onModelChange}
         />
       </div>
     </main>

@@ -19,6 +19,7 @@ export const userConfigRevisionsSchema = z.object({
   skillRevision: z.number(),
   runtimeRevision: z.number(),
   mcpRevision: z.number(),
+  agentRevision: z.number(),
   updatedAt: z.string(),
 });
 
@@ -30,11 +31,15 @@ export const bootstrapResultSchema = z.object({
     generation: z.number(),
   }),
   schemaVersion: z.number(),
+  defaultAgentId: z.string().min(1),
   revisions: userConfigRevisionsSchema,
   capabilities: z.object({
     model: z.literal('foundation'),
     skill: z.literal('foundation'),
     runtime: z.enum(['pending', 'ready']),
+    agentProfiles: z.enum(['pending', 'ready']),
+    agentDelegation: z.enum(['pending', 'ready']),
+    scopedMcpInstances: z.enum(['pending', 'ready']),
   }),
 });
 

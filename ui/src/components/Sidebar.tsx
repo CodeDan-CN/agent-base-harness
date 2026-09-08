@@ -1,24 +1,31 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import {
   Archive,
+  Bot,
+  ChevronDown,
   ChevronRight,
   MoreHorizontal,
   PanelLeftClose,
   Pencil,
   Plus,
-  Search,
   Settings,
   LogOut,
+  UserRoundPlus,
 } from 'lucide-react';
-import type { BootstrapLocalUser, Session } from '@client-contracts';
+import type { AgentNavigationSnapshot, BootstrapLocalUser, Session } from '@client-contracts';
 
 interface SidebarProps {
-  sessions: Session[];
+  navigation: AgentNavigationSnapshot | null;
+  activeAgentId: string | null;
   activeSessionId: string | null;
   activeUser: BootstrapLocalUser;
+  onSelectAgent(id: string): void;
   onSelectSession(id: string): void;
   onNewSession(): void;
+  onNewAgentSession(agentId: string): void;
+  onAddAgent(agentId: string): Promise<void>;
+  onCreateAgent(): void;
   onRename(session: Session): void;
   onArchive(session: Session): void;
   onToggle(): void;
@@ -27,140 +34,210 @@ interface SidebarProps {
 }
 
 export function Sidebar(props: SidebarProps): JSX.Element {
-  const [search, setSearch] = useState('');
   const [menuId, setMenuId] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const profileAreaRef = useRef<HTMLDivElement>(null);
-  const sessionMenuButtonRef = useRef<HTMLButtonElement>(null);
-  const sessionMenuRef = useRef<HTMLDivElement>(null);
-  const groups = useMemo(() => groupSessions(props.sessions, search), [props.sessions, search]);
   const initials = props.activeUser.displayName.slice(0, 2).toUpperCase();
 
   useEffect(() => {
-    if (!profileOpen) return;
-
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      const target = event.target;
-      if (target instanceof Node && !profileAreaRef.current?.contains(target)) {
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuId(null);
         setProfileOpen(false);
+        setPickerOpen(false);
       }
     };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setProfileOpen(false);
-    };
-
-    window.addEventListener('mousedown', closeOnOutsideClick);
-    window.addEventListener('keydown', closeOnEscape);
-    return () => {
-      window.removeEventListener('mousedown', closeOnOutsideClick);
-      window.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [profileOpen]);
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, []);
 
   useEffect(() => {
-    if (!menuId) return;
-
-    const closeOnOutsideClick = (event: MouseEvent) => {
+    const closeOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target;
-      if (
-        target instanceof Node &&
-        !sessionMenuButtonRef.current?.contains(target) &&
-        !sessionMenuRef.current?.contains(target)
-      ) {
+      if (!(target instanceof Element)) return;
+
+      if (!target.closest('.session-menu, .session-menu-button')) {
         setMenuId(null);
       }
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuId(null);
+      if (!target.closest('.profile-menu, .profile-button')) {
+        setProfileOpen(false);
+      }
+      if (!target.closest('.agent-picker-popover, .agent-navigation-heading > .icon-button')) {
+        setPickerOpen(false);
+      }
     };
 
-    window.addEventListener('mousedown', closeOnOutsideClick);
-    window.addEventListener('keydown', closeOnEscape);
-    return () => {
-      window.removeEventListener('mousedown', closeOnOutsideClick);
-      window.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [menuId]);
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
+  }, []);
+
+  const toggleAgent = (agentId: string) => {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(agentId)) next.delete(agentId);
+      else next.add(agentId);
+      return next;
+    });
+  };
 
   return (
-    <aside className="sidebar" aria-label="会话导航">
+    <aside className="sidebar" aria-label="智能体与会话导航">
       <div className="sidebar-top">
         <div className="brand-row">
           <button className="icon-button" onClick={props.onToggle} aria-label="关闭侧边栏">
             <PanelLeftClose size={19} />
           </button>
         </div>
-        <button className="new-chat-button" onClick={props.onNewSession}>
+        <button
+          className="new-chat-button"
+          onClick={props.onNewSession}
+          disabled={!props.activeAgentId}
+        >
           <Plus size={16} /> 新对话
         </button>
-        <label className="search-field">
-          <Search size={15} aria-hidden="true" />
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="搜索对话..."
-            aria-label="搜索对话"
-          />
-        </label>
+        <button className="create-agent-button" onClick={props.onCreateAgent}>
+          <UserRoundPlus size={15} /> 创建智能体
+        </button>
       </div>
 
-      <div className="session-groups custom-scrollbar">
-        {groups.map((group) => (
-          <section key={group.label} className="session-group">
-            <h3>{group.label}</h3>
-            {group.sessions.map((session) => (
-              <div
-                key={session.id}
-                className={`session-item ${props.activeSessionId === session.id ? 'active' : ''}`}
-              >
+      <div className="agent-navigation custom-scrollbar">
+        <div className="agent-navigation-heading">
+          <strong>智能体</strong>
+          <button
+            className="icon-button compact"
+            aria-label="把已有智能体加入首页"
+            onClick={() => setPickerOpen((current) => !current)}
+          >
+            <Plus size={15} />
+          </button>
+          {pickerOpen && (
+            <div className="agent-picker-popover">
+              <strong>加入已有智能体</strong>
+              {(props.navigation?.availableToAdd.length ?? 0) === 0 ? (
+                <p>没有可加入的智能体</p>
+              ) : (
+                props.navigation?.availableToAdd.map((agent) => (
+                  <button
+                    key={agent.id}
+                    onClick={() => {
+                      setPickerOpen(false);
+                      void props.onAddAgent(agent.id);
+                    }}
+                  >
+                    <AgentAvatar name={agent.name} />
+                    <span>
+                      <strong>{agent.name}</strong>
+                      <small>{agent.description || '未填写简介'}</small>
+                    </span>
+                  </button>
+                ))
+              )}
+              <button className="manage-agents-link" onClick={props.onCreateAgent}>
+                管理智能体
+              </button>
+            </div>
+          )}
+        </div>
+
+        {props.navigation?.items.map((item) => {
+          const isCollapsed = collapsed.has(item.agent.id);
+          const active = props.activeAgentId === item.agent.id;
+          return (
+            <section key={item.agent.id} className={`agent-group ${active ? 'active' : ''}`}>
+              <div className="agent-row">
                 <button
-                  className="session-select"
+                  className="agent-collapse"
+                  onClick={() => toggleAgent(item.agent.id)}
+                  aria-label={isCollapsed ? '展开会话' : '折叠会话'}
+                >
+                  {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                </button>
+                <button
+                  className="agent-select"
                   onClick={() => {
                     setMenuId(null);
-                    props.onSelectSession(session.id);
+                    setPickerOpen(false);
+                    props.onSelectAgent(item.agent.id);
                   }}
                 >
-                  <span>{session.title}</span>
+                  <AgentAvatar name={item.agent.name} />
+                  <span>{item.agent.name}</span>
                 </button>
                 <button
-                  ref={menuId === session.id ? sessionMenuButtonRef : undefined}
-                  className="session-menu-button"
-                  aria-label={`${session.title} 操作`}
-                  aria-expanded={menuId === session.id}
-                  aria-haspopup="menu"
-                  onClick={() => {
-                    setProfileOpen(false);
-                    setMenuId((current) => (current === session.id ? null : session.id));
-                  }}
+                  className="agent-new-session"
+                  aria-label={`在 ${item.agent.name} 下新建对话`}
+                  onClick={() => props.onNewAgentSession(item.agent.id)}
                 >
-                  <MoreHorizontal size={16} />
+                  <Plus size={14} />
                 </button>
-                {menuId === session.id && (
-                  <div ref={sessionMenuRef} className="session-menu" role="menu">
-                    <button
-                      onClick={() => {
-                        setMenuId(null);
-                        props.onRename(session);
-                      }}
-                    >
-                      <Pencil size={14} /> 重命名
-                    </button>
-                    <button
-                      className="danger"
-                      onClick={() => {
-                        setMenuId(null);
-                        props.onArchive(session);
-                      }}
-                    >
-                      <Archive size={14} /> 归档
-                    </button>
-                  </div>
-                )}
               </div>
-            ))}
-          </section>
-        ))}
-        {groups.length === 0 && <div className="sidebar-empty">暂无匹配的对话</div>}
+              {!isCollapsed && (
+                <div className="agent-sessions">
+                  {item.sessions.map((session) => (
+                    <div
+                      key={session.id}
+                      className={`session-item ${
+                        props.activeSessionId === session.id ? 'active' : ''
+                      }`}
+                    >
+                      <button
+                        className="session-select"
+                        onClick={() => {
+                          setMenuId(null);
+                          props.onSelectSession(session.id);
+                        }}
+                      >
+                        <span>{session.title}</span>
+                      </button>
+                      <button
+                        className="session-menu-button"
+                        aria-label={`${session.title} 操作`}
+                        onClick={() =>
+                          setMenuId((current) => (current === session.id ? null : session.id))
+                        }
+                      >
+                        <MoreHorizontal size={15} />
+                      </button>
+                      {menuId === session.id && (
+                        <div className="session-menu" role="menu">
+                          <button
+                            onClick={() => {
+                              setMenuId(null);
+                              props.onRename(session);
+                            }}
+                          >
+                            <Pencil size={14} /> 重命名
+                          </button>
+                          <button
+                            className="danger"
+                            onClick={() => {
+                              setMenuId(null);
+                              props.onArchive(session);
+                            }}
+                          >
+                            <Archive size={14} /> 归档
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {item.sessions.length === 0 && (
+                    <div className="agent-session-empty">暂无对话</div>
+                  )}
+                </div>
+              )}
+            </section>
+          );
+        })}
+        {props.navigation?.items.length === 0 && (
+          <div className="sidebar-empty">
+            <Bot size={22} />
+            <span>首页还没有智能体</span>
+            <button onClick={() => setPickerOpen(true)}>添加智能体</button>
+          </div>
+        )}
       </div>
 
       <div ref={profileAreaRef} className="profile-area">
@@ -187,11 +264,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         <button
           className="profile-button"
           aria-expanded={profileOpen}
-          aria-haspopup="menu"
-          onClick={() => {
-            setMenuId(null);
-            setProfileOpen((current) => !current);
-          }}
+          onClick={() => setProfileOpen((current) => !current)}
         >
           <span className="avatar">{initials}</span>
           <span className="profile-copy">
@@ -205,34 +278,6 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   );
 }
 
-function groupSessions(sessions: Session[], search: string) {
-  const query = search.trim().toLocaleLowerCase();
-  const buckets = new Map<string, Session[]>();
-  for (const session of sessions) {
-    if (
-      session.status !== 'active' ||
-      (query && !session.title.toLocaleLowerCase().includes(query))
-    ) {
-      continue;
-    }
-    const label = dateGroup(session.updatedAt);
-    const list = buckets.get(label) ?? [];
-    list.push(session);
-    buckets.set(label, list);
-  }
-  return ['今天', '昨天', '前 7 天', '更早']
-    .map((label) => ({ label, sessions: buckets.get(label) ?? [] }))
-    .filter((group) => group.sessions.length > 0);
-}
-
-function dateGroup(iso: string): string {
-  const date = new Date(iso);
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-  const days = Math.floor((today - target) / 86_400_000);
-  if (days <= 0) return '今天';
-  if (days === 1) return '昨天';
-  if (days <= 7) return '前 7 天';
-  return '更早';
+function AgentAvatar({ name }: { name: string }): JSX.Element {
+  return <span className="agent-avatar">{name.slice(0, 2).toUpperCase()}</span>;
 }

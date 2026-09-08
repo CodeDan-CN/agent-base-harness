@@ -7,6 +7,8 @@ import { ProjectionRepository } from './projection-repository';
 import { McpRepository } from './mcp-repository';
 import { CapabilityCategoryRepository } from './capability-category-repository';
 import { AuthRepository } from './auth-repository';
+import { AgentRepository } from './agent-repository';
+import { DelegationRepository } from './delegation-repository';
 
 /**
  * SQLite 仓储聚合。所有业务读取都携带 userId 作用域，不提供无 Scope 查询。
@@ -20,8 +22,10 @@ export class SqliteRepositories {
   readonly mcp: McpRepository;
   readonly categories: CapabilityCategoryRepository;
   readonly auth: AuthRepository;
+  readonly agents: AgentRepository;
+  readonly delegations: DelegationRepository;
 
-  constructor(db: SqliteDatabase) {
+  constructor(private readonly db: SqliteDatabase) {
     this.users = new UserRepository(db);
     this.sessions = new SessionRepository(db);
     this.models = new ModelRepository(db);
@@ -30,6 +34,12 @@ export class SqliteRepositories {
     this.mcp = new McpRepository(db);
     this.categories = new CapabilityCategoryRepository(db);
     this.auth = new AuthRepository(db);
+    this.agents = new AgentRepository(db);
+    this.delegations = new DelegationRepository(db);
+  }
+
+  transaction<T>(work: () => T): T {
+    return this.db.transaction(work)();
   }
 }
 
@@ -41,4 +51,6 @@ export { ProjectionRepository } from './projection-repository';
 export { McpRepository } from './mcp-repository';
 export { CapabilityCategoryRepository } from './capability-category-repository';
 export { AuthRepository } from './auth-repository';
+export { AgentRepository } from './agent-repository';
+export { DelegationRepository } from './delegation-repository';
 export type { LocalAuthCredential, PasswordDigestParams } from './auth-repository';

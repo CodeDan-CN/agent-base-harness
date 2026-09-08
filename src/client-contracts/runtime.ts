@@ -39,7 +39,11 @@ export const inboxSplicedPayloadSchema = z
   .strict();
 
 export const sessionCreateParamsSchema = z
-  .object({ sessionId: z.string().min(1).max(128).optional(), title: z.string().min(1).max(200) })
+  .object({
+    sessionId: z.string().min(1).max(128).optional(),
+    agentId: z.string().min(1).max(128),
+    title: z.string().min(1).max(200),
+  })
   .strict();
 export const sessionRenameParamsSchema = z
   .object({
@@ -161,6 +165,7 @@ export type RuntimeEventType =
   | 'assistant.message'
   | 'assistant.message.metadata'
   | 'tool.call'
+  | 'tool.progress'
   | 'tool.result'
   | 'interaction.requested'
   | 'interaction.resolved'
@@ -196,6 +201,7 @@ export const RUNTIME_EVENT_TYPES: readonly RuntimeEventType[] = [
   'assistant.message',
   'assistant.message.metadata',
   'tool.call',
+  'tool.progress',
   'tool.result',
   'interaction.requested',
   'interaction.resolved',
@@ -209,11 +215,20 @@ export const RUNTIME_EVENT_TYPES: readonly RuntimeEventType[] = [
   'compaction.ended',
 ];
 
-export const RUNTIME_EVENT_SCHEMA_VERSION = 1;
+export const RUNTIME_EVENT_SCHEMA_VERSION = 2;
 
 const id = z.string().min(1);
 const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
-  'session.created': z.object({ sessionId: id, title: z.string() }).strict(),
+  'session.created': z
+    .object({
+      sessionId: id,
+      title: z.string(),
+      agentId: id,
+      origin: z.enum(['direct', 'delegated']),
+      parentSessionId: id.nullable(),
+      allowSharedMemory: z.boolean(),
+    })
+    .strict(),
   'agent.inbox.spliced': inboxSplicedPayloadSchema,
   'conversation.event.created': z.object({ eventId: id, title: z.string() }).strict(),
   'conversation.event.status-changed': z
@@ -373,6 +388,18 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
       replaySafe: z.boolean(),
       presentation: z.unknown().nullable().optional(),
       callIndex: z.number().int().nonnegative(),
+    })
+    .strict(),
+  'tool.progress': z
+    .object({
+      toolCallId: id,
+      toolName: id,
+      stepId: id,
+      turnId: id,
+      eventId: id,
+      progress: z.number().nonnegative(),
+      total: z.number().nonnegative().optional(),
+      message: z.string().min(1).max(500),
     })
     .strict(),
   'tool.result': z

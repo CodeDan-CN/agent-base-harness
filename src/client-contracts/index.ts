@@ -32,6 +32,14 @@ export type {
   ModelCallStatisticsSnapshot,
 } from '../shared/contracts/statistics';
 export type { AuthResult, AuthSessionView, AuthenticatedUser } from '../shared/contracts/auth';
+export type {
+  AgentManagementSnapshot,
+  AgentNavigationSnapshot,
+  AgentCreateParams,
+  AgentUpdateParams,
+  AgentRuntimeDefaultsSetParams,
+} from '../shared/contracts/agent-management';
+export type { AgentProfile, AgentBindings } from '../shared/domain/agent';
 export type { Session, SessionLogEvent } from '../shared/domain/session';
 export type {
   ApprovalResolution,

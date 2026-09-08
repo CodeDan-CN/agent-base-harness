@@ -13,7 +13,7 @@ import {
 } from '../infrastructure/skills/generated-skill-publisher';
 import { materializeSkillResourceBase } from '../infrastructure/workspace/session-workspace';
 import { projectRuntime } from '../client-contracts/projection';
-import { createCapabilitySearchTool } from './capability-discovery';
+import { createCapabilitySearchTool, type CapabilitySelector } from './capability-discovery';
 import { createFirstPartyTools } from './first-party-tools';
 import {
   ToolExecutionError,
@@ -28,6 +28,7 @@ export interface BuiltinToolDeps {
   repos: SqliteRepositories;
   fileSystem: ScopedFileSystem;
   shell: ShellExecutor;
+  selectCapabilities: CapabilitySelector;
   publishSkill?: (
     userId: string,
     input: PublishGeneratedSkillInput,
@@ -37,7 +38,8 @@ export interface BuiltinToolDeps {
 export function registerBuiltinRuntimeTools(registry: ToolRegistry, deps: BuiltinToolDeps): void {
   for (const tool of createBuiltinTools({
     ...deps,
-    exposeTurnTools: (userId, turnId, tools) => registry.exposeTurnTools(userId, turnId, tools),
+    exposeTurnTools: (userId, sessionId, turnId, tools) =>
+      registry.exposeTurnTools(userId, sessionId, turnId, tools),
   })) {
     registry.register(tool);
   }
@@ -46,6 +48,7 @@ export function registerBuiltinRuntimeTools(registry: ToolRegistry, deps: Builti
 interface BuiltinToolFactoryDeps extends BuiltinToolDeps {
   exposeTurnTools?: (
     userId: string,
+    sessionId: string,
     turnId: string,
     tools: readonly RuntimeTool<unknown>[],
   ) => void;
@@ -55,7 +58,7 @@ export function createBuiltinTools(deps: BuiltinToolFactoryDeps): RuntimeTool<un
   const skillPublisher = deps.publishSkill ? skillPublishTool(deps.publishSkill) : undefined;
   return [
     requestUserInputTool(),
-    createCapabilitySearchTool(deps.repos),
+    createCapabilitySearchTool(deps.repos, deps.selectCapabilities),
     eventSearchTool(deps.repos),
     eventReadTool(deps.repos),
     turnListTool(deps.repos),
@@ -64,7 +67,8 @@ export function createBuiltinTools(deps: BuiltinToolFactoryDeps): RuntimeTool<un
       deps.repos,
       deps.appDataDir,
       skillPublisher && deps.exposeTurnTools
-        ? (userId, turnId) => deps.exposeTurnTools?.(userId, turnId, [skillPublisher])
+        ? (userId, sessionId, turnId) =>
+            deps.exposeTurnTools?.(userId, sessionId, turnId, [skillPublisher])
         : undefined,
     ),
     ...createFirstPartyTools({ fileSystem: deps.fileSystem, shell: deps.shell }),
@@ -274,16 +278,21 @@ interface SkillLoadResult {
 function skillLoadTool(
   repos: SqliteRepositories,
   appDataDir: string,
-  exposePublisher?: (userId: string, turnId: string) => void,
+  exposePublisher?: (userId: string, sessionId: string, turnId: string) => void,
 ): RuntimeTool<SkillLoadResult> {
-  const input = z.object({ skillName: z.string().min(1) }).strict();
+  const input = z
+    .object({ capabilityId: z.string().min(1).optional(), skillName: z.string().min(1).optional() })
+    .strict()
+    .refine((value) => Boolean(value.capabilityId || value.skillName));
   return {
     name: 'skill_load',
-    description: '按名称加载当前用户已启用 Skill，并返回完整指令和真实资源基目录。',
+    description: '按 capability_search 返回的 capabilityId 加载当前智能体已授权 Skill。',
     parameters: {
       type: 'object',
-      properties: { skillName: { type: 'string', minLength: 1 } },
-      required: ['skillName'],
+      properties: {
+        capabilityId: { type: 'string', minLength: 1 },
+        skillName: { type: 'string', minLength: 1, description: 'Legacy internal alias.' },
+      },
       additionalProperties: false,
     },
     output: {
@@ -317,7 +326,17 @@ function skillLoadTool(
     timeoutMs: 10_000,
     async execute(raw, context) {
       const parsed = input.parse(raw);
-      const installation = repos.skills.getInstallation(context.userId, parsed.skillName);
+      const requestedId = parsed.capabilityId;
+      const bindings = repos.agents.hasSchema
+        ? repos.agents.listBindings(context.userId, context.agentId)
+        : null;
+      if (bindings && (!requestedId || !bindings.skillIds.includes(requestedId)))
+        throw new ToolExecutionError('SKILL_NOT_AVAILABLE');
+      const installation = repos.skills
+        .listInstallations(context.userId)
+        .find((candidate) =>
+          requestedId ? candidate.id === requestedId : candidate.skillName === parsed.skillName,
+        );
       if (!installation || !installation.enabled || installation.status !== 'valid') {
         throw new ToolExecutionError('SKILL_NOT_AVAILABLE');
       }
@@ -346,7 +365,7 @@ function skillLoadTool(
           installation.skillName === BUILTIN_SKILL_CREATOR_NAME &&
           installation.sourceType === 'bundled'
         ) {
-          exposePublisher?.(context.userId, context.turnId);
+          exposePublisher?.(context.userId, context.sessionId, context.turnId);
         }
         return result;
       } catch (error) {

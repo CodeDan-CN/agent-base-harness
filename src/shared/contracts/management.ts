@@ -351,6 +351,20 @@ export const mcpManagementSnapshotSchema = z
         })
         .strict(),
     ),
+    instances: z.array(
+      z
+        .object({
+          serverId: z.string(),
+          scopeType: z.enum(['user', 'agent']),
+          scopeId: z.string(),
+          status: z.enum(['connecting', 'connected', 'suspended', 'error']),
+          generation: z.number().int().nonnegative(),
+          activeCalls: z.number().int().nonnegative(),
+          lastUsed: z.string().nullable(),
+          error: z.string().nullable(),
+        })
+        .strict(),
+    ),
     tools: z.array(
       z
         .object({

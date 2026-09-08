@@ -189,14 +189,14 @@ flowchart LR
 
 ### 6.2 架构组成与职责
 
-| 架构部分         | 核心组件                                                                               | 主要职责                                                                         | 明确边界                                                              |
-| ---------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| 展示与交互层     | 用户切换、会话聊天、执行过程、队列、设置                                               | 展示 Projection、收集用户意图、维护输入草稿等临时 UI 状态                        | 不访问数据库、密钥、模型或工具，不定义 Runtime 状态机                 |
-| 客户端接入层     | View State、Preload、Electron Main                                                     | 安全 IPC、窗口与 Worker 生命周期、当前用户上下文、消息路由                       | 不执行 Agent Loop，不保存会话事实                                     |
-| 应用服务层       | Command、Query、Subscription、Local User Context、Model/Skill/MCP Management     | 编排 Client 用例、校验 User Scope、管理各类能力生命周期、连接 UI 与 Runtime | 不在 Renderer 保存配置事实，不允许管理模块绕过 Provider/Tool 安全边界 |
-| Runtime 核心层   | Admission、Inbox、Driver、Turn/Step、Context、LLM、Tool、Projection、Repair            | 执行单 Agent Runtime 的全部领域语义                                              | 不依赖 React，不直接处理窗口和视图组件                                |
-| 数据与基础设施层 | SQLite、配置 Repository、Credential Store、Skill/附件目录、MCP、日志、Provider Adapter | 持久化、凭据、受管文件、外部协议、动态工具和诊断实现                          | 不决定 Agent 行为，不成为第二业务事实源                               |
-| 外部能力         | 大模型、工具、操作系统能力                                                             | 提供模型推理和实际动作能力                                                       | 必须经过 Adapter、权限、Schema、超时和取消边界                        |
+| 架构部分         | 核心组件                                                                               | 主要职责                                                                    | 明确边界                                                              |
+| ---------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 展示与交互层     | 用户切换、会话聊天、执行过程、队列、设置                                               | 展示 Projection、收集用户意图、维护输入草稿等临时 UI 状态                   | 不访问数据库、密钥、模型或工具，不定义 Runtime 状态机                 |
+| 客户端接入层     | View State、Preload、Electron Main                                                     | 安全 IPC、窗口与 Worker 生命周期、当前用户上下文、消息路由                  | 不执行 Agent Loop，不保存会话事实                                     |
+| 应用服务层       | Command、Query、Subscription、Local User Context、Model/Skill/MCP Management           | 编排 Client 用例、校验 User Scope、管理各类能力生命周期、连接 UI 与 Runtime | 不在 Renderer 保存配置事实，不允许管理模块绕过 Provider/Tool 安全边界 |
+| Runtime 核心层   | Admission、Inbox、Driver、Turn/Step、Context、LLM、Tool、Projection、Repair            | 执行单 Agent Runtime 的全部领域语义                                         | 不依赖 React，不直接处理窗口和视图组件                                |
+| 数据与基础设施层 | SQLite、配置 Repository、Credential Store、Skill/附件目录、MCP、日志、Provider Adapter | 持久化、凭据、受管文件、外部协议、动态工具和诊断实现                        | 不决定 Agent 行为，不成为第二业务事实源                               |
+| 外部能力         | 大模型、工具、操作系统能力                                                             | 提供模型推理和实际动作能力                                                  | 必须经过 Adapter、权限、Schema、超时和取消边界                        |
 
 进程职责映射如下：
 
@@ -503,7 +503,7 @@ Tool Registry 保存：
 - 并发安全分类函数。
 - 是否可恢复重放、幂等要求和可选 Interaction 能力。
 
-每个用户拥有独立的 Skill 安装状态、MCP 定义和 AgentProfile，每个 Agent 通过 binding 获得自己的有效能力快照。Skill 通过指令指导模型使用 Runtime 已有工具，不因安装而自动注册新的原生 Tool Schema；MCP 管理目录保存审核后的完整 Schema，但不默认全部进入 Prompt。4.7.5 起，常驻 `capability_search` 对当前快照中的 Skill/MCP/可调用 Agent 名称、简介和标签做本地确定性、有界检索并显式标记 kind；不返回 Skill 正文、MCP 完整 Schema 或 Agent 指令/记忆。模型选择后分别通过 `skill_load`、`mcp_load` 或 `agent_call` 执行，不增加独立选择模型。Tool Registry 由 Client 内置工具与当前 Turn 已加载的 MCP Tools 构建，并在 Step 开始时冻结为不可变 ToolCatalogSnapshot。
+每个用户拥有独立的 Skill 安装状态、MCP 定义和 AgentProfile，每个 Agent 通过 binding 获得自己的有效能力快照。Skill 通过指令指导模型使用 Runtime 已有工具，不因安装而自动注册新的原生 Tool Schema；MCP 管理目录保存审核后的完整 Schema，但不默认全部进入 Prompt。4.7.5 起，常驻 `capability_search` 先对当前快照中的 Skill/MCP/可调用 Agent 做确定性权限与状态过滤，再复用当前会话已选模型，基于外层 Agent 传入的完整自包含 userRequest 与候选 kind/ID/名称/简介做语义选择；不暴露 Skill 正文、MCP 完整 Schema 或 Agent 指令/记忆。选择后分别通过 `skill_load`、`mcp_load` 或 `agent_call` 执行。Tool Registry 由 Client 内置工具与当前 Turn 已加载的 MCP Tools 构建，并在 Step 开始时冻结为不可变 ToolCatalogSnapshot。
 
 Tool Scheduler 负责：
 
@@ -783,19 +783,19 @@ app-data/
 
 ### 9.4 用户隔离范围
 
-| 数据或能力                  | 作用域                 | 说明                                                 |
-| --------------------------- | ---------------------- | ---------------------------------------------------- |
-| 本地用户目录                | 应用级                 | 预置两个并允许注册新增，保存显示信息和状态           |
-| 当前登录用户                | 4.7.0 起为连接级       | Gateway 令牌绑定用户；CLI/桌面分别登录，互不改变       |
-| 窗口、主题、更新设置        | 应用级                 | 可由本地用户共享；若未来需要用户偏好再单独下沉       |
-| Session、Event、Projection  | 用户级                 | 同表 `user_id` 隔离，所有读取和写入强制 User Context |
-| 模型服务、模型与默认模型    | 用户级                 | 模型 ID 只能在所属用户内解析                         |
-| Skill、Tool Registry 与授权 | 用户级                 | Agent 只获得当前用户启用的 Tool Schema               |
+| 数据或能力                  | 作用域                 | 说明                                                              |
+| --------------------------- | ---------------------- | ----------------------------------------------------------------- |
+| 本地用户目录                | 应用级                 | 预置两个并允许注册新增，保存显示信息和状态                        |
+| 当前登录用户                | 4.7.0 起为连接级       | Gateway 令牌绑定用户；CLI/桌面分别登录，互不改变                  |
+| 窗口、主题、更新设置        | 应用级                 | 可由本地用户共享；若未来需要用户偏好再单独下沉                    |
+| Session、Event、Projection  | 用户级                 | 同表 `user_id` 隔离，所有读取和写入强制 User Context              |
+| 模型服务、模型与默认模型    | 用户级                 | 模型 ID 只能在所属用户内解析                                      |
+| Skill、Tool Registry 与授权 | 用户级                 | Agent 只获得当前用户启用的 Tool Schema                            |
 | MCP Server、Catalog 与连接  | 用户级                 | 配置同表隔离；连接、Credential、重连和 Tool Snapshot 不跨用户共享 |
-| API Key 与 Skill Credential | 用户级                 | 存在 OS Credential Store，以用户命名空间隔离         |
-| 外部记忆 MCP 与其正文       | 用户级                 | 配置、审核和连接在 Client 隔离；正文由外部 Server 自己管理 |
-| 附件与文件引用              | 用户级                 | SQLite 元数据带 `user_id`，实际文件按用户目录分区    |
-| Runtime 日志                | 应用级文件、用户级字段 | 日志必须带 `userId` 且默认不记录会话敏感正文         |
+| API Key 与 Skill Credential | 用户级                 | 存在 OS Credential Store，以用户命名空间隔离                      |
+| 外部记忆 MCP 与其正文       | 用户级                 | 配置、审核和连接在 Client 隔离；正文由外部 Server 自己管理        |
+| 附件与文件引用              | 用户级                 | SQLite 元数据带 `user_id`，实际文件按用户目录分区                 |
+| Runtime 日志                | 应用级文件、用户级字段 | 日志必须带 `userId` 且默认不记录会话敏感正文                      |
 
 隔离不变量：任何用户私有实体都必须能沿复合外键追溯到唯一 LocalUser；任何 Runtime Command、Query、Projection Event、历史检索和工具解析都必须携带同一个 User Context。
 
@@ -988,7 +988,7 @@ cancel current Turn
 1. UI 读取当前用户的 SkillManagementSnapshot，展示搜索、启用状态、来源、兼容性、环境提示和详情入口。
 2. Skill 来源适配器把本地目录或后续 ModelScope/ClawHub 下载结果转换为标准 Agent Skill 目录；目录必须包含合法 `SKILL.md`，可选包含 `scripts/`、`references/` 和 `assets/`。
 3. Skill Management 校验目录边界、文件基本安全和必填 frontmatter，计算内容摘要并创建当前用户的安装记录；安装阶段不执行脚本、不自动安装依赖。
-4. 启用后更新该用户的 `skill_revision`。新 Step 获取不可变 Agent 能力快照；常驻 Prompt 不展开完整能力目录或正文，`capability_search` 按 query、kinds 和有界 limit 检索 Skill/MCP/可调用 Agent 的名称、简介及标签。
+4. 启用后更新该用户的 `skill_revision`。新 Step 获取不可变 Agent 能力快照；常驻 Prompt 不展开完整能力目录或正文，`capability_search` 接收完整自包含 userRequest 和可选 kinds/limit，先过滤授权候选，再复用当前模型在 Skill/MCP/可调用 Agent 的名称与简介上做语义选择。
 5. 模型在同一份能力搜索结果中判断使用 Skill、MCP、Agent、组合或都不使用；选择后分别调用 `skill_load`、`mcp_load`、`agent_call`，执行入口重新校验当前快照。Skill loader 只加载选中项的完整 `SKILL.md`，其中显式引用的资料和资源再按需读取。
 6. 当 Skill 指令要求运行脚本时，模型调用已有 `bash` 工具。Runtime Worker 先解析应用内固定版本的 `node`、`python3`、`python`，开发模式才回退宿主解释器；第三方依赖缺失时返回明确错误，不静默安装。
 7. 首次执行脚本前按当前用户和 Skill 内容摘要确认风险；执行统一经过超时、取消、输出限制、工作目录、环境变量收敛和日志审计。敏感凭据只有经明确授权才按名称注入。
@@ -1069,20 +1069,20 @@ MCP 服务页面包含：
 
 ### 11.3 Runtime 状态映射
 
-| Runtime 事实                     | UI 表现                                         |
-| -------------------------------- | ----------------------------------------------- |
-| 当前 `LocalUser`                 | 侧栏用户身份和用户切换菜单                      |
-| `agent.inbox.spliced(next-turn)` | 输入区上方的持久等待队列                        |
-| `agent.inbox.spliced(promote)`   | Queue Item 转为“将在当前任务下一步介入”         |
-| `conversation-event.*`           | 同一事项的聊天分组和状态                        |
-| `turn.started/ended`             | 当前执行开始、停止、错误或完成                  |
-| `step.started/ended`             | 执行过程中的模型步骤                            |
-| `assistant.chunk`                | 流式回答                                        |
-| `tool.call/result`               | 工具卡片和执行轨迹                              |
-| `interaction.requested`          | 审批、选择或表单弹层                            |
-| `request.context`/usage          | 调试或统计视图中的上下文与 token                |
-| `configuration.changed(model)`   | 刷新当前用户的模型服务、模型和默认模型状态      |
-| `configuration.changed(skill)`   | 刷新当前用户的 Skill、授权和 Tool Registry 状态 |
+| Runtime 事实                     | UI 表现                                          |
+| -------------------------------- | ------------------------------------------------ |
+| 当前 `LocalUser`                 | 侧栏用户身份和用户切换菜单                       |
+| `agent.inbox.spliced(next-turn)` | 输入区上方的持久等待队列                         |
+| `agent.inbox.spliced(promote)`   | Queue Item 转为“将在当前任务下一步介入”          |
+| `conversation-event.*`           | 同一事项的聊天分组和状态                         |
+| `turn.started/ended`             | 当前执行开始、停止、错误或完成                   |
+| `step.started/ended`             | 执行过程中的模型步骤                             |
+| `assistant.chunk`                | 流式回答                                         |
+| `tool.call/result`               | 工具卡片和执行轨迹                               |
+| `interaction.requested`          | 审批、选择或表单弹层                             |
+| `request.context`/usage          | 调试或统计视图中的上下文与 token                 |
+| `configuration.changed(model)`   | 刷新当前用户的模型服务、模型和默认模型状态       |
+| `configuration.changed(skill)`   | 刷新当前用户的 Skill、授权和 Tool Registry 状态  |
 | `configuration.changed(mcp)`     | 刷新当前用户 MCP Server、Tool Catalog 与健康状态 |
 
 ### 11.4 UI 数据一致性
@@ -1462,15 +1462,15 @@ promptEpoch
 
 ## 16. 里程碑与交付物
 
-| 里程碑                 | 可演示能力                             | 关键交付物                                                                                           |
-| ---------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| M1 Client 运行底座完成 | 最终进程、数据和安全基础设施可验证     | 阶段 1 技术落地方案、工程骨架、Bridge、Worker、EventStore、User Scope、测试 Harness                  |
-| M2 Runtime 完成        | Headless 环境完整执行所有 Agent 场景   | 阶段 2 技术落地方案、完整 Driver、Context、Model/Skill Snapshot、Tools、Projection、Recovery |
-| M3 Client 完成         | 用户可通过正式 UI 使用全部 V1 能力     | 阶段 3 技术落地方案、参考 UI 复刻、双用户、会话、运行控制、模型管理、Skill 管理和 Interaction        |
-| M4 模型与上下文完成    | 模型能力可解析，长任务上下文可有界收敛 | 阶段 4 技术落地方案、模型目录、供应商预制、Compaction、迁移和定向测试                                |
+| 里程碑                       | 可演示能力                                                             | 关键交付物                                                                                      |
+| ---------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| M1 Client 运行底座完成       | 最终进程、数据和安全基础设施可验证                                     | 阶段 1 技术落地方案、工程骨架、Bridge、Worker、EventStore、User Scope、测试 Harness             |
+| M2 Runtime 完成              | Headless 环境完整执行所有 Agent 场景                                   | 阶段 2 技术落地方案、完整 Driver、Context、Model/Skill Snapshot、Tools、Projection、Recovery    |
+| M3 Client 完成               | 用户可通过正式 UI 使用全部 V1 能力                                     | 阶段 3 技术落地方案、参考 UI 复刻、双用户、会话、运行控制、模型管理、Skill 管理和 Interaction   |
+| M4 模型与上下文完成          | 模型能力可解析，长任务上下文可有界收敛                                 | 阶段 4 技术落地方案、模型目录、供应商预制、Compaction、迁移和定向测试                           |
 | M4.5 MCP 与首个记忆 MCP 完成 | 外部 MCP Tool 可受控接入，记忆 MCP 可跨 Session 召回并完成实际工具调用 | 阶段 4.5 技术落地方案、MCP Tool Bridge/管理 UI、Pi 四个第一方工具、外部记忆 MCP 和隔离/恢复测试 |
-| M4.5.5 权限边界完成    | Tool 能力、单次审批和执行沙箱可解释、可审计且可恢复 | 阶段 4.5.5 技术落地方案、统一权限门、平台沙箱、审批 UI、V8 migration 与安全测试                    |
-| M5 可发布              | 安装、升级、诊断和回滚就绪             | 阶段 5 技术落地方案、签名安装包、发布检查表、用户与运维文档                                          |
+| M4.5.5 权限边界完成          | Tool 能力、单次审批和执行沙箱可解释、可审计且可恢复                    | 阶段 4.5.5 技术落地方案、统一权限门、平台沙箱、审批 UI、V8 migration 与安全测试                 |
+| M5 可发布                    | 安装、升级、诊断和回滚就绪                                             | 阶段 5 技术落地方案、签名安装包、发布检查表、用户与运维文档                                     |
 
 每个里程碑都同时交付该阶段评审通过的技术落地方案、正式实现和验收结果。阶段 1–2 不要求用临时 UI 包装成“可演示 MVP”；阶段 3 形成完整 Client 产品。
 
@@ -1491,10 +1491,10 @@ promptEpoch
 | 模型配置与执行快照漂移   | 执行中途切换模型、密钥或参数导致行为不可解释     | 用户配置 revision、Step 不可变快照、请求事件记录快照摘要                                              |
 | Skill 来源和脚本风险     | 社区 Skill 可能包含危险指令、脚本或依赖          | 来源提示、目录校验、内容摘要、首次执行确认、受控环境变量、超时/取消和审计；明确宿主机执行不是安全沙箱 |
 | Skill 启停与活动调用竞态 | 脚本执行中目录被更新或新 Step 仍看到已停用 Skill | Skill revision、Step 快照和执行期间文件保留；具体策略在对应阶段方案确认                               |
-| 长期记忆错误或串用户     | 新 Session 使用过时/错误偏好或泄露另一用户信息   | 外部 MCP 按用户/Server 独立作用域、工具审核、结果未知核验、双用户负向测试和可见 MCP 管理 UI            |
+| 长期记忆错误或串用户     | 新 Session 使用过时/错误偏好或泄露另一用户信息   | 外部 MCP 按用户/Server 独立作用域、工具审核、结果未知核验、双用户负向测试和可见 MCP 管理 UI           |
 | MCP Server 或连接失效    | 外部工具/记忆不可用或结果不确定                  | 独立故障域、有界指数重连、可靠 dispose、原子 generation、结果未知后核验和禁止假成功                   |
 | MCP Schema 挤占上下文    | 每轮固定输入增大、历史容量下降                   | 全量管理目录与运行目录分离、新工具默认关闭、逐工具启用、token 估算、Step Snapshot 硬预算              |
-| 第三方 MCP 权限过大      | 本地命令、网络或 Credential 泄漏                 | command 数组启动、Credential 隔离、默认关闭/独占/审批、URL/DNS/IP 校验、禁止隐式依赖安装            |
+| 第三方 MCP 权限过大      | 本地命令、网络或 Credential 泄漏                 | command 数组启动、Credential 隔离、默认关闭/独占/审批、URL/DNS/IP 校验、禁止隐式依赖安装              |
 | 参考 UI Mock 逻辑被误用  | 产品行为偏离 Runtime 设计                        | 参考 UI 只读，正式 UI 只调用 typed Command/Projection                                                 |
 | 阶段核心契约遗漏         | 阶段内反复修改 Event、DB、Driver、IPC 和 UI      | 在对应阶段技术落地方案中确认该阶段状态图、Schema、Contract 与测试，不提前铺开后续阶段                 |
 | 详细设计变成过度平台化   | 延迟产品交付并增加无用抽象                       | 每次只设计当前阶段交付范围，保持单包和单 Agent，不设计 Worker/Subagent/通用插件平台                   |

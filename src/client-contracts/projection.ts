@@ -134,6 +134,12 @@ export interface ProjectedToolCall {
   meta?: unknown;
   presentation?: unknown;
   executionFacts?: unknown;
+  progress?: {
+    current: number;
+    total?: number;
+    message: string;
+    updatedAt: string;
+  };
 }
 
 export interface ProjectedStream {
@@ -748,6 +754,22 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
       }
       break;
     }
+    case 'tool.progress': {
+      const toolCallId = stringAt(payload, 'toolCallId');
+      if (!toolCallId) break;
+      const call = state.toolCalls.get(toolCallId);
+      const current = numberAt(payload, 'progress');
+      const message = stringAt(payload, 'message');
+      if (!call || current === undefined || !message) break;
+      const total = numberAt(payload, 'total');
+      call.progress = {
+        current,
+        ...(total === undefined ? {} : { total }),
+        message,
+        updatedAt: event.occurredAt,
+      };
+      break;
+    }
     case 'tool.result': {
       const content = toolOutputText(payload?.output);
       const eventId = stringAt(payload, 'eventId');
@@ -763,6 +785,7 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
         call.meta = payload?.meta;
         call.presentation = payload?.presentation ?? call.presentation;
         call.executionFacts = payload?.executionFacts;
+        delete call.progress;
       }
       state.messages.push({ seq: event.seq, role: 'tool', content, eventId, turnId, toolCallId });
       break;

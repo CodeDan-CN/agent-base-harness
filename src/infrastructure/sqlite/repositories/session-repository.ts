@@ -7,6 +7,7 @@ import type {
   AppendResult,
 } from '../../../shared/domain/session';
 import type { LocalUserId } from '../../../shared/domain/user';
+import { DEFAULT_AGENT_ID, type SessionOrigin } from '../../../shared/domain/agent';
 import { BridgeError } from '../../../shared/contracts/errors';
 import {
   permissionPresetFromStorage,
@@ -21,6 +22,9 @@ interface SessionRow {
   title: string;
   status: 'active' | 'archived';
   permission_preset?: StoredPermissionPreset;
+  agent_id?: string | null;
+  origin?: SessionOrigin;
+  parent_session_id?: string | null;
   next_seq: number;
   version: number;
   created_at: string;
@@ -46,6 +50,7 @@ export class SessionRepository {
   private readonly hasRuntimeColumns: boolean;
   private readonly hasPermissionPresetColumn: boolean;
   private readonly hasUserPermissionPresetColumn: boolean;
+  private readonly hasAgentScopeColumns: boolean;
 
   constructor(private readonly db: SqliteDatabase) {
     const eventColumns = this.db.prepare('PRAGMA table_info(session_events)').all() as Array<{
@@ -64,23 +69,55 @@ export class SessionRepository {
     this.hasUserPermissionPresetColumn = userColumns.some(
       (column) => column.name === 'session_permission_preset',
     );
+    this.hasAgentScopeColumns = sessionColumns.some((column) => column.name === 'agent_id');
   }
 
-  createSession(input: { id: string; userId: LocalUserId; title: string; now: string }): Session {
-    const permissionPreset = this.getUserPermissionPreset(input.userId);
+  createSession(input: {
+    id: string;
+    userId: LocalUserId;
+    title: string;
+    agentId: string;
+    origin: SessionOrigin;
+    parentSessionId: string | null;
+    permissionPreset?: PermissionPreset;
+    now: string;
+  }): Session {
+    const permissionPreset = input.permissionPreset ?? this.getUserPermissionPreset(input.userId);
     const session: Session = {
       id: input.id,
       userId: input.userId,
       title: input.title,
       status: 'active',
       permissionPreset,
+      agentId: input.agentId,
+      origin: input.origin,
+      parentSessionId: input.parentSessionId,
       nextSeq: 1,
       version: 0,
       createdAt: input.now,
       updatedAt: input.now,
     };
     try {
-      if (this.hasPermissionPresetColumn) {
+      if (this.hasPermissionPresetColumn && this.hasAgentScopeColumns) {
+        this.db
+          .prepare(
+            `INSERT INTO sessions
+               (id, user_id, title, status, permission_preset, agent_id, origin, parent_session_id,
+                next_seq, version, created_at, updated_at)
+             VALUES (?, ?, ?, 'active', ?, ?, ?, ?, 1, 0, ?, ?)`,
+          )
+          .run(
+            session.id,
+            session.userId,
+            session.title,
+            permissionPresetToStorage(session.permissionPreset),
+            session.agentId,
+            session.origin,
+            session.parentSessionId,
+            session.createdAt,
+            session.updatedAt,
+          );
+      } else if (this.hasPermissionPresetColumn) {
         this.db
           .prepare(
             `INSERT INTO sessions
@@ -121,6 +158,50 @@ export class SessionRepository {
       .prepare('SELECT * FROM sessions WHERE user_id = ? ORDER BY updated_at DESC')
       .all(userId) as SessionRow[];
     return rows.map((r) => this.mapSession(r));
+  }
+
+  listByAgent(
+    userId: LocalUserId,
+    agentId: string,
+    origin: SessionOrigin = 'direct',
+    limit = 50,
+    offset = 0,
+  ): Session[] {
+    if (!this.hasAgentScopeColumns) {
+      return agentId === DEFAULT_AGENT_ID && origin === 'direct'
+        ? this.listSessions(userId)
+            .filter((session) => session.status === 'active')
+            .slice(offset, offset + limit)
+        : [];
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM sessions
+         WHERE user_id = ? AND agent_id = ? AND origin = ? AND status = 'active'
+         ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?`,
+      )
+      .all(userId, agentId, origin, limit, offset) as SessionRow[];
+    return rows.map((row) => this.mapSession(row));
+  }
+
+  /**
+   * Agent runtime defaults apply to direct sessions owned by that Agent.
+   * Delegated sessions intentionally keep their narrower, captured preset.
+   */
+  setPermissionPresetForAgent(
+    userId: LocalUserId,
+    agentId: string,
+    preset: PermissionPreset,
+    now: string,
+  ): void {
+    if (!this.hasPermissionPresetColumn || !this.hasAgentScopeColumns) return;
+    this.db
+      .prepare(
+        `UPDATE sessions
+         SET permission_preset = ?, updated_at = ?
+         WHERE user_id = ? AND agent_id = ? AND origin = 'direct'`,
+      )
+      .run(permissionPresetToStorage(preset), now, userId, agentId);
   }
 
   append(cmd: AppendCommand): AppendResult {
@@ -397,6 +478,9 @@ export class SessionRepository {
       title: row.title,
       status: row.status,
       permissionPreset: permissionPresetFromStorage(row.permission_preset),
+      agentId: row.agent_id ?? DEFAULT_AGENT_ID,
+      origin: row.origin ?? 'direct',
+      parentSessionId: row.parent_session_id ?? null,
       nextSeq: row.next_seq,
       version: row.version,
       createdAt: row.created_at,

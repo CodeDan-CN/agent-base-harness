@@ -44,9 +44,22 @@ import {
   skillDescriptionUpdateParamsSchema,
 } from './management';
 import { modelCallStatisticsParamsSchema, modelCallStatisticsSnapshotSchema } from './statistics';
+import {
+  agentCreateParamsSchema,
+  agentDelegateToggleParamsSchema,
+  agentHomeReorderParamsSchema,
+  agentManagementSnapshotSchema,
+  agentMcpToggleParamsSchema,
+  agentRuntimeDefaultsSetParamsSchema,
+  agentNavigationParamsSchema,
+  agentNavigationSnapshotSchema,
+  agentSkillToggleParamsSchema,
+  agentTargetParamsSchema,
+  agentUpdateParamsSchema,
+} from './agent-management';
 
 /** Stage 1 Bridge API 版本。preload 请求必须携带，不支持版本明确拒绝。 */
-export const API_VERSION = 1;
+export const API_VERSION = 2;
 
 export const switchUserParamsSchema = z
   .object({
@@ -72,6 +85,9 @@ export const queryRequestSchema = z
       'model-call-statistics.query',
       'skill-management.snapshot',
       'mcp-management.snapshot',
+      'agent-management.snapshot',
+      'agent.navigation',
+      'agent.delegation.get',
     ]),
     params: z.unknown().optional(),
   })
@@ -129,6 +145,17 @@ export const commandRequestSchema = z.discriminatedUnion('method', [
   command('mcp-server.archive', mcpServerTargetParamsSchema),
   command('mcp-server.refresh', z.object({ id: z.string().min(1).max(128) }).strict()),
   command('mcp-tool.toggle', mcpToolToggleParamsSchema),
+  command('agent.create', agentCreateParamsSchema),
+  command('agent.update', agentUpdateParamsSchema),
+  command('agent.runtime.defaults.set', agentRuntimeDefaultsSetParamsSchema),
+  command('agent.archive', agentTargetParamsSchema),
+  command('agent.default.set', agentTargetParamsSchema),
+  command('agent.home.add', agentTargetParamsSchema),
+  command('agent.home.remove', agentTargetParamsSchema),
+  command('agent.home.reorder', agentHomeReorderParamsSchema),
+  command('agent.skill.toggle', agentSkillToggleParamsSchema),
+  command('agent.mcp.toggle', agentMcpToggleParamsSchema),
+  command('agent.delegate.toggle', agentDelegateToggleParamsSchema),
 ]);
 export type CommandRequestSchema = z.infer<typeof commandRequestSchema>;
 
@@ -157,6 +184,10 @@ export function queryParamsSchema(method: string): z.ZodTypeAny | undefined {
       return turnReadParamsSchema;
     case 'model-call-statistics.query':
       return modelCallStatisticsParamsSchema;
+    case 'agent.navigation':
+      return agentNavigationParamsSchema;
+    case 'agent.delegation.get':
+      return z.object({ delegationId: z.string().min(1).max(128) }).strict();
     default:
       return undefined;
   }
@@ -168,6 +199,9 @@ const sessionResultSchema = z
     userId: z.string(),
     title: z.string(),
     status: z.enum(['active', 'archived']),
+    agentId: z.string(),
+    origin: z.enum(['direct', 'delegated']),
+    parentSessionId: z.string().nullable(),
     nextSeq: z.number().int().positive(),
     version: z.number().int().nonnegative(),
     createdAt: z.string(),
@@ -251,6 +285,21 @@ export function runtimeResponseSchema(method: string): z.ZodTypeAny | undefined 
       return z.object({ id: z.string(), toolCount: z.number().int().nonnegative() }).strict();
     case 'mcp-tool.toggle':
       return z.object({ serverId: z.string(), rawName: z.string(), enabled: z.boolean() }).strict();
+    case 'agent.create':
+    case 'agent.update':
+    case 'agent.runtime.defaults.set':
+      return agentProfileSchemaForResponse;
+    case 'agent.archive':
+    case 'agent.default.set':
+    case 'agent.home.add':
+    case 'agent.home.remove':
+      return z.object({ agentId: z.string() }).strict();
+    case 'agent.home.reorder':
+      return z.object({ agentIds: z.array(z.string()) }).strict();
+    case 'agent.skill.toggle':
+    case 'agent.mcp.toggle':
+    case 'agent.delegate.toggle':
+      return z.object({ revision: z.number().int().nonnegative() }).passthrough();
     case 'session.list':
       return z.array(sessionResultSchema);
     case 'session.snapshot':
@@ -275,10 +324,25 @@ export function runtimeResponseSchema(method: string): z.ZodTypeAny | undefined 
       return skillManagementSnapshotSchema;
     case 'mcp-management.snapshot':
       return mcpManagementSnapshotSchema;
+    case 'agent-management.snapshot':
+      return agentManagementSnapshotSchema;
+    case 'agent.navigation':
+      return agentNavigationSnapshotSchema;
+    case 'agent.delegation.get':
+      return z.object({}).passthrough();
     default:
       return undefined;
   }
 }
+
+const agentProfileSchemaForResponse = z
+  .object({
+    id: z.string(),
+    userId: z.string(),
+    name: z.string(),
+    status: z.enum(['active', 'archived']),
+  })
+  .passthrough();
 
 function command<T extends string, S extends z.ZodTypeAny>(method: T, params: S) {
   return z

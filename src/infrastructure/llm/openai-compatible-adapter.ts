@@ -9,6 +9,7 @@ import type {
 import { validateModelResponse } from '../../runtime/model';
 import { OpenAiStreamNormalizer } from '../../runtime/provider-normalizers';
 import { readAssistantPhase } from '../../client-contracts/assistant-output-policy';
+import type { Logger } from '../logging/logger';
 
 type FetchFn = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -17,6 +18,7 @@ export interface OpenAiCompatibleAdapterOptions {
   fetch?: FetchFn;
   providerType?: string;
   onCredentialLoaded?: (secret: string) => void;
+  logger?: Pick<Logger, 'warn'>;
 }
 
 /** OpenAI Chat Completions 兼容 Provider。明文凭据仅在发送边界短暂读取。 */
@@ -25,12 +27,14 @@ export class OpenAiCompatibleAdapter implements LlmAdapter {
   private readonly credentialStore: CredentialStore;
   private readonly fetch: FetchFn;
   private readonly onCredentialLoaded?: (secret: string) => void;
+  private readonly logger?: Pick<Logger, 'warn'>;
 
   constructor(options: OpenAiCompatibleAdapterOptions) {
     this.providerType = options.providerType ?? 'openai-compatible';
     this.credentialStore = options.credentialStore;
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.onCredentialLoaded = options.onCredentialLoaded;
+    this.logger = options.logger;
   }
 
   async generate(request: ModelRequest, signal: AbortSignal): Promise<ModelResponse> {
@@ -68,22 +72,61 @@ export class OpenAiCompatibleAdapter implements LlmAdapter {
     const credential = await this.resolveCredential(request.model.credentialRef);
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (credential) headers.authorization = `Bearer ${credential}`;
+    const requestBody = JSON.stringify(buildRequestBody(request, stream));
+    const requestStartedAt = Date.now();
 
     let response: Response;
     try {
       response = await this.fetch(completionUrl(request.model.endpoint), {
         method: 'POST',
         headers,
-        body: JSON.stringify(buildRequestBody(request, stream)),
+        body: requestBody,
         signal,
         redirect: 'error',
       });
     } catch (error) {
+      this.logger?.warn('模型服务网络请求失败', {
+        requestId: request.requestId,
+        model: request.model.remoteModelId,
+        providerType: request.model.providerType,
+        endpoint: completionUrl(request.model.endpoint),
+        durationMs: Date.now() - requestStartedAt,
+        requestBodyBytes: new TextEncoder().encode(requestBody).byteLength,
+        messageCount: request.messages.length,
+        toolCount: request.tools.length,
+        maxOutputTokens: request.maxOutputTokens,
+        stream,
+        cause: error instanceof Error ? error.message : String(error),
+      });
       if (signal.aborted) throw providerError('MODEL_REQUEST_ABORTED', error);
       throw providerError('MODEL_PROVIDER_UNAVAILABLE', error);
     }
     if (!response.ok) {
       const errorBody = await response.text().catch(() => '');
+      this.logger?.warn('模型服务拒绝请求', {
+        requestId: request.requestId,
+        model: request.model.remoteModelId,
+        providerType: request.model.providerType,
+        endpoint: completionUrl(request.model.endpoint),
+        httpStatus: response.status,
+        httpStatusText: response.statusText,
+        durationMs: Date.now() - requestStartedAt,
+        requestBodyBytes: new TextEncoder().encode(requestBody).byteLength,
+        messageCount: request.messages.length,
+        messageRoles: request.messages.map((message) => message.role),
+        assistantToolCallMessages: request.messages.filter(
+          (message) => message.role === 'assistant' && (message.toolCalls?.length ?? 0) > 0,
+        ).length,
+        toolResultMessages: request.messages.filter((message) => message.role === 'tool').length,
+        reasoningHistoryMessages: request.messages.filter(
+          (message) => Boolean(message.reasoningContent),
+        ).length,
+        toolCount: request.tools.length,
+        toolSchemaBytes: new TextEncoder().encode(JSON.stringify(request.tools)).byteLength,
+        maxOutputTokens: request.maxOutputTokens,
+        stream,
+        errorBodyPreview: boundedProviderErrorBody(errorBody),
+      });
       if (response.status === 401 || response.status === 403) {
         throw providerError('MODEL_AUTHENTICATION_FAILED');
       }
@@ -110,6 +153,11 @@ export class OpenAiCompatibleAdapter implements LlmAdapter {
     this.onCredentialLoaded?.(credential);
     return credential;
   }
+}
+
+function boundedProviderErrorBody(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized ? normalized.slice(0, 2_000) : '[空响应正文]';
 }
 
 function buildRequestBody(request: ModelRequest, stream: boolean): Record<string, unknown> {

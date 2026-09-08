@@ -21,6 +21,7 @@ import {
   Search,
   Settings2,
   Monitor,
+  Bot,
   Moon,
   Sun,
   Trash2,
@@ -45,6 +46,7 @@ import type { ThemePreference } from '../theme';
 import type { SettingsTab } from '../types';
 import { TextPromptDialog, useConfirmDialog } from './Dialogs';
 import { SelectMenu, CategoryCombo } from './SelectMenu';
+import { AgentSettings } from './agents/AgentSettings';
 
 interface SettingsModalProps {
   initialTab?: SettingsTab;
@@ -79,6 +81,9 @@ export function SettingsModal(props: SettingsModalProps): JSX.Element {
           <ArrowLeft size={15} /> 返回应用
         </button>
         <div className="settings-nav-separator" />
+        <button className={tab === 'agents' ? 'active' : ''} onClick={() => setTab('agents')}>
+          <Bot size={15} /> 智能体
+        </button>
         <button
           className={tab === 'appearance' ? 'active' : ''}
           onClick={() => setTab('appearance')}
@@ -102,7 +107,11 @@ export function SettingsModal(props: SettingsModalProps): JSX.Element {
         </button>
       </aside>
       <section className="settings-content">
-        {tab === 'appearance' ? (
+        {tab === 'agents' ? (
+          <div className="settings-page agents-page">
+            <AgentSettings onNotify={props.onNotify} />
+          </div>
+        ) : tab === 'appearance' ? (
           <AppearanceSettings {...props} />
         ) : tab === 'models' ? (
           <ModelSettings {...props} />

@@ -8,3 +8,4 @@ export * from './management';
 export * from './statistics';
 export * from './auth';
 export * from './version';
+export * from './agent-management';

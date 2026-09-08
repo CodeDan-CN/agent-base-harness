@@ -2,7 +2,7 @@ import type { SkillInstallation } from '../shared/domain/skill';
 import { isHistoricalConversationMessage } from '../client-contracts/assistant-output-policy';
 import type { PermissionPreset } from '../shared/domain/permission';
 import type { RuntimeProjection } from '../client-contracts/projection';
-import { readUserMemoryProfile } from '../infrastructure/workspace/session-workspace';
+import { readAgentMemoryProfile } from '../infrastructure/workspace/agent-memory-profile';
 import type { LocalUserId } from '../shared/domain/user';
 import type { ModelToolDefinition, RuntimeMessage } from './model';
 import { MINIMAL_SYSTEM_PROMPT } from './model';
@@ -13,6 +13,8 @@ export const FULL_ACCESS_AUTONOMY_PROMPT =
 
 export interface ContextProjectionInput {
   userId?: LocalUserId;
+  agentId?: string;
+  agentInstructions?: string;
   projection: RuntimeProjection;
   eventId: string;
   turnId: string;
@@ -82,6 +84,8 @@ export class ContextProjector {
 
     const stableSystem = this.buildStableSystem(
       input.userId,
+      input.agentId,
+      input.agentInstructions,
       input.tools,
       input.permissionPreset ?? 'guarded',
     );
@@ -244,16 +248,24 @@ export class ContextProjector {
 
   private buildStableSystem(
     userId: LocalUserId | undefined,
+    agentId: string | undefined,
+    agentInstructions: string | undefined,
     tools: readonly ModelToolDefinition[],
     permissionPreset: PermissionPreset,
   ): string {
     const toolText = tools.map((tool) => tool.name).join('、') || '无';
     const autonomy = permissionPreset === 'full-access' ? `\n\n${FULL_ACCESS_AUTONOMY_PROMPT}` : '';
-    const profile = this.appDataDir && userId ? readUserMemoryProfile(this.appDataDir, userId) : '';
+    const profile =
+      this.appDataDir && userId && agentId
+        ? readAgentMemoryProfile(this.appDataDir, userId, agentId)
+        : '';
     const memoryProfile = profile
-      ? `\n\n<user_memory_profile>\n${profile}\n</user_memory_profile>`
+      ? `\n\n<agent_memory_profile>\n${profile}\n</agent_memory_profile>`
       : '';
-    return `${MINIMAL_SYSTEM_PROMPT}${memoryProfile}${autonomy}\n\n可用工具：${toolText}`;
+    const instructions = agentInstructions?.trim()
+      ? `\n\n<agent_instructions>\n${agentInstructions.trim()}\n</agent_instructions>`
+      : '';
+    return `${MINIMAL_SYSTEM_PROMPT}${instructions}${memoryProfile}${autonomy}\n\n可用工具：${toolText}`;
   }
 }
 

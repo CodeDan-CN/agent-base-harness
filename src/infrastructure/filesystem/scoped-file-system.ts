@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { sessionWorkspacePath } from '../workspace/session-workspace';
+import { agentMemoryProfilePath } from '../workspace/agent-memory-profile';
 
 export class ScopedFileSystemError extends Error {
   constructor(
@@ -15,6 +16,7 @@ export class ScopedFileSystemError extends Error {
 
 export interface FileScope {
   userId: string;
+  agentId?: string;
   sessionId: string;
 }
 
@@ -163,34 +165,41 @@ export class ScopedFileSystem {
     const configuredRoot = this.workspace(scope);
     await mkdir(configuredRoot, { recursive: true });
     const root = await realpath(configuredRoot);
+    const isAgentMemory = requested === 'agent-memory://profile';
+    if (isAgentMemory && !scope.agentId) throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
+    if (isAgentMemory) return this.resolveAgentMemory(scope, allowMissing);
     const absolute = path.isAbsolute(requested)
       ? path.resolve(requested)
       : path.resolve(root, requested);
     const outsideWorkspace = !isInside(root, absolute);
-    if (outsideWorkspace && !allowOutsideWorkspace) {
+    if (outsideWorkspace && !allowOutsideWorkspace && !isAgentMemory) {
       throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
     }
     if (!allowMissing) {
       const canonical = await canonicalExisting(absolute);
-      if (!isInside(root, canonical) && !allowOutsideWorkspace) {
+      if (!isInside(root, canonical) && !allowOutsideWorkspace && !isAgentMemory) {
         throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
       }
       return {
         absolute: canonical,
-        display: isInside(root, canonical) ? path.relative(root, canonical) || '.' : canonical,
+        display: isAgentMemory
+          ? 'agent-memory://profile'
+          : isInside(root, canonical)
+            ? path.relative(root, canonical) || '.'
+            : canonical,
       };
     }
     const parent = path.dirname(absolute);
     await mkdir(parent, { recursive: true });
     const canonicalParent = await realpath(parent);
-    if (!isInside(root, canonicalParent) && !allowOutsideWorkspace) {
+    if (!isInside(root, canonicalParent) && !allowOutsideWorkspace && !isAgentMemory) {
       throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
     }
     try {
       const metadata = await lstat(absolute);
       if (metadata.isSymbolicLink()) throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
       const canonicalTarget = await realpath(absolute);
-      if (!isInside(root, canonicalTarget) && !allowOutsideWorkspace) {
+      if (!isInside(root, canonicalTarget) && !allowOutsideWorkspace && !isAgentMemory) {
         throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
       }
     } catch (error) {
@@ -202,7 +211,41 @@ export class ScopedFileSystem {
     };
   }
 
+  private async resolveAgentMemory(
+    scope: FileScope,
+    allowMissing: boolean,
+  ): Promise<{ absolute: string; display: string }> {
+    const absolute = agentMemoryProfilePath(this.appDataDir, scope.userId, scope.agentId!);
+    const agentRoot = path.dirname(absolute);
+    const agentsRoot = path.dirname(agentRoot);
+    await mkdir(agentRoot, { recursive: true });
+    const [canonicalAgentsRoot, canonicalAgentRoot] = await Promise.all([
+      realpath(agentsRoot),
+      realpath(agentRoot),
+    ]);
+    const expectedAgentRoot = path.join(canonicalAgentsRoot, encodeURIComponent(scope.agentId!));
+    if (canonicalAgentRoot !== expectedAgentRoot) {
+      throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
+    }
+    try {
+      const metadata = await lstat(absolute);
+      if (metadata.isSymbolicLink()) throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
+      const canonical = await realpath(absolute);
+      if (!isInside(canonicalAgentRoot, canonical)) {
+        throw new ScopedFileSystemError('PATH_NOT_ALLOWED');
+      }
+      return { absolute: canonical, display: 'agent-memory://profile' };
+    } catch (error) {
+      if (!allowMissing || !isMissing(error)) throw error;
+      return {
+        absolute: path.join(canonicalAgentRoot, path.basename(absolute)),
+        display: 'agent-memory://profile',
+      };
+    }
+  }
+
   isOutsideWorkspace(scope: FileScope, requested: string): boolean {
+    if (requested === 'agent-memory://profile') return false;
     const workspace = path.resolve(this.workspace(scope));
     const resolved = path.isAbsolute(requested)
       ? path.resolve(requested)

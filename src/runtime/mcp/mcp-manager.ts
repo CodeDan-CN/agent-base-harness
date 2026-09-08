@@ -38,12 +38,12 @@ import {
   BUNDLED_MEMORY_SERVER_ID,
   BUNDLED_NODE_COMMAND,
 } from './bundled-memory';
-
-interface Connection {
-  client: Client;
-  generation: number;
-  closing: boolean;
-}
+import {
+  McpInstanceCapacityError,
+  McpInstanceManager,
+  type McpInstanceKey,
+  type McpInstanceView,
+} from './mcp-instance-manager';
 
 interface McpCanonicalResult {
   content: JsonValue[];
@@ -60,13 +60,19 @@ interface McpCatalog {
   tools: McpCatalogEntry[];
 }
 
-const mcpLoadInput = z.object({ serverName: z.string().min(1).max(200) }).strict();
+const mcpLoadInput = z.object({ capabilityId: z.string().min(1).max(260) }).strict();
+// MCP 服务会在模型调用期间发送 progress 心跳：90 秒无心跳才认为空闲超时，
+// 单次工具调用仍有 10 分钟硬上限，避免无限续期。
+const MCP_TOOL_IDLE_TIMEOUT_MS = 90_000;
+const MCP_TOOL_MAX_TOTAL_TIMEOUT_MS = 10 * 60_000;
+
+interface InstanceRoute {
+  scopeType: 'user' | 'agent';
+  scopeId: string;
+}
 
 export class McpManager {
-  private readonly connections = new Map<string, Connection>();
-  private readonly connecting = new Map<string, Promise<Client>>();
-  private readonly reconnectAttempts = new Map<string, number>();
-  private readonly reconnectTimers = new Map<string, NodeJS.Timeout>();
+  private readonly instances = new McpInstanceManager<Client>();
   private disposed = false;
 
   constructor(
@@ -84,33 +90,28 @@ export class McpManager {
   start(): void {
     for (const user of this.deps.repos.users.listUsers()) {
       this.rebuildUserTools(user.id);
-      for (const server of this.deps.repos.mcp.listServers(user.id)) {
-        if (server.status === 'enabled') {
-          void this.refreshServer(user.id, server.id).catch((error) => {
-            this.deps.logger.warn('MCP startup connection failed', {
-              userId: user.id,
-              serverId: server.id,
-              error: safeError(error),
-            });
-            this.scheduleReconnect(user.id, server.id);
-          });
-        }
-      }
     }
   }
 
   async refreshServer(userId: LocalUserId, serverId: string): Promise<number> {
     const server = this.requireEnabledServer(userId, serverId);
-    const client = await this.connect(server);
-    const count = await this.discover(server, client);
-    this.rebuildUserTools(userId);
-    return count;
+    const route = userRoute(server.userId);
+    const lease = await this.acquire(server, route);
+    try {
+      const count = await lease.runExclusive((client) =>
+        this.discover(server, client, lease.generation),
+      );
+      this.rebuildUserTools(userId);
+      return count;
+    } finally {
+      lease.release();
+    }
   }
 
   async testServer(server: McpServer): Promise<{ toolCount: number }> {
     await validateServerNetwork(server);
     const client = this.createClient(server);
-    const transport = await this.createTransport(server);
+    const transport = await this.createTransport(server, userRoute(server.userId));
     try {
       await client.connect(transport);
       return { toolCount: (await listAllTools(client)).length };
@@ -139,40 +140,24 @@ export class McpManager {
     );
   }
 
+  instanceSnapshot(userId: LocalUserId): readonly McpInstanceView[] {
+    return this.instances.snapshot(userId);
+  }
+
   async close(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     for (const user of this.deps.repos.users.listUsers()) {
       this.deps.tools.clearUserTools(user.id);
     }
-    for (const timer of this.reconnectTimers.values()) clearTimeout(timer);
-    this.reconnectTimers.clear();
-    const entries = [...this.connections.entries()];
-    await Promise.all(
-      entries.map(async ([key, connection]) => {
-        connection.closing = true;
-        await connection.client.close().catch(() => undefined);
-        this.connections.delete(key);
-      }),
-    );
+    await this.instances.close();
   }
 
-  private async connect(server: McpServer): Promise<Client> {
-    const key = connectionKey(server.userId, server.id);
-    const current = this.connections.get(key);
-    if (current) return current.client;
-    const pending = this.connecting.get(key);
-    if (pending) return pending;
-    const task = this.openConnection(server);
-    this.connecting.set(key, task);
-    try {
-      return await task;
-    } finally {
-      this.connecting.delete(key);
-    }
-  }
-
-  private async openConnection(server: McpServer): Promise<Client> {
+  private async openConnection(
+    server: McpServer,
+    route: InstanceRoute,
+    instanceKey: McpInstanceKey,
+  ): Promise<Client> {
     await validateServerNetwork(server);
     const generation = server.generation + 1;
     this.deps.repos.mcp.setConnectionStatus(
@@ -184,17 +169,21 @@ export class McpManager {
       this.deps.clock.nowIso(),
     );
     const client = this.createClient(server);
-    const connection: Connection = {
-      client,
-      generation,
-      closing: false,
+    client.onclose = () => {
+      this.instances.connectionClosed(instanceKey, client);
+      if (this.disposed) return;
+      this.deps.repos.mcp.setConnectionStatus(
+        server.userId,
+        server.id,
+        'error',
+        generation,
+        'Connection closed',
+        this.deps.clock.nowIso(),
+      );
     };
-    const key = connectionKey(server.userId, server.id);
-    client.onclose = () => this.handleClose(server.userId, server.id, connection);
     client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
-      if (this.connections.get(key) !== connection || connection.closing) return;
       try {
-        await this.discover(server, client);
+        await this.discover(server, client, generation);
         this.rebuildUserTools(server.userId);
       } catch (error) {
         this.deps.logger.warn('MCP tool list refresh failed', {
@@ -205,13 +194,8 @@ export class McpManager {
       }
     });
     try {
-      await client.connect(await this.createTransport(server));
+      await client.connect(await this.createTransport(server, route));
       if (this.disposed) throw new Error('MCP manager disposed');
-      this.connections.set(key, connection);
-      this.reconnectAttempts.delete(key);
-      const reconnectTimer = this.reconnectTimers.get(key);
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      this.reconnectTimers.delete(key);
       this.deps.repos.mcp.setConnectionStatus(
         server.userId,
         server.id,
@@ -222,7 +206,6 @@ export class McpManager {
       );
       return client;
     } catch (error) {
-      connection.closing = true;
       await client.close().catch(() => undefined);
       this.deps.repos.mcp.setConnectionStatus(
         server.userId,
@@ -236,14 +219,30 @@ export class McpManager {
     }
   }
 
+  private async acquire(server: McpServer, route: InstanceRoute, signal?: AbortSignal) {
+    const key = instanceKey(server.userId, server.id, route);
+    try {
+      return await this.instances.acquire({
+        key,
+        signal,
+        open: () => this.openConnection(server, route, key),
+      });
+    } catch (error) {
+      if (error instanceof McpInstanceCapacityError) {
+        throw new ToolExecutionError('MCP_CAPACITY_EXCEEDED');
+      }
+      throw error;
+    }
+  }
+
   private createClient(_server: McpServer): Client {
     return new Client({ name: 'agent-base-harness', version: '0.1.0' }, { capabilities: {} });
   }
 
-  private async createTransport(server: McpServer): Promise<Transport> {
+  private async createTransport(server: McpServer, route: InstanceRoute): Promise<Transport> {
     if (server.transport === 'stdio') {
       const config = server.config as McpStdioConfig;
-      const base = path.join(this.deps.appDataDir, 'mcp', server.userId, server.id);
+      const base = instanceDataRoot(this.deps.appDataDir, server.userId, server.id, route);
       await mkdir(base, { recursive: true });
       const cwd = config.cwd ? path.resolve(base, config.cwd) : base;
       if (!isInside(base, cwd)) throw new Error('MCP stdio cwd is outside its managed directory');
@@ -301,7 +300,7 @@ export class McpManager {
     return this.deps.runtime;
   }
 
-  private async discover(server: McpServer, client: Client): Promise<number> {
+  private async discover(server: McpServer, client: Client, generation: number): Promise<number> {
     const listed = await listAllTools(client);
     const seen = new Set<string>();
     const tools = listed.map((tool) => {
@@ -325,8 +324,6 @@ export class McpManager {
         defaultApprovalPolicy: defaultMcpApprovalPolicy(server, tool.name),
       };
     });
-    const generation =
-      this.connections.get(connectionKey(server.userId, server.id))?.generation ?? 0;
     this.deps.repos.mcp.replaceDiscoveredTools(
       server.userId,
       server.id,
@@ -337,9 +334,17 @@ export class McpManager {
     return tools.length;
   }
 
-  private createRuntimeTool(tool: McpToolCatalogEntry, server: McpServer): RuntimeTool<unknown> {
+  private createRuntimeTool(
+    tool: McpToolCatalogEntry,
+    server: McpServer,
+    route: InstanceRoute,
+  ): RuntimeTool<unknown> {
+    const exposedName =
+      server.id === BUNDLED_MEMORY_SERVER_ID
+        ? publicToolName(`${server.name}_${route.scopeType}`, tool.rawName)
+        : tool.publicName;
     return {
-      name: tool.publicName,
+      name: exposedName,
       description: tool.description,
       parameters: tool.inputSchema,
       output: {
@@ -375,8 +380,20 @@ export class McpManager {
       approvalPolicy: tool.approvalPolicy,
       approvalScope: 'external',
       permissionIdentity: `mcp:${server.id}:${tool.rawName}:${tool.schemaDigest}`,
-      timeoutMs: 65_000,
+      timeoutMs: MCP_TOOL_MAX_TOTAL_TIMEOUT_MS + 5_000,
       execute: async (raw, context) => {
+        const binding = this.deps.repos.agents
+          .listBindings(context.userId, context.agentId)
+          .mcp.some(
+            (candidate) =>
+              candidate.serverId === server.id && candidate.accessScope === route.scopeType,
+          );
+        if (
+          !binding ||
+          route.scopeId !== (route.scopeType === 'agent' ? context.agentId : context.userId)
+        ) {
+          throw new ToolExecutionError('MCP_TOOL_NOT_AVAILABLE');
+        }
         const current = this.availableCatalog(context.userId).tools.find(
           (entry) =>
             entry.tool.publicName === tool.publicName &&
@@ -384,15 +401,47 @@ export class McpManager {
         );
         if (!current) throw new ToolExecutionError('MCP_TOOL_NOT_AVAILABLE');
         const currentServer = current.server;
-        const client = await this.connect(currentServer);
-        const result = await client.callTool(
-          {
-            name: tool.rawName,
-            arguments: asRecord(raw) ?? {},
-          },
-          undefined,
-          { signal: context.signal, timeout: 60_000 },
-        );
+        const result = await (async () => {
+          const lease = await this.acquire(currentServer, route, context.signal);
+          try {
+            return await lease.runExclusive(
+              (client) =>
+                client.callTool(
+                  {
+                    name: tool.rawName,
+                    arguments: asRecord(raw) ?? {},
+                  },
+                  undefined,
+                  {
+                    signal: context.signal,
+                    timeout: MCP_TOOL_IDLE_TIMEOUT_MS,
+                    maxTotalTimeout: MCP_TOOL_MAX_TOTAL_TIMEOUT_MS,
+                    resetTimeoutOnProgress: true,
+                    onprogress: (progress) => {
+                      const message = progress.message ?? '服务仍在执行';
+                      this.deps.logger.info('MCP 工具收到进度', {
+                        serverId: server.id,
+                        serverName: server.name,
+                        toolName: tool.rawName,
+                        progress: progress.progress,
+                        total: progress.total,
+                        message,
+                      });
+                      context.reportProgress?.({
+                        toolCallId: context.toolCallId,
+                        progress: progress.progress,
+                        ...(progress.total === undefined ? {} : { total: progress.total }),
+                        message,
+                      });
+                    },
+                  },
+                ),
+              context.signal,
+            );
+          } finally {
+            lease.release();
+          }
+        })();
         const normalized = normalizeCallResult(result);
         if (normalized.isError) {
           throw new ToolExecutionError(
@@ -415,7 +464,7 @@ export class McpManager {
         return {
           kind: 'generic',
           title: tool.description || tool.rawName,
-          detail: server.name,
+          detail: `${server.name} · ${route.scopeType === 'agent' ? '本智能体' : '用户共享'}`,
           status: result.status === 'success' ? 'success' : 'error',
         };
       },
@@ -426,18 +475,18 @@ export class McpManager {
     return {
       name: 'mcp_load',
       description:
-        'MCP Server 的连接由应用启动和重连机制管理；此工具不负责启动或连接 Server，只将 capability_search 返回的指定 MCP Server 下全部已启用且审核通过的工具完整 Schema 暴露到当前 Turn，并从下一模型步骤开始可用。',
+        '按 capability_search 返回的 capabilityId 按需连接 MCP 实例、校验目录，并从下一模型步骤暴露已审核工具 Schema。',
       parameters: {
         type: 'object',
         properties: {
-          serverName: {
+          capabilityId: {
             type: 'string',
             minLength: 1,
-            maxLength: 200,
-            description: 'capability_search 返回的 MCP 候选精确 name。',
+            maxLength: 260,
+            description: 'capability_search 返回的 MCP capabilityId。',
           },
         },
-        required: ['serverName'],
+        required: ['capabilityId'],
         additionalProperties: false,
       },
       output: { schema: {}, render: (_args, value) => textContent(value) },
@@ -448,24 +497,71 @@ export class McpManager {
       execute: async (raw, context) => {
         if (context.userId !== userId) throw new ToolExecutionError('MCP_CATALOG_NOT_AVAILABLE');
         const input = mcpLoadInput.parse(raw);
+        const separator = input.capabilityId.lastIndexOf(':');
+        if (separator <= 0) throw new ToolExecutionError('MCP_SERVER_NOT_AVAILABLE');
+        const serverId = input.capabilityId.slice(0, separator);
+        const scopeType = input.capabilityId.slice(separator + 1);
+        if (scopeType !== 'user' && scopeType !== 'agent') {
+          throw new ToolExecutionError('MCP_SERVER_NOT_AVAILABLE');
+        }
+        const binding = this.deps.repos.agents
+          .listBindings(userId, context.agentId)
+          .mcp.find(
+            (candidate) => candidate.serverId === serverId && candidate.accessScope === scopeType,
+          );
+        if (!binding) throw new ToolExecutionError('MCP_SERVER_NOT_AVAILABLE');
+        const session = this.deps.repos.sessions.getSession(userId, context.sessionId);
+        if (!session || session.agentId !== context.agentId) {
+          throw new ToolExecutionError('MCP_SERVER_NOT_AVAILABLE');
+        }
+        if (
+          serverId === BUNDLED_MEMORY_SERVER_ID &&
+          scopeType === 'user' &&
+          session.origin === 'delegated' &&
+          !sharedMemoryAllowed(this.deps.repos, userId, session.id)
+        ) {
+          throw new ToolExecutionError('MCP_SERVER_NOT_AVAILABLE');
+        }
         const catalog = this.availableCatalog(userId);
-        const entries = catalog.tools.filter((entry) => entry.server.name === input.serverName);
+        const server = catalog.servers.get(serverId);
+        if (!server) throw new ToolExecutionError('MCP_SERVER_NOT_AVAILABLE');
+        const route: InstanceRoute = {
+          scopeType,
+          scopeId: scopeType === 'agent' ? context.agentId : context.userId,
+        };
+        const lease = await this.acquire(server, route, context.signal);
+        try {
+          await lease.runExclusive(
+            (client) => this.discover(server, client, lease.generation),
+            context.signal,
+          );
+        } finally {
+          lease.release();
+        }
+        const entries = this.availableCatalog(userId).tools.filter(
+          (entry) => entry.server.id === serverId,
+        );
         if (entries.length === 0) {
           throw new ToolExecutionError(
             'MCP_SERVER_NOT_AVAILABLE',
             'fatal_error',
-            { serverName: input.serverName },
-            `MCP Server is not available or has no enabled tools: ${input.serverName}`,
+            { capabilityId: input.capabilityId },
+            `MCP Server is not available or has no enabled tools: ${input.capabilityId}`,
           );
         }
         this.deps.tools.exposeTurnTools(
           userId,
+          context.sessionId,
           context.turnId,
-          entries.map(({ tool, server }) => this.createRuntimeTool(tool, server)),
+          entries.map(({ tool, server }) => this.createRuntimeTool(tool, server, route)),
         );
-        const toolNames = entries.map(({ tool }) => tool.publicName);
+        const toolNames = entries.map(({ tool, server }) =>
+          server.id === BUNDLED_MEMORY_SERVER_ID
+            ? publicToolName(`${server.name}_${route.scopeType}`, tool.rawName)
+            : tool.publicName,
+        );
         return {
-          serverName: input.serverName,
+          capabilityId: input.capabilityId,
           exposedToolCount: toolNames.length,
           exposedTools: toolNames.slice(0, 20),
           omittedToolCount: Math.max(0, toolNames.length - 20),
@@ -503,58 +599,14 @@ export class McpManager {
     };
   }
 
-  private handleClose(userId: LocalUserId, serverId: string, connection: Connection): void {
-    const key = connectionKey(userId, serverId);
-    const current = this.connections.get(key);
-    if (current && current !== connection) return;
-    if (current === connection) this.connections.delete(key);
-    if (connection.closing || this.disposed) return;
-    this.deps.repos.mcp.setConnectionStatus(
-      userId,
-      serverId,
-      'error',
-      connection.generation,
-      'Connection closed',
-      this.deps.clock.nowIso(),
-    );
-    this.scheduleReconnect(userId, serverId);
-  }
-
-  private scheduleReconnect(userId: LocalUserId, serverId: string): void {
-    const key = connectionKey(userId, serverId);
-    const attempt = (this.reconnectAttempts.get(key) ?? 0) + 1;
-    if (attempt > 5 || this.reconnectTimers.has(key)) return;
-    this.reconnectAttempts.set(key, attempt);
-    const delay = Math.min(30_000, 1_000 * 2 ** (attempt - 1));
-    const timer = setTimeout(() => {
-      this.reconnectTimers.delete(key);
-      const server = this.deps.repos.mcp.getServer(userId, serverId);
-      if (!server || server.status !== 'enabled' || this.disposed) return;
-      void this.refreshServer(userId, serverId).catch(() => {
-        this.scheduleReconnect(userId, serverId);
-      });
-    }, delay);
-    timer.unref();
-    this.reconnectTimers.set(key, timer);
-  }
-
   private async disconnect(userId: LocalUserId, serverId: string): Promise<void> {
-    const key = connectionKey(userId, serverId);
-    const connection = this.connections.get(key);
-    const reconnectTimer = this.reconnectTimers.get(key);
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    this.reconnectTimers.delete(key);
-    this.reconnectAttempts.delete(key);
-    if (connection) {
-      connection.closing = true;
-      this.connections.delete(key);
-      await connection.client.close().catch(() => undefined);
-    }
+    const generation = this.deps.repos.mcp.getServer(userId, serverId)?.generation ?? 0;
+    await this.instances.invalidate(userId, serverId);
     this.deps.repos.mcp.setConnectionStatus(
       userId,
       serverId,
       'disconnected',
-      connection?.generation ?? this.deps.repos.mcp.getServer(userId, serverId)?.generation ?? 0,
+      generation,
       null,
       this.deps.clock.nowIso(),
     );
@@ -783,8 +835,48 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function connectionKey(userId: string, serverId: string): string {
-  return `${userId}\0${serverId}`;
+function instanceKey(userId: string, serverId: string, route: InstanceRoute): McpInstanceKey {
+  return { userId, serverId, scopeType: route.scopeType, scopeId: route.scopeId };
+}
+
+function userRoute(userId: string): InstanceRoute {
+  return { scopeType: 'user', scopeId: userId };
+}
+
+function instanceDataRoot(
+  appDataDir: string,
+  userId: string,
+  serverId: string,
+  route: InstanceRoute,
+): string {
+  const user = encodeURIComponent(userId);
+  const server = encodeURIComponent(serverId);
+  return route.scopeType === 'agent'
+    ? path.join(
+        appDataDir,
+        'mcp',
+        'users',
+        user,
+        'agents',
+        encodeURIComponent(route.scopeId),
+        server,
+      )
+    : path.join(appDataDir, 'mcp', 'users', user, 'user', server);
+}
+
+function sharedMemoryAllowed(
+  repos: SqliteRepositories,
+  userId: LocalUserId,
+  sessionId: string,
+): boolean {
+  const created = repos.sessions
+    .listEvents(userId, sessionId)
+    .find((event) => event.eventType === 'session.created');
+  return Boolean(
+    created?.payload &&
+    typeof created.payload === 'object' &&
+    (created.payload as Record<string, unknown>).allowSharedMemory === true,
+  );
 }
 
 function isInside(root: string, target: string): boolean {

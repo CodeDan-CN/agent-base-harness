@@ -1,6 +1,6 @@
 {
   "name": "@agent-harness/server",
-  "version": "4.7.0",
+  "version": "4.7.5",
   "description": "Local Agent Harness Runtime service, Gateway, client SDK, and CLI",
   "license": "UNLICENSED",
   "type": "commonjs",

@@ -38,5 +38,6 @@ export interface UserConfigRevisions {
   skillRevision: number;
   runtimeRevision: number;
   mcpRevision: number;
+  agentRevision: number;
   updatedAt: string;
 }

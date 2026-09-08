@@ -28,4 +28,4 @@ export interface BannerState {
   message: string;
 }
 
-export type SettingsTab = 'appearance' | 'models' | 'mcp' | 'skills' | 'statistics';
+export type SettingsTab = 'appearance' | 'agents' | 'models' | 'mcp' | 'skills' | 'statistics';

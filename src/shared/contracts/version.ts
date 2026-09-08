@@ -1,2 +1,2 @@
-export const AGENT_HARNESS_VERSION = '4.7.0';
-export const GATEWAY_PROTOCOL_VERSION = 1;
+export const AGENT_HARNESS_VERSION = '4.7.5';
+export const GATEWAY_PROTOCOL_VERSION = 2;

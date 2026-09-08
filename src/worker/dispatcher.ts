@@ -40,6 +40,17 @@ import {
   mcpToolToggleParamsSchema,
 } from '../shared/contracts/management';
 import { modelCallStatisticsParamsSchema } from '../shared/contracts/statistics';
+import {
+  agentCreateParamsSchema,
+  agentDelegateToggleParamsSchema,
+  agentHomeReorderParamsSchema,
+  agentMcpToggleParamsSchema,
+  agentNavigationParamsSchema,
+  agentRuntimeDefaultsSetParamsSchema,
+  agentSkillToggleParamsSchema,
+  agentTargetParamsSchema,
+  agentUpdateParamsSchema,
+} from '../shared/contracts/agent-management';
 
 export async function dispatch(
   app: WorkerApplication,
@@ -208,6 +219,66 @@ export async function dispatch(
         value.expectedRevision,
       );
     }
+    case 'agent.create':
+      return app.agentManagement.create(userId, parse(agentCreateParamsSchema, params));
+    case 'agent.update':
+      return app.agentManagement.update(userId, parse(agentUpdateParamsSchema, params));
+    case 'agent.runtime.defaults.set':
+      return app.agentManagement.setRuntimeDefaults(
+        userId,
+        parse(agentRuntimeDefaultsSetParamsSchema, params),
+      );
+    case 'agent.archive': {
+      const value = parse(agentTargetParamsSchema, params);
+      return app.agentManagement.archive(userId, value.agentId, value.expectedRevision);
+    }
+    case 'agent.default.set': {
+      const value = parse(agentTargetParamsSchema, params);
+      return app.agentManagement.setDefault(userId, value.agentId, value.expectedRevision);
+    }
+    case 'agent.home.add': {
+      const value = parse(agentTargetParamsSchema, params);
+      return app.agentManagement.addHome(userId, value.agentId, value.expectedRevision);
+    }
+    case 'agent.home.remove': {
+      const value = parse(agentTargetParamsSchema, params);
+      return app.agentManagement.removeHome(userId, value.agentId, value.expectedRevision);
+    }
+    case 'agent.home.reorder': {
+      const value = parse(agentHomeReorderParamsSchema, params);
+      return app.agentManagement.reorderHome(userId, value.agentIds, value.expectedRevision);
+    }
+    case 'agent.skill.toggle': {
+      const value = parse(agentSkillToggleParamsSchema, params);
+      return app.agentManagement.toggleSkill(
+        userId,
+        value.agentId,
+        value.skillId,
+        value.enabled,
+        value.expectedRevision,
+      );
+    }
+    case 'agent.mcp.toggle': {
+      const value = parse(agentMcpToggleParamsSchema, params);
+      return app.agentManagement.toggleMcp(
+        userId,
+        value.agentId,
+        value.serverId,
+        value.accessScope,
+        value.enabled,
+        value.expectedRevision,
+      );
+    }
+    case 'agent.delegate.toggle': {
+      const value = parse(agentDelegateToggleParamsSchema, params);
+      return app.agentManagement.toggleDelegate(
+        userId,
+        value.callerAgentId,
+        value.calleeAgentId,
+        value.enabled,
+        value.expectedRevision,
+      );
+    }
     case 'session.list':
       return app.runtime.listSessions(userId);
     case 'session.snapshot': {
@@ -242,6 +313,16 @@ export async function dispatch(
       return app.skillManagement(userId);
     case 'mcp-management.snapshot':
       return app.mcpManagement(userId);
+    case 'agent-management.snapshot':
+      return app.agentManagement.snapshot(userId);
+    case 'agent.navigation': {
+      const value = parse(agentNavigationParamsSchema, params ?? {});
+      return app.agentNavigation.snapshot(userId, value.sessionsPerAgent);
+    }
+    case 'agent.delegation.get': {
+      const value = parse(z.object({ delegationId: z.string().min(1).max(128) }).strict(), params);
+      return app.agentManagement.delegation(userId, value.delegationId);
+    }
     default:
       throw new BridgeError('INVALID_REQUEST', 'Unknown method');
   }

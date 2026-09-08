@@ -192,6 +192,7 @@ async function runOnce(client: AgentClient, arguments_: string[]): Promise<void>
   const prompt = arguments_.join(' ').trim() || (await readAllStdin()).trim();
   if (!prompt) throw new Error('Usage: agent-harness run <prompt>');
   const session = await client.command<SessionSummary>('session.create', {
+    agentId: await defaultAgentId(client),
     title: prompt.slice(0, 80),
   });
   await submitAndFollow(client, session.id, prompt);
@@ -202,7 +203,10 @@ async function chat(client: AgentClient, arguments_: string[]): Promise<void> {
   const existing = option(options, 'session');
   const session = existing
     ? { id: existing }
-    : await client.command<SessionSummary>('session.create', { title: 'CLI chat' });
+    : await client.command<SessionSummary>('session.create', {
+        agentId: await defaultAgentId(client),
+        title: 'CLI chat',
+      });
   stdout.write(`Session ${session.id}. Type /exit to leave.\n`);
   const terminal = createInterface({ input: stdin, output: stdout });
   try {
@@ -217,6 +221,13 @@ async function chat(client: AgentClient, arguments_: string[]): Promise<void> {
   } finally {
     terminal.close();
   }
+}
+
+async function defaultAgentId(client: AgentClient): Promise<string> {
+  const navigation = await client.query<{ defaultAgentId: string }>('agent.navigation', {
+    sessionsPerAgent: 1,
+  });
+  return navigation.defaultAgentId;
 }
 
 async function sessionCommand(client: AgentClient, arguments_: string[]): Promise<void> {
