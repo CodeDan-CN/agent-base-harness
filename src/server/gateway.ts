@@ -238,7 +238,7 @@ export class Gateway {
     response.once('close', cleanup);
     try {
       while (!response.destroyed) {
-        const page = (await this.options.runtime.request(context, 'session.events.page', {
+        const page = (await this.options.runtime.request(context, 'session.events.replay', {
           sessionId,
           afterSeq: cursor,
           limit: 500,

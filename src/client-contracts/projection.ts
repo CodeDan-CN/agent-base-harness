@@ -116,6 +116,10 @@ export interface ProjectedStep {
     skillRevision: number;
     runtimeRevision: number;
     mcpRevision: number;
+    agentRevision: number;
+    agentProfileRevision: number | null;
+    agentMemoryDigest: string | null;
+    agentConfigDigest: string | null;
   } | null;
 }
 
@@ -200,6 +204,22 @@ export interface ProjectedEventRelation {
   createdAt: string;
 }
 
+export interface ProjectedDelegation {
+  id: string;
+  parentTurnId: string;
+  parentToolCallId: string;
+  delegatedSessionId: string;
+  targetAgentId: string;
+  callerAgentName: string | null;
+  targetAgentName: string | null;
+  status:
+    'accepted' | 'running' | 'awaiting_user' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  resultEventRef: string | null;
+  report: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface RuntimeProjection {
   lastSeq: number;
   inbox: InboxItem[];
@@ -214,6 +234,7 @@ export interface RuntimeProjection {
   streams: Map<string, ProjectedStream>;
   reasoning: Map<string, ProjectedReasoningStream>;
   relations: ProjectedEventRelation[];
+  delegations: Map<string, ProjectedDelegation>;
   usage: UsageProjection;
   sessionMemorySummary: ProjectedSessionMemorySummary | null;
   surfaceReplacements: ProjectedSurfaceReplacement[];
@@ -242,6 +263,7 @@ export function projectRuntime(events: readonly SessionLogEvent[]): RuntimeProje
     streams: new Map(),
     reasoning: new Map(),
     relations: [],
+    delegations: new Map(),
     usage: {
       modelRequests: 0,
       compactionRequests: 0,
@@ -308,6 +330,9 @@ export function cloneRuntimeProjection(source: RuntimeProjection): RuntimeProjec
     streams: new Map([...source.streams].map(([key, value]) => [key, { ...value }] as const)),
     reasoning: new Map([...source.reasoning].map(([key, value]) => [key, { ...value }] as const)),
     relations: source.relations.map((relation) => ({ ...relation })),
+    delegations: new Map(
+      [...source.delegations].map(([key, value]) => [key, { ...value }] as const),
+    ),
     usage: { ...source.usage },
     sessionMemorySummary: source.sessionMemorySummary ? { ...source.sessionMemorySummary } : null,
     surfaceReplacements: source.surfaceReplacements.map((replacement) => ({
@@ -327,6 +352,40 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
   );
   const payload = asRecord(upcastPayload);
   switch (event.eventType) {
+    case 'agent.delegation.accepted': {
+      const id = stringAt(payload, 'delegationId');
+      const parentTurnId = stringAt(payload, 'parentTurnId');
+      const parentToolCallId = stringAt(payload, 'parentToolCallId');
+      const delegatedSessionId = stringAt(payload, 'delegatedSessionId');
+      const targetAgentId = stringAt(payload, 'targetAgentId');
+      if (!id || !parentTurnId || !parentToolCallId || !delegatedSessionId || !targetAgentId) break;
+      state.delegations.set(id, {
+        id,
+        parentTurnId,
+        parentToolCallId,
+        delegatedSessionId,
+        targetAgentId,
+        callerAgentName: stringAt(payload, 'callerAgentName') ?? null,
+        targetAgentName: stringAt(payload, 'targetAgentName') ?? null,
+        status: 'accepted',
+        resultEventRef: null,
+        report: null,
+        createdAt: event.occurredAt,
+        updatedAt: event.occurredAt,
+      });
+      break;
+    }
+    case 'agent.delegation.status-changed': {
+      const id = stringAt(payload, 'delegationId');
+      const status = stringAt(payload, 'status');
+      const target = id ? state.delegations.get(id) : undefined;
+      if (!target || !isDelegationStatus(status)) break;
+      target.status = status;
+      target.resultEventRef = stringAt(payload, 'resultEventRef') ?? null;
+      target.report = stringAt(payload, 'report') ?? null;
+      target.updatedAt = event.occurredAt;
+      break;
+    }
     case 'agent.inbox.spliced': {
       const parsed = inboxSplicedPayloadSchema.safeParse(upcastPayload);
       if (!parsed.success) return;
@@ -547,6 +606,10 @@ export function applyRuntimeEvent(state: RuntimeProjection, event: SessionLogEve
           skillRevision: numberAt(payload, 'skillRevision') ?? 0,
           runtimeRevision: numberAt(payload, 'runtimeRevision') ?? 0,
           mcpRevision: numberAt(payload, 'mcpRevision') ?? 0,
+          agentRevision: numberAt(payload, 'agentRevision') ?? 0,
+          agentProfileRevision: numberAt(payload, 'agentProfileRevision') ?? null,
+          agentMemoryDigest: stringAt(payload, 'agentMemoryDigest') ?? null,
+          agentConfigDigest: stringAt(payload, 'agentConfigDigest') ?? null,
         };
       }
       break;
@@ -987,4 +1050,16 @@ function isTurnStatus(value: string | undefined): value is ProjectedTurn['status
 
 function isStepStatus(value: string | undefined): value is ProjectedStep['status'] {
   return value === 'completed' || value === 'failed' || value === 'cancelled';
+}
+
+function isDelegationStatus(value: string | undefined): value is ProjectedDelegation['status'] {
+  return (
+    value === 'accepted' ||
+    value === 'running' ||
+    value === 'awaiting_user' ||
+    value === 'completed' ||
+    value === 'failed' ||
+    value === 'cancelled' ||
+    value === 'interrupted'
+  );
 }

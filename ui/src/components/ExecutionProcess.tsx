@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 import {
+  ArrowRight,
+  Bot,
   Brain,
   CheckCircle2,
   ChevronDown,
@@ -19,12 +21,17 @@ import {
 } from '../execution-process-policy';
 import { ContextTokenRing, formatCompactToken, formatOptionalToken } from './ContextTokenRing';
 import { MarkdownContent } from './MarkdownContent';
+import { query, requireClient, userMessage } from '../client';
+import { applyEventBatch, hydrateProjection } from '../projection';
+import type { SessionSnapshotPayload } from '../types';
 
 interface ExecutionProcessProps {
   projection: RuntimeProjection;
   turnIds: readonly string[];
   sessionId: string | null;
   onOpenError?(message: string): void;
+  embedded?: boolean;
+  label?: string;
 }
 
 export function ExecutionProcess({
@@ -32,6 +39,8 @@ export function ExecutionProcess({
   turnIds,
   sessionId,
   onOpenError,
+  embedded = false,
+  label = '执行过程',
 }: ExecutionProcessProps): JSX.Element | null {
   const turns = turnIds
     .map((turnId) => projection.turns.get(turnId))
@@ -103,6 +112,12 @@ export function ExecutionProcess({
   });
   const steps = sections.flatMap((section) => section.steps);
   const latestContextStep = [...steps].reverse().find((step) => step.requestContext);
+  const delegationByToolCall = new Map(
+    [...projection.delegations.values()].map((delegation) => [
+      delegation.parentToolCallId,
+      delegation,
+    ]),
+  );
   const interactionStepCount = sections.filter((section) => section.interaction).length;
   const endedWithoutAnswer =
     latestTurn.status === 'completed' &&
@@ -124,7 +139,10 @@ export function ExecutionProcess({
     return null;
   }
   return (
-    <section className="execution-card" aria-label="执行过程">
+    <section
+      className={`execution-card ${embedded ? 'embedded-execution-card' : ''}`}
+      aria-label={label}
+    >
       <div className="execution-header">
         <button
           className="execution-header-toggle"
@@ -134,7 +152,7 @@ export function ExecutionProcess({
           <span>
             {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             {latestTurn.status === 'running' && <Loader2 className="spin" size={16} />}
-            执行过程
+            {label}
           </span>
           <small>
             {latestTurn.status === 'running'
@@ -146,18 +164,20 @@ export function ExecutionProcess({
                 : statusText(latestTurn.status, latestTurn.endReason)}
           </small>
         </button>
-        <div className="execution-context-summary">
-          <span className="execution-context-label">
-            {latestContextStep?.requestContext
-              ? `上下文约 ${latestContextStep.requestContext.estimatedInputTokens} Token`
-              : '上下文待计算'}
-          </span>
-          <ExecutionContextTokenIndicator
-            projection={projection}
-            turnIds={turns.map((turn) => turn.id)}
-            steps={steps}
-          />
-        </div>
+        {!embedded && (
+          <div className="execution-context-summary">
+            <span className="execution-context-label">
+              {latestContextStep?.requestContext
+                ? `上下文约 ${latestContextStep.requestContext.estimatedInputTokens} Token`
+                : '上下文待计算'}
+            </span>
+            <ExecutionContextTokenIndicator
+              projection={projection}
+              turnIds={turns.map((turn) => turn.id)}
+              steps={steps}
+            />
+          </div>
+        )}
       </div>
       {expanded && (
         <div className="execution-body">
@@ -192,6 +212,7 @@ export function ExecutionProcess({
                           content={message.content}
                           sessionId={sessionId}
                           streaming={!message.finalized}
+                          streamKey={`commentary:${message.id}`}
                           onOpenError={onOpenError}
                         />
                       </section>
@@ -205,13 +226,21 @@ export function ExecutionProcess({
                       <ReasoningPanel
                         content={phase.reasoning.content}
                         finalized={phase.reasoning.finalized}
+                        streamKey={`reasoning:${phase.reasoning.requestId}`}
                         sessionId={sessionId}
                         onOpenError={onOpenError}
                       />
                     )}
 
                     {phase.tools.length > 0 && (
-                      <details className="tool-execution-panel" aria-label="执行内容">
+                      <AutoOpenDetails
+                        className="tool-execution-panel"
+                        ariaLabel="执行内容"
+                        autoOpen={phase.tools.some((tool) => {
+                          const delegation = delegationByToolCall.get(tool.id);
+                          return delegation && isActiveDelegationStatus(delegation.status);
+                        })}
+                      >
                         <summary className="execution-section-title execution-disclosure">
                           <Wrench size={13} />
                           <span>执行内容</span>
@@ -220,15 +249,26 @@ export function ExecutionProcess({
                             <Loader2 className="spin" size={12} />
                           )}
                         </summary>
-                        {phase.tools.map((tool) => (
-                          <ToolCallCard
-                            key={tool.id}
-                            tool={tool}
-                            sessionId={sessionId}
-                            onOpenError={onOpenError}
-                          />
-                        ))}
-                      </details>
+                        {phase.tools.map((tool) => {
+                          const delegation = delegationByToolCall.get(tool.id);
+                          return delegation ? (
+                            <DelegationCallCard
+                              key={tool.id}
+                              delegation={delegation}
+                              tool={tool}
+                              sessionId={sessionId}
+                              onOpenError={onOpenError}
+                            />
+                          ) : (
+                            <ToolCallCard
+                              key={tool.id}
+                              tool={tool}
+                              sessionId={sessionId}
+                              onOpenError={onOpenError}
+                            />
+                          );
+                        })}
+                      </AutoOpenDetails>
                     )}
                   </div>
                 );
@@ -276,11 +316,13 @@ function ExecutionActivity({
 function ReasoningPanel({
   content,
   finalized,
+  streamKey,
   sessionId,
   onOpenError,
 }: {
   content: string;
   finalized: boolean;
+  streamKey: string;
   sessionId: string | null;
   onOpenError?: (message: string) => void;
 }): JSX.Element {
@@ -328,6 +370,7 @@ function ReasoningPanel({
             className="reasoning-markdown"
             sessionId={sessionId}
             streaming={!finalized}
+            streamKey={streamKey}
             onOpenError={onOpenError}
           />
         </div>
@@ -447,6 +490,189 @@ function ExecutionContextTokenIndicator({
 }
 
 type ToolCall = RuntimeProjection['toolCalls'] extends Map<string, infer Item> ? Item : never;
+type Delegation = RuntimeProjection['delegations'] extends Map<string, infer Item> ? Item : never;
+
+function DelegationCallCard({
+  delegation,
+  tool,
+  sessionId,
+  onOpenError,
+}: {
+  delegation: Delegation;
+  tool: ToolCall;
+  sessionId: string | null;
+  onOpenError?: (message: string) => void;
+}): JSX.Element {
+  const caller = delegation.callerAgentName ?? '当前智能体';
+  const target = delegation.targetAgentName ?? delegation.targetAgentId;
+  const task =
+    tool.input && typeof tool.input === 'object' && 'task' in tool.input
+      ? String((tool.input as { task?: unknown }).task ?? '')
+      : '';
+  return (
+    <AutoOpenDetails
+      className="tool-card delegation-card"
+      autoOpen={isActiveDelegationStatus(delegation.status)}
+    >
+      <summary>
+        <Bot size={14} />
+        <span className="delegation-route">
+          {caller}
+          <ArrowRight size={12} aria-hidden="true" />
+          {target}
+        </span>
+        <ChevronRight className="disclosure-chevron" size={13} />
+        <small>{delegationStatus(delegation.status)}</small>
+      </summary>
+      <div className="tool-detail">
+        {task && (
+          <>
+            <label>委派任务</label>
+            <MarkdownContent content={task} sessionId={sessionId} onOpenError={onOpenError} />
+          </>
+        )}
+        <DelegatedExecutionProcess
+          delegatedSessionId={delegation.delegatedSessionId}
+          targetAgentName={target}
+          onOpenError={onOpenError}
+        />
+        {delegation.report && (
+          <>
+            <label>受派报告</label>
+            <MarkdownContent
+              content={delegation.report}
+              sessionId={sessionId}
+              onOpenError={onOpenError}
+            />
+          </>
+        )}
+        <small className="delegation-session-ref">受派会话：{delegation.delegatedSessionId}</small>
+      </div>
+    </AutoOpenDetails>
+  );
+}
+
+function AutoOpenDetails({
+  autoOpen,
+  className,
+  ariaLabel,
+  children,
+}: {
+  autoOpen: boolean;
+  className: string;
+  ariaLabel?: string;
+  children: ReactNode;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(autoOpen);
+
+  useEffect(() => {
+    if (autoOpen) setExpanded(true);
+  }, [autoOpen]);
+
+  return (
+    <details
+      className={className}
+      aria-label={ariaLabel}
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
+      {children}
+    </details>
+  );
+}
+
+function DelegatedExecutionProcess({
+  delegatedSessionId,
+  targetAgentName,
+  onOpenError,
+}: {
+  delegatedSessionId: string;
+  targetAgentName: string;
+  onOpenError?: (message: string) => void;
+}): JSX.Element {
+  const { projection, status, error } = useDelegatedProjection(delegatedSessionId);
+  const turnIds = projection
+    ? [...projection.turns.values()]
+        .sort((left, right) => left.startedAt.localeCompare(right.startedAt))
+        .map((turn) => turn.id)
+    : [];
+
+  return (
+    <section className="delegated-execution" aria-label={`${targetAgentName}的执行过程`}>
+      {projection && turnIds.length > 0 ? (
+        <ExecutionProcess
+          projection={projection}
+          turnIds={turnIds}
+          sessionId={delegatedSessionId}
+          onOpenError={onOpenError}
+          embedded
+          label={`${targetAgentName}的执行过程`}
+        />
+      ) : (
+        <p className={`delegated-execution-state ${status}`}>
+          {status === 'error' ? <XCircle size={13} /> : <Loader2 className="spin" size={13} />}
+          <span>{error ?? `${targetAgentName}正在准备执行…`}</span>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function useDelegatedProjection(sessionId: string): {
+  projection: RuntimeProjection | null;
+  status: 'loading' | 'ready' | 'error';
+  error: string | null;
+} {
+  const [projection, setProjection] = useState<RuntimeProjection | null>(null);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [error, setError] = useState<string | null>(null);
+  const cursorRef = useRef(0);
+
+  useEffect(() => {
+    let active = true;
+    let generation = 0;
+    let unsubscribe: (() => void) | undefined;
+
+    const connect = async () => {
+      const currentGeneration = ++generation;
+      unsubscribe?.();
+      unsubscribe = undefined;
+      setStatus('loading');
+      try {
+        const snapshot = await query<SessionSnapshotPayload>('session.snapshot', { sessionId });
+        if (!active || currentGeneration !== generation) return;
+        cursorRef.current = snapshot.throughSeq;
+        setProjection(hydrateProjection(snapshot));
+        setError(null);
+        setStatus('ready');
+        unsubscribe = requireClient().subscribeSession(sessionId, cursorRef.current, (event) => {
+          if (!active || currentGeneration !== generation) return;
+          if (event.type === 'resync-required' || event.fromSeq !== cursorRef.current + 1) {
+            void connect();
+            return;
+          }
+          cursorRef.current = event.toSeq;
+          setProjection((current) => (current ? applyEventBatch(current, event.events) : current));
+        });
+      } catch (cause) {
+        if (!active || currentGeneration !== generation) return;
+        setError(`无法载入受派执行过程：${userMessage(cause)}`);
+        setStatus('error');
+      }
+    };
+
+    setProjection(null);
+    cursorRef.current = 0;
+    void connect();
+    return () => {
+      active = false;
+      generation += 1;
+      unsubscribe?.();
+    };
+  }, [sessionId]);
+
+  return { projection, status, error };
+}
 
 function ToolCallCard({
   tool,
@@ -515,6 +741,23 @@ function toolStatus(status: string): string {
   if (status === 'needs_input') return '等待用户';
   if (status === 'answered') return '已回答';
   return status.includes('error') ? '失败' : status;
+}
+
+function delegationStatus(status: Delegation['status']): string {
+  const labels: Record<Delegation['status'], string> = {
+    accepted: '已接纳',
+    running: '执行中',
+    awaiting_user: '等待用户',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+    interrupted: '已中断',
+  };
+  return labels[status];
+}
+
+function isActiveDelegationStatus(status: Delegation['status']): boolean {
+  return status === 'accepted' || status === 'running' || status === 'awaiting_user';
 }
 
 function toolMarkdown(value: unknown): string {

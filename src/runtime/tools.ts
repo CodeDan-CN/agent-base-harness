@@ -1,10 +1,11 @@
 import Ajv, { type ValidateFunction } from 'ajv';
-import type { ModelToolDefinition } from './model';
+import type { ModelSnapshot, ModelToolDefinition } from './model';
 import type {
   ApprovalResolution,
   PermissionPreset,
   ToolApprovalPolicy,
 } from '../shared/domain/permission';
+import type { SessionOrigin } from '../shared/domain/agent';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -65,15 +66,51 @@ export interface ToolResult {
 export interface ToolExecutionContext {
   userId: string;
   agentId: string;
+  sessionOrigin: SessionOrigin;
   sessionId: string;
   eventId: string;
   turnId: string;
   stepId: string;
   toolCallId: string;
   permissionPreset: PermissionPreset;
+  executionConfig?: AgentExecutionConfigSnapshot;
   approvalGranted?: boolean;
   signal: AbortSignal;
   reportProgress?(progress: ToolExecutionProgress): void;
+}
+
+export interface AgentExecutionConfigSnapshot {
+  userId: string;
+  agentId: string;
+  agentRevision: number;
+  agentProfileRevision: number;
+  agentInstructions: string;
+  agentMemoryProfile: string;
+  agentMemoryDigest: string;
+  agentConfigDigest: string;
+  model: ModelSnapshot;
+  modelSource: 'agent-default' | 'user-default';
+  permissionPreset: PermissionPreset;
+  permissionUpperBound: PermissionPreset;
+  skillRevision: number;
+  runtimeRevision: number;
+  mcpRevision: number;
+  skillIds: readonly string[];
+  mcpBindings: readonly {
+    serverId: string;
+    accessScope: 'user' | 'agent';
+    configDigest: string;
+    schemaDigest: string;
+  }[];
+  delegateAgentIds: readonly string[];
+  capabilityCandidates: readonly {
+    kind: 'skill' | 'mcp' | 'agent';
+    capabilityId: string;
+    name: string;
+    description: string;
+    action: 'skill_load' | 'mcp_load' | 'agent_call';
+    scope?: 'agent' | 'user';
+  }[];
 }
 
 export interface ToolExecutionProgress {

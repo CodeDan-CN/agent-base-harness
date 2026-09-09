@@ -289,6 +289,13 @@ export async function dispatch(
       const value = parse(eventsPageParamsSchema, params);
       return app.runtime.eventsPage(userId, value.sessionId, value.afterSeq, value.limit);
     }
+    // Internal-only: Gateway SSE replay needs the original payload to rebuild the
+    // same projection as a live event subscription. This method is intentionally
+    // absent from the public query contract.
+    case 'session.events.replay': {
+      const value = parse(eventsPageParamsSchema, params);
+      return app.runtime.replayEventsPage(userId, value.sessionId, value.afterSeq, value.limit);
+    }
     case 'conversation.event.list': {
       const value = parse(sessionTargetSchema, params);
       return app.runtime.conversationEventList(userId, value.sessionId);

@@ -93,6 +93,18 @@ export class DelegationRepository {
     ).map(map);
   }
 
+  listForParent(userId: LocalUserId, parentSessionId: string): AgentDelegation[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM agent_delegations
+           WHERE user_id = ? AND parent_session_id = ?
+           ORDER BY created_at, id`,
+        )
+        .all(userId, parentSessionId) as DelegationRow[]
+    ).map(map);
+  }
+
   updateStatus(
     userId: LocalUserId,
     id: string,

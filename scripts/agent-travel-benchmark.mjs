@@ -82,7 +82,9 @@ function asRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {};
 }
 
-function configuredRuntime(root = path.join(ROOT, '.runtime-cache', `${process.platform}-${process.arch}`)) {
+function configuredRuntime(
+  root = path.join(ROOT, '.runtime-cache', `${process.platform}-${process.arch}`),
+) {
   return fs
     .readFile(path.join(root, 'runtime-manifest.json'), 'utf8')
     .then(JSON.parse)
@@ -124,7 +126,11 @@ async function readConfiguredSecrets(appData, userId) {
     try {
       const config = JSON.parse(await fs.readFile(configPath, 'utf8'));
       for (const [key, value] of Object.entries(asRecord(config))) {
-        if (/key|token|secret|password/iu.test(key) && typeof value === 'string' && value.length >= 8) {
+        if (
+          /key|token|secret|password/iu.test(key) &&
+          typeof value === 'string' &&
+          value.length >= 8
+        ) {
           secrets.push(value);
         }
       }
@@ -136,7 +142,9 @@ async function readConfiguredSecrets(appData, userId) {
 }
 
 function createSecurityGuard(secrets) {
-  const unique = [...new Set(secrets.filter((value) => typeof value === 'string' && value.length >= 8))];
+  const unique = [
+    ...new Set(secrets.filter((value) => typeof value === 'string' && value.length >= 8)),
+  ];
   const containsSecret = (value) => {
     let serialized;
     try {
@@ -201,12 +209,19 @@ export class WorkerRpcClient {
       if (!pending) return;
       this.pending.delete(message.requestId);
       if (message.ok) pending.resolve(message.result);
-      else pending.reject(Object.assign(new Error(message.error?.message || 'Worker request failed'), message.error));
+      else
+        pending.reject(
+          Object.assign(
+            new Error(message.error?.message || 'Worker request failed'),
+            message.error,
+          ),
+        );
       return;
     }
     if (message.type === 'session-events') {
       const receivedAtMs = Date.now();
-      for (const event of message.events || []) this.events.push({ ...event, __receivedAtMs: receivedAtMs });
+      for (const event of message.events || [])
+        this.events.push({ ...event, __receivedAtMs: receivedAtMs });
       for (const listener of this.eventListeners) listener(message);
       return;
     }
@@ -221,7 +236,9 @@ export class WorkerRpcClient {
   async request(userId, method, params) {
     await this.ready;
     const requestId = crypto.randomUUID();
-    const promise = new Promise((resolve, reject) => this.pending.set(requestId, { resolve, reject }));
+    const promise = new Promise((resolve, reject) =>
+      this.pending.set(requestId, { resolve, reject }),
+    );
     this.worker.postMessage({
       type: 'request',
       requestId,
@@ -307,7 +324,14 @@ function normalizeToolResult(event, securityGuard) {
   });
 }
 
-export function normalizeTurnResponse(events, statistics, startedAtMs, completedAtMs, securityGuard, includeEvents) {
+export function normalizeTurnResponse(
+  events,
+  statistics,
+  startedAtMs,
+  completedAtMs,
+  securityGuard,
+  includeEvents,
+) {
   const assistantMessages = events
     .filter((event) => event.eventType === 'assistant.message')
     .map((event) => asRecord(event.payload))
@@ -319,19 +343,28 @@ export function normalizeTurnResponse(events, statistics, startedAtMs, completed
   const toolResults = events
     .filter((event) => event.eventType === 'tool.result')
     .map((event) => normalizeToolResult(event, securityGuard));
-  const firstEventAt = Math.min(...events.map((event) => event.__receivedAtMs || Date.parse(event.occurredAt)));
+  const firstEventAt = Math.min(
+    ...events.map((event) => event.__receivedAtMs || Date.parse(event.occurredAt)),
+  );
   const visibleEvents = events.filter(
-    (event) => event.eventType === 'assistant.chunk' || event.eventType === 'assistant.reasoning.chunk',
+    (event) =>
+      event.eventType === 'assistant.chunk' || event.eventType === 'assistant.reasoning.chunk',
   );
   const reasoningEvents = events.filter((event) => event.eventType === 'assistant.reasoning.chunk');
   const firstVisibleAt = visibleEvents.length
-    ? Math.min(...visibleEvents.map((event) => event.__receivedAtMs || Date.parse(event.occurredAt)))
+    ? Math.min(
+        ...visibleEvents.map((event) => event.__receivedAtMs || Date.parse(event.occurredAt)),
+      )
     : null;
   const firstReasoningAt = reasoningEvents.length
-    ? Math.min(...reasoningEvents.map((event) => event.__receivedAtMs || Date.parse(event.occurredAt)))
+    ? Math.min(
+        ...reasoningEvents.map((event) => event.__receivedAtMs || Date.parse(event.occurredAt)),
+      )
     : null;
   const stepIds = new Set(
-    events.map((event) => asRecord(event.payload).stepId).filter((value) => typeof value === 'string'),
+    events
+      .map((event) => asRecord(event.payload).stepId)
+      .filter((value) => typeof value === 'string'),
   );
   const calls = (statistics.items || [])
     .filter((item) => stepIds.has(item.stepId))
@@ -359,8 +392,11 @@ export function normalizeTurnResponse(events, statistics, startedAtMs, completed
     text: securityGuard.redact(textBlocks.join('\n\n').trim()),
     final_text: securityGuard.redact(textBlocks.at(-1) || ''),
     timing: {
-      first_event_ms: Number.isFinite(firstEventAt) ? Math.max(0, firstEventAt - startedAtMs) : null,
-      first_visible_text_ms: firstVisibleAt === null ? null : Math.max(0, firstVisibleAt - startedAtMs),
+      first_event_ms: Number.isFinite(firstEventAt)
+        ? Math.max(0, firstEventAt - startedAtMs)
+        : null,
+      first_visible_text_ms:
+        firstVisibleAt === null ? null : Math.max(0, firstVisibleAt - startedAtMs),
       first_reasoning_text_ms:
         firstReasoningAt === null ? null : Math.max(0, firstReasoningAt - startedAtMs),
       end_to_end_ms: completedAtMs - startedAtMs,
@@ -374,7 +410,9 @@ export function normalizeTurnResponse(events, statistics, startedAtMs, completed
       callIndex: index + 1,
       stream_started_at_ms: Math.max(0, Date.parse(call.startedAt) - startedAtMs),
       first_visible_text_at_ms:
-        call.firstTokenAt === null ? null : Math.max(0, Date.parse(call.firstTokenAt) - startedAtMs),
+        call.firstTokenAt === null
+          ? null
+          : Math.max(0, Date.parse(call.firstTokenAt) - startedAtMs),
       first_reasoning_text_at_ms: null,
       stream_finished_at_ms:
         call.completedAt === null ? null : Math.max(0, Date.parse(call.completedAt) - startedAtMs),
@@ -399,7 +437,8 @@ export function normalizeTurnResponse(events, statistics, startedAtMs, completed
     },
     event_count: events.length,
   };
-  if (includeEvents) response.events = securityGuard.redact(events.map(({ __receivedAtMs: _, ...event }) => event));
+  if (includeEvents)
+    response.events = securityGuard.redact(events.map(({ __receivedAtMs: _, ...event }) => event));
   return response;
 }
 
@@ -494,7 +533,9 @@ async function main() {
     });
     result.run.session = { id: session.id, kept: true };
     result.run.sessions = [{ id: session.id, created_before_turn: 0, kept: true }];
-    process.stdout.write(`Agent: ${args.agentName} (${model.remoteModelId})\nSession: ${session.id}\n`);
+    process.stdout.write(
+      `Agent: ${args.agentName} (${model.remoteModelId})\nSession: ${session.id}\n`,
+    );
 
     for (const [index, turn] of scenario.turns.entries()) {
       const beforeSnapshot = await client.request(args.userId, 'session.snapshot', {
@@ -503,7 +544,9 @@ async function main() {
       const afterSeq = beforeSnapshot.throughSeq || 0;
       const startedAtMs = Date.now();
       const turnStartedAt = new Date(startedAtMs).toISOString();
-      process.stdout.write(`[${index + 1}/${scenario.turns.length}] ${turn.id || `turn-${index + 1}`} ... `);
+      process.stdout.write(
+        `[${index + 1}/${scenario.turns.length}] ${turn.id || `turn-${index + 1}`} ... `,
+      );
       await client.request(args.userId, 'input.submit', {
         sessionId: session.id,
         content: turn.content,
@@ -529,7 +572,9 @@ async function main() {
         args.includeEvents,
       );
       const stepIds = new Set(
-        events.map((event) => asRecord(event.payload).stepId).filter((value) => typeof value === 'string'),
+        events
+          .map((event) => asRecord(event.payload).stepId)
+          .filter((value) => typeof value === 'string'),
       );
       const turnCalls = (statistics.items || []).filter((call) => stepIds.has(call.stepId));
       const usage = usageForCalls(turnCalls);

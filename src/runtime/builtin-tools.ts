@@ -327,16 +327,19 @@ function skillLoadTool(
     async execute(raw, context) {
       const parsed = input.parse(raw);
       const requestedId = parsed.capabilityId;
-      const bindings = repos.agents.hasSchema
-        ? repos.agents.listBindings(context.userId, context.agentId)
-        : null;
-      if (bindings && (!requestedId || !bindings.skillIds.includes(requestedId)))
-        throw new ToolExecutionError('SKILL_NOT_AVAILABLE');
       const installation = repos.skills
         .listInstallations(context.userId)
         .find((candidate) =>
           requestedId ? candidate.id === requestedId : candidate.skillName === parsed.skillName,
         );
+      const skillIds =
+        context.executionConfig?.skillIds ??
+        (repos.agents.hasSchema && context.agentId
+          ? repos.agents.listBindings(context.userId, context.agentId).skillIds
+          : null);
+      if (skillIds && (!installation || !skillIds.includes(installation.id))) {
+        throw new ToolExecutionError('SKILL_NOT_AVAILABLE');
+      }
       if (!installation || !installation.enabled || installation.status !== 'valid') {
         throw new ToolExecutionError('SKILL_NOT_AVAILABLE');
       }

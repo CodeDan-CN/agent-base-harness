@@ -118,6 +118,8 @@ export class ServiceHost {
         userRepository: this.runtime.application.repos.users,
         clock: this.clock,
         logger: this.logger.child({ component: 'auth' }),
+        initializeAccountRecords: (userId) =>
+          this.runtime?.application.agentManagement.initializeUserRecords(userId),
         onAccountCreated: (userId) => this.runtime?.application.initializeUser(userId),
       });
       await this.auth.provisionBuiltinAccounts();

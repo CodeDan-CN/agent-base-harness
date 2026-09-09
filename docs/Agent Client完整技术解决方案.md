@@ -678,7 +678,7 @@ Skill Management 负责兼容通用 Agent Skills，并管理 Skill 对当前用�
 - 识别以 `SKILL.md` 为入口的 Skill 目录，并允许可选的 `scripts/`、`references/`、`assets/` 及其他辅助文件。
 - 解析 `name`、`description`、`compatibility` 等通用元数据；未知扩展字段保留但不擅自赋予权限。
 - 展示当前用户的 Skill 列表、搜索、启用状态、来源、兼容性、正文和受控资源预览。
-- 初始上下文不常驻投影完整能力列表；模型需要专门流程或外部能力时调用统一 `capability_search`，从当前快照有界检索 Skill/MCP/可调用 Agent 三类同级轻量候选，命中后分别进入 `skill_load`、`mcp_load` 或 `agent_call`。
+- 初始上下文不常驻投影完整能力列表；模型需要专门流程或外部能力时调用统一 `capability_search`。该工具不接受能力类型筛选，每次固定从当前快照同时检索 Skill/MCP/可调用 Agent 三类同级轻量候选，命中后分别进入 `skill_load`、`mcp_load` 或 `agent_call`。
 - Skill 本身不动态注册一块常驻 Runtime。指令需要执行 `scripts/` 时，模型通过 Runtime 已有的通用命令能力调用 Client 内置优先的 Node.js/Python 或宿主 Shell。
 - macOS arm64 首个发行目标随 `.app` 固定交付经摘要校验的 Node/Python Runtime Pack；它们是 `bash` 背后的 Host Capability，不增加模型可见 `node`/`python` Tool。开发模式在 Runtime Pack 未准备时可以回退宿主解释器，正式包缺失或目标架构不匹配则启动失败。
 - 客户端负责版本锁、解释器检测、首次执行确认、命令超时与取消、stdout/stderr/退出码采集、受控工作目录、环境变量收敛和审计；不把第三方依赖预装进全局 Runtime，也不静默执行 npm/pip 安装。
@@ -988,7 +988,7 @@ cancel current Turn
 1. UI 读取当前用户的 SkillManagementSnapshot，展示搜索、启用状态、来源、兼容性、环境提示和详情入口。
 2. Skill 来源适配器把本地目录或后续 ModelScope/ClawHub 下载结果转换为标准 Agent Skill 目录；目录必须包含合法 `SKILL.md`，可选包含 `scripts/`、`references/` 和 `assets/`。
 3. Skill Management 校验目录边界、文件基本安全和必填 frontmatter，计算内容摘要并创建当前用户的安装记录；安装阶段不执行脚本、不自动安装依赖。
-4. 启用后更新该用户的 `skill_revision`。新 Step 获取不可变 Agent 能力快照；常驻 Prompt 不展开完整能力目录或正文，`capability_search` 接收完整自包含 userRequest 和可选 kinds/limit，先过滤授权候选，再复用当前模型在 Skill/MCP/可调用 Agent 的名称与简介上做语义选择。
+4. 启用后更新该用户的 `skill_revision`。新 Step 获取不可变 Agent 能力快照；常驻 Prompt 不展开完整能力目录或正文，`capability_search` 接收完整自包含 userRequest 和可选 limit，不提供 kinds 参数；它固定同时过滤 Skill/MCP/可调用 Agent 三类授权候选，再复用当前模型在三类候选的名称与简介上做语义选择。
 5. 模型在同一份能力搜索结果中判断使用 Skill、MCP、Agent、组合或都不使用；选择后分别调用 `skill_load`、`mcp_load`、`agent_call`，执行入口重新校验当前快照。Skill loader 只加载选中项的完整 `SKILL.md`，其中显式引用的资料和资源再按需读取。
 6. 当 Skill 指令要求运行脚本时，模型调用已有 `bash` 工具。Runtime Worker 先解析应用内固定版本的 `node`、`python3`、`python`，开发模式才回退宿主解释器；第三方依赖缺失时返回明确错误，不静默安装。
 7. 首次执行脚本前按当前用户和 Skill 内容摘要确认风险；执行统一经过超时、取消、输出限制、工作目录、环境变量收敛和日志审计。敏感凭据只有经明确授权才按名称注入。

@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { copyFile, mkdir, readdir } from 'node:fs/promises';
+import path from 'node:path';
 import {
   assistantMessagePhase,
   isHistoricalConversationMessage,
@@ -36,12 +38,32 @@ import {
   projectRuntime,
   type RuntimeProjection,
 } from '../client-contracts/projection';
-import type { RuntimeTool, ScheduledToolCall, ToolExecutionContext, ToolRegistry } from './tools';
+import type {
+  AgentExecutionConfigSnapshot,
+  RuntimeTool,
+  ScheduledToolCall,
+  ToolExecutionContext,
+  ToolRegistry,
+} from './tools';
 import { ToolExecutionError, ToolScheduler } from './tools';
 import { pruneToolResultText, selectCheckpointMessages } from './surface-compactor';
 import { modelToolsForPermission } from './permission-tool-policy';
 import type { AgentCallResult } from './delegation/agent-call-tool';
-import { DEFAULT_AGENT_ID } from '../shared/domain/agent';
+import {
+  DEFAULT_AGENT_ID,
+  type AgentDelegation,
+  type DelegationStatus,
+} from '../shared/domain/agent';
+import {
+  isAgentMemoryProfileReady,
+  readAgentMemoryProfile,
+} from '../infrastructure/workspace/agent-memory-profile';
+import {
+  sessionArtifactsPath,
+  sessionWorkspacePath,
+} from '../infrastructure/workspace/session-workspace';
+import { listCapabilityCandidates } from './capability-discovery';
+import type { SkillInstallation } from '../shared/domain/skill';
 
 export interface RuntimeServiceOptions {
   leaseDurationMs?: number;
@@ -86,6 +108,7 @@ interface PendingApproval {
 }
 
 export class RuntimeService {
+  private readonly appDataDir: string;
   private readonly repos: SqliteRepositories;
   private readonly clock: Clock;
   private readonly ids: IdProvider;
@@ -110,10 +133,12 @@ export class RuntimeService {
   private readonly active = new Map<string, ActiveExecution>();
   private readonly projectionCache = new Map<string, RuntimeProjection>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly delegationWaiters = new Map<string, Set<() => void>>();
   private closed = false;
 
   constructor(deps: RuntimeServiceDeps) {
-    this.contextProjector = new ContextProjector(deps.appDataDir);
+    this.appDataDir = deps.appDataDir;
+    this.contextProjector = new ContextProjector();
     this.repos = deps.repos;
     this.clock = deps.clock;
     this.ids = deps.ids;
@@ -250,6 +275,17 @@ export class RuntimeService {
       }
       return { approvalId: input.approvalId, resolution: input.resolution };
     }
+    const delegatedApprovalSession = this.delegatedSessionForApproval(
+      userId,
+      input.sessionId,
+      input.approvalId,
+    );
+    if (delegatedApprovalSession) {
+      return this.resolveApproval(userId, {
+        ...input,
+        sessionId: delegatedApprovalSession,
+      });
+    }
     const projection = this.load(userId, input.sessionId);
     const approval = projection.approvals.get(input.approvalId);
     const pending = this.pendingApprovals.get(input.approvalId);
@@ -301,8 +337,13 @@ export class RuntimeService {
       eventId?: string;
     },
   ): { inboxItemId: string; duplicate: boolean; scope: 'next-turn' | 'next-step' } {
-    this.requireActiveSession(userId, input.sessionId);
-    const session = this.requireSession(userId, input.sessionId);
+    const session = this.requireActiveSession(userId, input.sessionId);
+    if (!isAgentMemoryProfileReady(this.appDataDir, userId, session.agentId)) {
+      throw new BridgeError(
+        'CONFIGURATION_INVALID',
+        'Agent memory profile is not initialized; retry initialization before starting a turn',
+      );
+    }
     const duplicate = this.repos.sessions.findByIdempotencyKey(
       userId,
       input.sessionId,
@@ -565,6 +606,17 @@ export class RuntimeService {
         inboxItemId: stringAt(payload, 'inboxItemId') ?? null,
       };
     }
+    const delegatedInteractionSession = this.delegatedSessionForInteraction(
+      userId,
+      input.sessionId,
+      input.interactionId,
+    );
+    if (delegatedInteractionSession) {
+      return this.resolveInteraction(userId, {
+        ...input,
+        sessionId: delegatedInteractionSession,
+      });
+    }
     const projection = this.load(userId, input.sessionId);
     const interaction = projection.interactions.get(input.interactionId);
     if (!interaction || interaction.status !== 'pending') {
@@ -656,6 +708,26 @@ export class RuntimeService {
     const redacted = page.map(redactDiagnosticEvent);
     return {
       items: redacted,
+      nextAfterSeq: page.length === limit ? (page.at(-1)?.seq ?? null) : null,
+    };
+  }
+
+  /**
+   * 仅供已鉴权的会话事件流补齐断点使用。
+   *
+   * `eventsPage` 是面向诊断查询的脱敏视图，不能用于恢复 Renderer 的实时投影，
+   * 否则重连或 Snapshot/订阅之间的竞态会用 `[redacted]` 覆盖真实消息。
+   */
+  replayEventsPage(
+    userId: LocalUserId,
+    sessionId: string,
+    afterSeq: number,
+    limit: number,
+  ): { items: SessionLogEvent[]; nextAfterSeq: number | null } {
+    this.requireSession(userId, sessionId);
+    const page = this.repos.sessions.readEventsAfter(userId, sessionId, afterSeq).slice(0, limit);
+    return {
+      items: page,
       nextAfterSeq: page.length === limit ? (page.at(-1)?.seq ?? null) : null,
     };
   }
@@ -783,15 +855,23 @@ export class RuntimeService {
         ) {
           continue;
         }
-        const completedMessage = [...child.messages]
-          .reverse()
-          .find((message) => message.role === 'assistant' && message.content.trim());
-        this.repos.delegations.updateStatus(
-          user.id,
-          delegation.id,
-          completedMessage && !child.activeTurn ? 'completed' : 'interrupted',
+        const latestTurn = [...child.turns.values()].at(-1);
+        const completedMessage = latestTurn
+          ? delegatedFinalReport(child, latestTurn.id)
+          : undefined;
+        const recoveredStatus: Exclude<DelegationStatus, 'accepted'> =
+          latestTurn?.status === 'completed' && completedMessage
+            ? 'completed'
+            : latestTurn?.status === 'failed' || latestTurn?.status === 'completed'
+              ? 'failed'
+              : latestTurn?.status === 'cancelled'
+                ? 'cancelled'
+                : 'interrupted';
+        this.setDelegationStatus(
+          delegation,
+          recoveredStatus,
           completedMessage?.eventId ?? null,
-          this.clock.nowIso(),
+          completedMessage?.content,
         );
       }
     }
@@ -819,6 +899,15 @@ export class RuntimeService {
     }
     const existing = this.repos.delegations.getByToolCall(userId, context.toolCallId);
     if (existing) return this.delegationResult(existing);
+    if (
+      context.executionConfig &&
+      !context.executionConfig.delegateAgentIds.includes(input.targetAgentId)
+    ) {
+      throw new BridgeError(
+        'DELEGATION_NOT_ALLOWED',
+        'Agent delegation was not authorized in this Step snapshot',
+      );
+    }
     if (!this.repos.agents.canDelegate(userId, parent.agentId, input.targetAgentId)) {
       throw new BridgeError('DELEGATION_NOT_ALLOWED', 'Agent delegation is not authorized');
     }
@@ -831,7 +920,10 @@ export class RuntimeService {
     const delegatedSessionId = this.ids.newId();
     const now = this.clock.nowIso();
     const deadline = new Date(this.clock.now().getTime() + 10 * 60_000).toISOString();
-    const permissionPreset = narrowerPermission(parent.permissionPreset, target.permissionPreset);
+    // A delegated session is the execution trace of the caller's agent_call, not a new
+    // user-owned conversation. Freeze the caller Step's authority for the child run;
+    // the target profile's preset still applies when that Agent is opened directly.
+    const permissionPreset = context.permissionPreset;
     this.repos.transaction(() => {
       this.repos.sessions.createSession({
         id: delegatedSessionId,
@@ -868,7 +960,20 @@ export class RuntimeService {
         updatedAt: now,
       });
     });
-    this.repos.delegations.updateStatus(userId, delegationId, 'running', null, now);
+    const delegation = this.repos.delegations.get(userId, delegationId)!;
+    this.append(userId, parent.id, [
+      this.event('agent.delegation.accepted', {
+        delegationId,
+        parentTurnId: context.turnId,
+        parentToolCallId: context.toolCallId,
+        delegatedSessionId,
+        targetAgentId: target.id,
+        callerAgentName: this.repos.agents.get(userId, parent.agentId)?.name ?? parent.agentId,
+        targetAgentName: target.name,
+        status: 'accepted',
+      }),
+    ]);
+    this.setDelegationStatus(delegation, 'running', null);
     this.submitInput(userId, {
       sessionId: delegatedSessionId,
       content: input.task,
@@ -876,7 +981,17 @@ export class RuntimeService {
       startNewEvent: true,
     });
     try {
-      await this.waitForSessionIdle(userId, delegatedSessionId, context.signal);
+      while (true) {
+        await this.waitForSessionIdle(userId, delegatedSessionId, context.signal);
+        const child = this.load(userId, delegatedSessionId);
+        const awaitingInteraction = [...child.interactions.values()].some(
+          (interaction) => interaction.status === 'pending',
+        );
+        if (!awaitingInteraction) break;
+        this.setDelegationStatus(delegation, 'awaiting_user', null);
+        await this.waitForDelegatedInput(userId, delegatedSessionId, context.signal);
+        this.setDelegationStatus(delegation, 'running', null);
+      }
     } catch (error) {
       const child = this.load(userId, delegatedSessionId);
       if (child.activeTurn) {
@@ -886,15 +1001,18 @@ export class RuntimeService {
           reason: 'parent_cancelled',
         });
       } else {
+        for (const interaction of child.interactions.values()) {
+          if (interaction.status !== 'pending') continue;
+          this.resolveInteraction(userId, {
+            sessionId: delegatedSessionId,
+            interactionId: interaction.id,
+            resolution: 'cancelled',
+            idempotencyKey: `delegation-cancel:${delegationId}:${interaction.id}`,
+          });
+        }
         for (const item of child.inbox) this.removeInboxItem(userId, delegatedSessionId, item.id);
       }
-      this.repos.delegations.updateStatus(
-        userId,
-        delegationId,
-        'cancelled',
-        null,
-        this.clock.nowIso(),
-      );
+      this.setDelegationStatus(delegation, 'cancelled', null);
       throw new ToolExecutionError(
         'DELEGATION_CANCELLED',
         'cancelled',
@@ -902,62 +1020,184 @@ export class RuntimeService {
         error instanceof Error ? error.message : 'Parent delegation was cancelled',
       );
     }
-    const projection = this.load(userId, delegatedSessionId);
-    if (
-      projection.activeTurn ||
-      [...projection.interactions.values()].some((interaction) => interaction.status === 'pending')
-    ) {
-      this.repos.delegations.updateStatus(
-        userId,
-        delegationId,
-        'awaiting_user',
-        null,
-        this.clock.nowIso(),
-      );
-      return {
-        delegationId,
-        delegatedSessionId,
-        targetAgentId: target.id,
-        status: 'awaiting_user',
-        report: '受派智能体正在等待用户输入或批准。',
-      };
-    }
-    const message = [...projection.messages]
-      .reverse()
-      .find((candidate) => candidate.role === 'assistant' && candidate.content.trim());
-    const report = message?.content.slice(0, 32 * 1024) ?? '';
-    const status = report ? 'completed' : 'failed';
-    this.repos.delegations.updateStatus(
-      userId,
-      delegationId,
-      status,
-      message?.eventId ?? null,
-      this.clock.nowIso(),
-    );
-    return { delegationId, delegatedSessionId, targetAgentId: target.id, status, report };
+    return this.delegationResult(this.repos.delegations.get(userId, delegationId) ?? delegation);
   }
 
-  private delegationResult(
-    delegation: import('../shared/domain/agent').AgentDelegation,
-  ): AgentCallResult {
+  private async delegationResult(delegation: AgentDelegation): Promise<AgentCallResult> {
     const projection = this.load(delegation.userId, delegation.delegatedSessionId);
-    const report =
-      [...projection.messages]
-        .reverse()
-        .find((candidate) => candidate.role === 'assistant' && candidate.content.trim())
-        ?.content.slice(0, 32 * 1024) ?? '';
-    return {
-      delegationId: delegation.id,
-      delegatedSessionId: delegation.delegatedSessionId,
-      targetAgentId: delegation.targetAgentId,
-      status:
-        delegation.status === 'completed'
-          ? 'completed'
-          : delegation.status === 'awaiting_user'
-            ? 'awaiting_user'
-            : 'failed',
-      report,
+    const latestTurn = [...projection.turns.values()].at(-1);
+    const reportMessage = latestTurn ? delegatedFinalReport(projection, latestTurn.id) : undefined;
+    const report = this.sanitizeDelegatedReport(
+      delegation,
+      reportMessage?.content.slice(0, 32 * 1024) ?? '',
+    );
+    if (delegation.status === 'completed' && report) {
+      const locations = await this.materializeDelegatedArtifacts(delegation);
+      return {
+        delegationId: delegation.id,
+        delegatedSessionId: delegation.delegatedSessionId,
+        targetAgentId: delegation.targetAgentId,
+        status: 'completed',
+        report,
+        locations,
+      };
+    }
+    if (delegation.status === 'accepted' || delegation.status === 'running') {
+      return {
+        delegationId: delegation.id,
+        delegatedSessionId: delegation.delegatedSessionId,
+        targetAgentId: delegation.targetAgentId,
+        status: 'awaiting_user',
+        report: '受派智能体仍在执行。',
+        locations: [],
+      };
+    }
+    if (delegation.status === 'awaiting_user') {
+      return {
+        delegationId: delegation.id,
+        delegatedSessionId: delegation.delegatedSessionId,
+        targetAgentId: delegation.targetAgentId,
+        status: 'awaiting_user',
+        report: '受派智能体正在等待用户输入或批准。',
+        locations: [],
+      };
+    }
+    const missingFinalReport = latestTurn?.status === 'completed' && !report;
+    const reason = missingFinalReport
+      ? 'missing_final_answer'
+      : (latestTurn?.endReason ?? delegation.status);
+    const code =
+      delegation.status === 'cancelled'
+        ? 'DELEGATION_CANCELLED'
+        : missingFinalReport || delegation.status === 'completed'
+          ? 'DELEGATED_AGENT_NO_FINAL_REPORT'
+          : 'DELEGATED_AGENT_FAILED';
+    throw new ToolExecutionError(
+      code,
+      delegation.status === 'cancelled' ? 'cancelled' : 'fatal_error',
+      {
+        delegationId: delegation.id,
+        delegatedSessionId: delegation.delegatedSessionId,
+        targetAgentId: delegation.targetAgentId,
+        delegationStatus: delegation.status,
+        reason,
+      },
+      `受派智能体执行失败：${reason}`,
+    );
+  }
+
+  private delegatedSessionForInteraction(
+    userId: LocalUserId,
+    parentSessionId: string,
+    interactionId: string,
+  ): string | undefined {
+    return this.repos.delegations
+      .listForParent(userId, parentSessionId)
+      .find((delegation) =>
+        this.load(userId, delegation.delegatedSessionId).interactions.has(interactionId),
+      )?.delegatedSessionId;
+  }
+
+  private delegatedSessionForApproval(
+    userId: LocalUserId,
+    parentSessionId: string,
+    approvalId: string,
+  ): string | undefined {
+    return this.repos.delegations
+      .listForParent(userId, parentSessionId)
+      .find((delegation) =>
+        this.load(userId, delegation.delegatedSessionId).approvals.has(approvalId),
+      )?.delegatedSessionId;
+  }
+
+  private setDelegationStatus(
+    delegation: AgentDelegation,
+    status: Exclude<DelegationStatus, 'accepted'>,
+    resultEventRef: string | null,
+    report?: string,
+  ): void {
+    const current = this.repos.delegations.get(delegation.userId, delegation.id);
+    if (current?.status === status && current.resultEventRef === resultEventRef) return;
+    if (current && isTerminalDelegationStatus(current.status)) return;
+    const now = this.clock.nowIso();
+    this.repos.transaction(() => {
+      this.repos.delegations.updateStatus(
+        delegation.userId,
+        delegation.id,
+        status,
+        resultEventRef,
+        now,
+      );
+      this.append(delegation.userId, delegation.parentSessionId, [
+        this.event('agent.delegation.status-changed', {
+          delegationId: delegation.id,
+          status,
+          resultEventRef,
+          ...(report
+            ? {
+                report: this.sanitizeDelegatedReport(delegation, report).slice(0, 32 * 1024),
+              }
+            : {}),
+        }),
+      ]);
+    });
+  }
+
+  private sanitizeDelegatedReport(delegation: AgentDelegation, report: string): string {
+    if (!report) return report;
+    const scope = {
+      userId: delegation.userId,
+      sessionId: delegation.delegatedSessionId,
     };
+    const artifactsPrefix = `${sessionArtifactsPath(this.appDataDir, scope)}${path.sep}`;
+    const workspacePrefix = `${sessionWorkspacePath(this.appDataDir, scope)}${path.sep}`;
+    return report.replaceAll(artifactsPrefix, '').replaceAll(workspacePrefix, '');
+  }
+
+  private async materializeDelegatedArtifacts(
+    delegation: AgentDelegation,
+  ): Promise<Array<{ path: string }>> {
+    const sourceRoot = sessionArtifactsPath(this.appDataDir, {
+      userId: delegation.userId,
+      sessionId: delegation.delegatedSessionId,
+    });
+    let files: string[];
+    try {
+      files = await listRegularFiles(sourceRoot);
+    } catch (error) {
+      this.logger.warn('delegated artifact discovery failed; continuing without file cards', {
+        delegationId: delegation.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+    if (files.length === 0) return [];
+
+    const relativeRoot = path.posix.join('artifacts', 'delegated', delegation.id);
+    const targetRoot = path.join(
+      sessionArtifactsPath(this.appDataDir, {
+        userId: delegation.userId,
+        sessionId: delegation.parentSessionId,
+      }),
+      'delegated',
+      delegation.id,
+    );
+    const locations: Array<{ path: string }> = [];
+    for (const relative of files) {
+      const target = path.join(targetRoot, ...relative.split('/'));
+      try {
+        await mkdir(path.dirname(target), { recursive: true });
+        await copyFile(path.join(sourceRoot, ...relative.split('/')), target);
+        locations.push({ path: path.posix.join(relativeRoot, relative) });
+      } catch (error) {
+        this.logger.warn('delegated artifact copy failed; continuing', {
+          delegationId: delegation.id,
+          file: relative,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return locations;
   }
 
   private async waitForSessionIdle(
@@ -975,11 +1215,53 @@ export class RuntimeService {
     });
   }
 
+  private async waitForDelegatedInput(
+    userId: LocalUserId,
+    sessionId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const hasPendingInteraction = () =>
+      [...this.load(userId, sessionId).interactions.values()].some(
+        (interaction) => interaction.status === 'pending',
+      );
+    if (!hasPendingInteraction()) return;
+    if (signal.aborted) throw signal.reason ?? new Error('Operation aborted');
+    await new Promise<void>((resolve, reject) => {
+      const waiters = this.delegationWaiters.get(sessionId) ?? new Set<() => void>();
+      let settled = false;
+      const cleanup = () => {
+        waiters.delete(finish);
+        if (waiters.size === 0) this.delegationWaiters.delete(sessionId);
+        signal.removeEventListener('abort', abort);
+      };
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const abort = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(signal.reason ?? new Error('Operation aborted'));
+      };
+      waiters.add(finish);
+      this.delegationWaiters.set(sessionId, waiters);
+      signal.addEventListener('abort', abort, { once: true });
+      if (!hasPendingInteraction()) finish();
+    });
+  }
+
   close(): void {
     this.closed = true;
     for (const pending of this.pendingApprovals.values()) pending.resolve('unavailable');
     this.pendingApprovals.clear();
     for (const execution of this.active.values()) execution.controller.abort();
+    for (const waiters of this.delegationWaiters.values()) {
+      for (const wake of waiters) wake();
+    }
+    this.delegationWaiters.clear();
     while (this.sessionWaiters.length > 0) this.sessionWaiters.shift()?.();
   }
 
@@ -1106,26 +1388,6 @@ export class RuntimeService {
     let stepIndex = 0;
     try {
       const session = this.requireSession(identity.userId, identity.sessionId);
-      const agent = this.resolveAgent(identity.userId, session.agentId);
-      let model: ModelSnapshot;
-      try {
-        model = this.resolveModel(identity.userId, session.agentId);
-      } catch (error) {
-        await this.endTurn(identity, turnId, eventId, exchangeId, 'failed', errorCodeOf(error));
-        return;
-      }
-      const adapter = this.llmAdapters.get(model.providerType);
-      if (!adapter) {
-        await this.endTurn(
-          identity,
-          turnId,
-          eventId,
-          exchangeId,
-          'failed',
-          'model_adapter_unavailable',
-        );
-        return;
-      }
       while (true) {
         const before = this.load(identity.userId, identity.sessionId);
         if (before.turns.get(turnId)?.cancelRequested || controller.signal.aborted) {
@@ -1133,15 +1395,146 @@ export class RuntimeService {
           return;
         }
         stepIndex += 1;
+        const agent = this.resolveAgent(identity.userId, session.agentId);
+        let model: ModelSnapshot;
+        try {
+          model = this.resolveModel(identity.userId, session.agentId);
+        } catch (error) {
+          await this.endTurn(identity, turnId, eventId, exchangeId, 'failed', errorCodeOf(error));
+          return;
+        }
+        const adapter = this.llmAdapters.get(model.providerType);
+        if (!adapter) {
+          await this.endTurn(
+            identity,
+            turnId,
+            eventId,
+            exchangeId,
+            'failed',
+            'model_adapter_unavailable',
+          );
+          return;
+        }
         const permissionPreset = this.requireSession(
           identity.userId,
           identity.sessionId,
         ).permissionPreset;
+        const revisions = this.repos.users.getRevisions(identity.userId);
+        const agentProfile = this.repos.agents.requireActive(identity.userId, session.agentId);
+        const bindings = this.repos.agents.listBindings(identity.userId, session.agentId);
+        const boundSkillIds = new Set(bindings.skillIds);
+        const skills = this.repos.skills
+          .listInstallations(identity.userId)
+          .filter(
+            (skill) =>
+              boundSkillIds.has(skill.id) &&
+              skill.enabled &&
+              skill.status === 'valid' &&
+              skill.compatibilityStatus !== 'incompatible',
+          );
+        const validSkillIds = new Set(skills.map((skill) => skill.id));
+        const capabilityCandidates = listCapabilityCandidates(
+          this.repos,
+          identity.userId,
+          session.agentId,
+          session.origin,
+          { sessionId: session.id },
+        );
+        const fullAgentMemoryProfile = readAgentMemoryProfile(
+          this.appDataDir,
+          identity.userId,
+          session.agentId,
+        );
+        const agentMemoryProfile = fullAgentMemoryProfile.slice(0, 32 * 1024);
+        const agentMemoryDigest = createHash('sha256').update(fullAgentMemoryProfile).digest('hex');
+        const validMcpCapabilities = new Set(
+          capabilityCandidates
+            .filter((candidate) => candidate.kind === 'mcp')
+            .map((candidate) => candidate.capabilityId),
+        );
+        const validDelegateAgentIds = new Set(
+          capabilityCandidates
+            .filter((candidate) => candidate.kind === 'agent')
+            .map((candidate) => candidate.capabilityId),
+        );
+        const mcpServers = new Map(
+          this.repos.mcp.listServers(identity.userId).map((server) => [server.id, server] as const),
+        );
+        const mcpTools = this.repos.mcp.listTools(identity.userId);
+        const validMcpBindings = bindings.mcp
+          .filter((binding) =>
+            validMcpCapabilities.has(`${binding.serverId}:${binding.accessScope}`),
+          )
+          .map((binding) => {
+            const server = mcpServers.get(binding.serverId)!;
+            const tools = mcpTools
+              .filter(
+                (tool) =>
+                  tool.serverId === binding.serverId &&
+                  tool.enabled &&
+                  tool.reviewStatus === 'approved',
+              )
+              .map((tool) => [tool.publicName, tool.schemaDigest])
+              .sort((left, right) => left[0]!.localeCompare(right[0]!));
+            return {
+              serverId: binding.serverId,
+              accessScope: binding.accessScope,
+              configDigest: createHash('sha256')
+                .update(
+                  safeJson({
+                    transport: server.transport,
+                    config: server.config,
+                    credentialRef: server.credentialRef,
+                    generation: server.generation,
+                  }),
+                )
+                .digest('hex'),
+              schemaDigest: createHash('sha256').update(safeJson(tools)).digest('hex'),
+            };
+          });
+        const delegateAgentIds = bindings.delegateAgentIds.filter((agentId) =>
+          validDelegateAgentIds.has(agentId),
+        );
+        const agentConfigDigest = createHash('sha256')
+          .update(
+            safeJson({
+              instructions: agent.instructions,
+              agentMemoryDigest,
+              modelId: model.modelId,
+              modelConfigRevision: model.configRevision,
+              permissionPreset,
+              skills: skills.map((skill) => [skill.id, skill.contentDigest]),
+              mcpBindings: validMcpBindings,
+              delegateAgentIds,
+              capabilityCandidates,
+            }),
+          )
+          .digest('hex');
+        const executionConfig: AgentExecutionConfigSnapshot = {
+          userId: identity.userId,
+          agentId: session.agentId,
+          agentRevision: revisions.agentRevision,
+          agentProfileRevision: agentProfile.revision,
+          agentInstructions: agent.instructions,
+          agentMemoryProfile,
+          agentMemoryDigest,
+          agentConfigDigest,
+          model,
+          modelSource: agentProfile.defaultModelId ? 'agent-default' : 'user-default',
+          permissionPreset,
+          permissionUpperBound: permissionPreset,
+          skillRevision: revisions.skillRevision,
+          runtimeRevision: revisions.runtimeRevision,
+          mcpRevision: revisions.mcpRevision,
+          skillIds: bindings.skillIds.filter((skillId) => validSkillIds.has(skillId)),
+          mcpBindings: validMcpBindings,
+          delegateAgentIds,
+          capabilityCandidates,
+        };
         const canDelegate =
           session.origin === 'direct' &&
           this.repos.agents.hasSchema &&
-          this.repos.agents.listBindings(identity.userId, session.agentId).delegateAgentIds.length >
-            0;
+          executionConfig.delegateAgentIds.length > 0;
         const availableTools = modelToolsForPermission(
           this.tools.definitions(identity.userId, identity.sessionId, turnId),
           permissionPreset,
@@ -1164,6 +1557,8 @@ export class RuntimeService {
               controller.signal,
               availableTools,
               permissionPreset,
+              executionConfig,
+              skills,
             );
           }
           await this.compactSurfaceIfNeeded(
@@ -1175,6 +1570,8 @@ export class RuntimeService {
             controller.signal,
             availableTools,
             permissionPreset,
+            executionConfig,
+            skills,
           );
         } catch (error) {
           const cancelled = controller.signal.aborted;
@@ -1208,14 +1605,13 @@ export class RuntimeService {
           this.clock.nowIso(),
         );
 
-        const revisions = this.repos.users.getRevisions(identity.userId);
-        const skills = this.repos.skills.listInstallations(identity.userId);
         let context;
         try {
           context = this.contextProjector.project({
             userId: identity.userId,
             agentId: session.agentId,
-            agentInstructions: agent.instructions,
+            agentInstructions: executionConfig.agentInstructions,
+            agentMemoryProfile: executionConfig.agentMemoryProfile,
             projection: projectedForContext,
             progressReminder,
             eventId,
@@ -1227,7 +1623,12 @@ export class RuntimeService {
             tools: availableTools,
             skills,
             permissionPreset,
-            promptEpoch: SYSTEM_PROMPT_REVISION + revisions.skillRevision + revisions.mcpRevision,
+            promptEpoch:
+              SYSTEM_PROMPT_REVISION +
+              executionConfig.skillRevision +
+              executionConfig.mcpRevision +
+              executionConfig.agentRevision +
+              digestEpoch(executionConfig.agentConfigDigest),
           });
         } catch (error) {
           const reason =
@@ -1261,6 +1662,10 @@ export class RuntimeService {
               skillRevision: revisions.skillRevision,
               runtimeRevision: revisions.runtimeRevision,
               mcpRevision: revisions.mcpRevision,
+              agentRevision: revisions.agentRevision,
+              agentProfileRevision: executionConfig.agentProfileRevision,
+              agentMemoryDigest: executionConfig.agentMemoryDigest,
+              agentConfigDigest: executionConfig.agentConfigDigest,
               toolSnapshot: availableTools.map((tool) => ({
                 name: tool.name,
                 schemaDigest: tool.name.startsWith('mcp__')
@@ -1403,6 +1808,8 @@ export class RuntimeService {
                   controller.signal,
                   availableTools,
                   permissionPreset,
+                  executionConfig,
+                  skills,
                   true,
                 );
                 if (surfaceChanged) {
@@ -1411,7 +1818,8 @@ export class RuntimeService {
                     progressReminder,
                     userId: identity.userId,
                     agentId: session.agentId,
-                    agentInstructions: agent.instructions,
+                    agentInstructions: executionConfig.agentInstructions,
+                    agentMemoryProfile: executionConfig.agentMemoryProfile,
                     projection: this.load(identity.userId, identity.sessionId),
                     eventId,
                     turnId,
@@ -1423,7 +1831,11 @@ export class RuntimeService {
                     skills,
                     permissionPreset,
                     promptEpoch:
-                      SYSTEM_PROMPT_REVISION + revisions.skillRevision + revisions.mcpRevision,
+                      SYSTEM_PROMPT_REVISION +
+                      executionConfig.skillRevision +
+                      executionConfig.mcpRevision +
+                      executionConfig.agentRevision +
+                      digestEpoch(executionConfig.agentConfigDigest),
                   });
                   context = recovered;
                   this.append(
@@ -1444,6 +1856,10 @@ export class RuntimeService {
                         skillRevision: revisions.skillRevision,
                         runtimeRevision: revisions.runtimeRevision,
                         mcpRevision: revisions.mcpRevision,
+                        agentRevision: revisions.agentRevision,
+                        agentProfileRevision: executionConfig.agentProfileRevision,
+                        agentMemoryDigest: executionConfig.agentMemoryDigest,
+                        agentConfigDigest: executionConfig.agentConfigDigest,
                         toolSnapshot: availableTools.map((tool) => ({
                           name: tool.name,
                           schemaDigest: tool.name.startsWith('mcp__')
@@ -1581,11 +1997,13 @@ export class RuntimeService {
             results = await this.scheduler.execute(response.toolCalls, {
               userId: identity.userId,
               agentId: session.agentId,
+              sessionOrigin: session.origin,
               sessionId: identity.sessionId,
               eventId,
               turnId,
               stepId,
               permissionPreset,
+              executionConfig,
               signal: controller.signal,
               reportProgress: (progress) => {
                 const message = normalizeToolProgressMessage(progress.message);
@@ -1777,23 +2195,23 @@ export class RuntimeService {
         identity.sessionId,
       );
       if (delegation) {
-        const reportEventRef = [...this.load(identity.userId, identity.sessionId).messages]
-          .reverse()
-          .find((message) => message.role === 'assistant' && message.content.trim())?.eventId;
-        this.repos.delegations.updateStatus(
-          identity.userId,
-          delegation.id,
-          awaitingUser
-            ? 'awaiting_user'
-            : status === 'completed'
-              ? 'completed'
+        const child = this.load(identity.userId, identity.sessionId);
+        const reportMessage =
+          status === 'completed' && !awaitingUser ? delegatedFinalReport(child, turnId) : undefined;
+        const delegationStatus: Exclude<DelegationStatus, 'accepted'> = awaitingUser
+          ? 'awaiting_user'
+          : status === 'completed' && reportMessage
+            ? 'completed'
+            : status === 'completed' || status === 'failed'
+              ? 'failed'
               : status === 'cancelled'
                 ? 'cancelled'
-                : status === 'interrupted'
-                  ? 'interrupted'
-                  : 'failed',
-          reportEventRef ?? null,
-          this.clock.nowIso(),
+                : 'interrupted';
+        this.setDelegationStatus(
+          delegation,
+          delegationStatus,
+          reportMessage?.eventId ?? null,
+          reportMessage?.content,
         );
       }
     }
@@ -1844,13 +2262,17 @@ export class RuntimeService {
     signal: AbortSignal,
     availableTools: readonly ModelToolDefinition[],
     permissionPreset: PermissionPreset,
+    executionConfig: AgentExecutionConfigSnapshot,
+    skills: readonly SkillInstallation[],
   ): Promise<void> {
     const projection = this.load(identity.userId, identity.sessionId);
     const event = projection.events.get(eventId);
     if (!event) return;
-    const skills = this.repos.skills.listInstallations(identity.userId);
     const measurement = this.contextProjector.measureFull({
       userId: identity.userId,
+      agentId: executionConfig.agentId,
+      agentInstructions: executionConfig.agentInstructions,
+      agentMemoryProfile: executionConfig.agentMemoryProfile,
       projection,
       eventId,
       turnId,
@@ -1966,15 +2388,19 @@ export class RuntimeService {
     signal: AbortSignal,
     availableTools: readonly ModelToolDefinition[],
     permissionPreset: PermissionPreset,
+    executionConfig: AgentExecutionConfigSnapshot,
+    skills: readonly SkillInstallation[],
     force = false,
   ): Promise<boolean> {
     let changed = false;
     try {
       for (let attempt = 0; attempt <= this.compactionRetries; attempt += 1) {
         let projection = this.load(identity.userId, identity.sessionId);
-        const revisions = this.repos.users.getRevisions(identity.userId);
         const measurementInput = {
           userId: identity.userId,
+          agentId: executionConfig.agentId,
+          agentInstructions: executionConfig.agentInstructions,
+          agentMemoryProfile: executionConfig.agentMemoryProfile,
           eventId,
           turnId,
           contextWindow: model.contextWindow,
@@ -1982,9 +2408,14 @@ export class RuntimeService {
           reservedOutputTokens: this.outputReservationTokens(model),
           safetyTokens: this.safetyTokens,
           tools: availableTools,
-          skills: this.repos.skills.listInstallations(identity.userId),
+          skills,
           permissionPreset,
-          promptEpoch: SYSTEM_PROMPT_REVISION + revisions.skillRevision + revisions.mcpRevision,
+          promptEpoch:
+            SYSTEM_PROMPT_REVISION +
+            executionConfig.skillRevision +
+            executionConfig.mcpRevision +
+            executionConfig.agentRevision +
+            digestEpoch(executionConfig.agentConfigDigest),
         };
         let measurement = this.contextProjector.measureFull({
           projection,
@@ -2294,6 +2725,16 @@ export class RuntimeService {
         } catch {
           this.logger.warn('session event notification failed', { userId, sessionId });
         }
+        try {
+          this.mirrorDelegatedEvents(userId, sessionId, committed);
+        } catch (error) {
+          this.logger.warn('delegated event mirroring failed', {
+            userId,
+            sessionId,
+            errorCode: errorCodeOf(error),
+          });
+        }
+        this.notifyDelegationWaiters(sessionId);
         return;
       } catch (error) {
         if (error instanceof BridgeError && error.code === 'REVISION_CONFLICT') {
@@ -2304,6 +2745,90 @@ export class RuntimeService {
       }
     }
     throw conflict ?? new BridgeError('REVISION_CONFLICT', 'Session version conflict');
+  }
+
+  private mirrorDelegatedEvents(
+    userId: LocalUserId,
+    sessionId: string,
+    events: readonly SessionLogEvent[],
+  ): void {
+    const delegation = this.repos.delegations.getByDelegatedSession(userId, sessionId);
+    if (!delegation) return;
+    const parent = this.load(userId, delegation.parentSessionId);
+    const parentTurn = parent.turns.get(delegation.parentTurnId);
+    const parentToolCall = parent.toolCalls.get(delegation.parentToolCallId);
+    if (!parentTurn || !parentToolCall?.stepId) return;
+    const sourceName =
+      this.repos.agents.get(userId, delegation.targetAgentId)?.name ?? '受派智能体';
+    const mirrored: AppendEventInput[] = [];
+    for (const event of events) {
+      const payload = asRecord(event.payload);
+      if (!payload) continue;
+      if (event.eventType === 'interaction.requested') {
+        const interactionId = stringAt(payload, 'interactionId');
+        const prompt = stringAt(payload, 'prompt');
+        const kind = stringAt(payload, 'kind');
+        if (!interactionId || !prompt || !kind) continue;
+        mirrored.push(
+          this.event('interaction.requested', {
+            interactionId,
+            toolCallId: delegation.parentToolCallId,
+            eventId: parentTurn.eventId,
+            turnId: delegation.parentTurnId,
+            prompt: `来自「${sourceName}」：${prompt}`,
+            kind,
+            options: Array.isArray(payload.options) ? payload.options : [],
+            ...(Array.isArray(payload.questions) ? { questions: payload.questions } : {}),
+            ...(asRecord(payload.schema) ? { schema: payload.schema } : {}),
+          }),
+        );
+      } else if (event.eventType === 'interaction.resolved') {
+        const interactionId = stringAt(payload, 'interactionId');
+        const resolution = stringAt(payload, 'resolution');
+        if (!interactionId || !resolution) continue;
+        mirrored.push(
+          this.event('interaction.resolved', {
+            interactionId,
+            eventId: parentTurn.eventId,
+            value: payload.value,
+            resolution,
+            inboxItemId: stringAt(payload, 'inboxItemId') ?? null,
+          }),
+        );
+      } else if (event.eventType === 'approval.requested') {
+        const approvalId = stringAt(payload, 'approvalId');
+        const toolName = stringAt(payload, 'toolName');
+        const toolIdentity = stringAt(payload, 'toolIdentity');
+        const argumentsDigest = stringAt(payload, 'argumentsDigest');
+        const policy = stringAt(payload, 'policy');
+        if (!approvalId || !toolName || !toolIdentity || !argumentsDigest || !policy) continue;
+        mirrored.push(
+          this.event('approval.requested', {
+            approvalId,
+            toolCallId: delegation.parentToolCallId,
+            toolName: `${sourceName} · ${toolName}`,
+            toolIdentity,
+            argumentsDigest,
+            eventId: parentTurn.eventId,
+            turnId: delegation.parentTurnId,
+            stepId: parentToolCall.stepId,
+            policy,
+            presentation: payload.presentation ?? null,
+          }),
+        );
+      } else if (event.eventType === 'approval.resolved') {
+        const approvalId = stringAt(payload, 'approvalId');
+        const toolIdentity = stringAt(payload, 'toolIdentity');
+        const resolution = stringAt(payload, 'resolution');
+        if (!approvalId || !toolIdentity || !resolution) continue;
+        mirrored.push(this.event('approval.resolved', { approvalId, toolIdentity, resolution }));
+      }
+    }
+    if (mirrored.length > 0) this.append(userId, delegation.parentSessionId, mirrored);
+  }
+
+  private notifyDelegationWaiters(sessionId: string): void {
+    for (const wake of this.delegationWaiters.get(sessionId) ?? []) wake();
   }
 
   private syncProjection(
@@ -2520,15 +3045,6 @@ function keyOf(userId: LocalUserId, sessionId: string): string {
   return `${userId}\u0000${sessionId}`;
 }
 
-function narrowerPermission(caller: PermissionPreset, target: PermissionPreset): PermissionPreset {
-  const rank: Record<PermissionPreset, number> = {
-    'approval-required': 0,
-    guarded: 1,
-    'full-access': 2,
-  };
-  return rank[caller] <= rank[target] ? caller : target;
-}
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -2576,6 +3092,7 @@ function serializeProjection(session: unknown, projection: RuntimeProjection): u
     messages: projection.messages,
     interactions: [...projection.interactions.values()],
     approvals: [...projection.approvals.values()],
+    delegations: [...projection.delegations.values()],
     permissionGrants: [...projection.permissionGrants],
     trajectory: {
       steps: [...projection.steps.values()],
@@ -2626,6 +3143,62 @@ function presentToolCall(tool: RuntimeTool | undefined, args: unknown): unknown 
 
 function toolSchemaDigest(schema: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify(schema)).digest('hex');
+}
+
+function delegatedFinalReport(
+  projection: RuntimeProjection,
+  turnId: string,
+): RuntimeProjection['messages'][number] | undefined {
+  return [...projection.messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.turnId === turnId &&
+        message.role === 'assistant' &&
+        assistantMessagePhase(message) === 'final_answer' &&
+        Boolean(message.content.trim()),
+    );
+}
+
+async function listRegularFiles(root: string, relativeRoot = ''): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(path.join(root, ...relativeRoot.split('/').filter(Boolean)), {
+      withFileTypes: true,
+    });
+  } catch (error) {
+    if (isMissingFile(error)) return [];
+    throw error;
+  }
+  const files: string[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const relative = relativeRoot ? path.posix.join(relativeRoot, entry.name) : entry.name;
+    if (entry.isDirectory()) files.push(...(await listRegularFiles(root, relative)));
+    else if (entry.isFile()) files.push(relative);
+  }
+  return files;
+}
+
+function isMissingFile(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: string }).code === 'ENOENT'
+  );
+}
+
+function isTerminalDelegationStatus(status: DelegationStatus): boolean {
+  return (
+    status === 'completed' ||
+    status === 'failed' ||
+    status === 'cancelled' ||
+    status === 'interrupted'
+  );
+}
+
+function digestEpoch(digest: string): number {
+  return Number.parseInt(digest.slice(0, 7), 16) || 1;
 }
 
 function redactDiagnosticEvent(event: SessionLogEvent): SessionLogEvent {

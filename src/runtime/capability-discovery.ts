@@ -16,7 +16,6 @@ export const NO_CAPABILITY_REASON = '当前问题没有合适工具';
 const capabilitySearchInput = z
   .object({
     userRequest: z.string().trim().min(1).max(8_000),
-    kinds: z.array(z.enum(CAPABILITY_KINDS)).max(3).optional(),
     limit: z.number().int().min(1).max(20).default(5),
   })
   .strict();
@@ -62,7 +61,7 @@ export function createCapabilitySearchTool(
   return {
     name: 'capability_search',
     description:
-      '根据完整、自包含的 userRequest，在内部复用当前会话模型，从当前智能体已授权的 Skill、MCP 与可调用智能体中做语义选择。不要只传关键词，不要指定候选名称或 ID。',
+      '根据完整、自包含的 userRequest，在内部复用当前会话模型，同时从当前智能体已授权的 Skill、MCP 与可调用智能体中做语义选择。三类能力始终一起搜索，不需要也不能指定能力类型。不要只传关键词，不要指定候选名称或 ID。',
     parameters: {
       type: 'object',
       properties: {
@@ -73,7 +72,6 @@ export function createCapabilitySearchTool(
           description:
             '根据当前对话消解指代后得到的完整、自包含任务描述；保留用户目标、对象和约束，不要只传关键词。',
         },
-        kinds: { type: 'array', items: { enum: CAPABILITY_KINDS }, maxItems: 3 },
         limit: { type: 'integer', minimum: 1, maximum: 20, default: 5 },
       },
       required: ['userRequest'],
@@ -87,13 +85,11 @@ export function createCapabilitySearchTool(
       const input = capabilitySearchInput.parse(raw);
       const session = repos.sessions.getSession(context.userId, context.sessionId);
       if (!session || session.agentId !== context.agentId) return emptyResult(input.userRequest);
-      const candidates = listCapabilityCandidates(
-        repos,
-        context.userId,
-        context.agentId,
-        session.origin,
-        { kinds: input.kinds, sessionId: session.id },
-      );
+      const candidates = context.executionConfig
+        ? context.executionConfig.capabilityCandidates
+        : listCapabilityCandidates(repos, context.userId, context.agentId, session.origin, {
+            sessionId: session.id,
+          });
       if (candidates.length === 0) return emptyResult(input.userRequest);
 
       let selection: CapabilitySelectorResult;
@@ -154,11 +150,9 @@ export function listCapabilityCandidates(
   agentId: string,
   origin: SessionOrigin,
   options: {
-    kinds?: readonly CapabilityKind[];
     sessionId?: string;
   } = {},
 ): CapabilityCandidate[] {
-  const kinds = new Set(options.kinds?.length ? options.kinds : CAPABILITY_KINDS);
   if (!repos.agents.hasSchema || !agentId) return [];
   const bindings = repos.agents.listBindings(userId, agentId);
   const sharedMemoryAllowed =
@@ -166,58 +160,54 @@ export function listCapabilityCandidates(
     (options.sessionId ? delegatedSharedMemoryAllowed(repos, userId, options.sessionId) : false);
   const candidates: CapabilityCandidate[] = [];
 
-  if (kinds.has('skill')) {
-    const bound = new Set(bindings.skillIds);
-    for (const skill of repos.skills.listInstallations(userId)) {
-      if (
-        !bound.has(skill.id) ||
-        !skill.enabled ||
-        skill.status !== 'valid' ||
-        skill.compatibilityStatus === 'incompatible'
-      )
-        continue;
-      candidates.push({
-        kind: 'skill',
-        capabilityId: skill.id,
-        name: skill.skillName,
-        description: skill.description,
-        action: 'skill_load',
-      });
-    }
+  const bound = new Set(bindings.skillIds);
+  for (const skill of repos.skills.listInstallations(userId)) {
+    if (
+      !bound.has(skill.id) ||
+      !skill.enabled ||
+      skill.status !== 'valid' ||
+      skill.compatibilityStatus === 'incompatible'
+    )
+      continue;
+    candidates.push({
+      kind: 'skill',
+      capabilityId: skill.id,
+      name: skill.skillName,
+      description: skill.description,
+      action: 'skill_load',
+    });
   }
 
-  if (kinds.has('mcp')) {
-    const tools = repos.mcp.listTools(userId);
-    for (const binding of bindings.mcp) {
-      if (
-        binding.serverId === 'builtin-memory' &&
-        binding.accessScope === 'user' &&
-        !sharedMemoryAllowed
-      )
-        continue;
-      const server = repos.mcp.getServer(userId, binding.serverId);
-      if (!server || server.status !== 'enabled') continue;
-      const hasApprovedTool = tools.some(
-        (tool) => tool.serverId === server.id && tool.enabled && tool.reviewStatus === 'approved',
-      );
-      if (!hasApprovedTool) continue;
-      candidates.push({
-        kind: 'mcp',
-        capabilityId: `${server.id}:${binding.accessScope}`,
-        name:
-          server.id === 'builtin-memory'
-            ? binding.accessScope === 'agent'
-              ? '本智能体记忆'
-              : '用户共享记忆'
-            : server.name,
-        description: server.summary,
-        action: 'mcp_load',
-        scope: binding.accessScope,
-      });
-    }
+  const tools = repos.mcp.listTools(userId);
+  for (const binding of bindings.mcp) {
+    if (
+      binding.serverId === 'builtin-memory' &&
+      binding.accessScope === 'user' &&
+      !sharedMemoryAllowed
+    )
+      continue;
+    const server = repos.mcp.getServer(userId, binding.serverId);
+    if (!server || server.status !== 'enabled') continue;
+    const hasApprovedTool = tools.some(
+      (tool) => tool.serverId === server.id && tool.enabled && tool.reviewStatus === 'approved',
+    );
+    if (!hasApprovedTool) continue;
+    candidates.push({
+      kind: 'mcp',
+      capabilityId: `${server.id}:${binding.accessScope}`,
+      name:
+        server.id === 'builtin-memory'
+          ? binding.accessScope === 'agent'
+            ? '本智能体记忆'
+            : '用户共享记忆'
+          : server.name,
+      description: server.summary,
+      action: 'mcp_load',
+      scope: binding.accessScope,
+    });
   }
 
-  if (origin === 'direct' && kinds.has('agent')) {
+  if (origin === 'direct') {
     const allowed = new Set(bindings.delegateAgentIds);
     for (const profile of repos.agents.list(userId)) {
       if (profile.id === agentId || !allowed.has(profile.id)) continue;

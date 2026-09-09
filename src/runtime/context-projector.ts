@@ -2,7 +2,6 @@ import type { SkillInstallation } from '../shared/domain/skill';
 import { isHistoricalConversationMessage } from '../client-contracts/assistant-output-policy';
 import type { PermissionPreset } from '../shared/domain/permission';
 import type { RuntimeProjection } from '../client-contracts/projection';
-import { readAgentMemoryProfile } from '../infrastructure/workspace/agent-memory-profile';
 import type { LocalUserId } from '../shared/domain/user';
 import type { ModelToolDefinition, RuntimeMessage } from './model';
 import { MINIMAL_SYSTEM_PROMPT } from './model';
@@ -15,6 +14,7 @@ export interface ContextProjectionInput {
   userId?: LocalUserId;
   agentId?: string;
   agentInstructions?: string;
+  agentMemoryProfile?: string;
   projection: RuntimeProjection;
   eventId: string;
   turnId: string;
@@ -60,8 +60,6 @@ export class ContextBudgetError extends Error {
 }
 
 export class ContextProjector {
-  constructor(private readonly appDataDir?: string) {}
-
   measureFull(input: ContextProjectionInput): ContextMeasurement {
     const hardInputLimitTokens = inputBudget(input);
     const projected = this.project({
@@ -83,9 +81,8 @@ export class ContextProjector {
     if (budget <= 0) throw new ContextBudgetError();
 
     const stableSystem = this.buildStableSystem(
-      input.userId,
-      input.agentId,
       input.agentInstructions,
+      input.agentMemoryProfile,
       input.tools,
       input.permissionPreset ?? 'guarded',
     );
@@ -229,13 +226,15 @@ export class ContextProjector {
       }
     }
 
+    const messages = coalesceSystemMessages([
+      stableMessage,
+      ...selected,
+      ...currentMessages,
+      ...(progressReminder ? [reminder] : []),
+    ]);
+
     return {
-      messages: [
-        stableMessage,
-        ...selected,
-        ...currentMessages,
-        ...(progressReminder ? [reminder] : []),
-      ],
+      messages,
       progressReminder,
       estimatedInputTokens: used,
       budgetTokens: budget,
@@ -247,20 +246,15 @@ export class ContextProjector {
   }
 
   private buildStableSystem(
-    userId: LocalUserId | undefined,
-    agentId: string | undefined,
     agentInstructions: string | undefined,
+    agentMemoryProfile: string | undefined,
     tools: readonly ModelToolDefinition[],
     permissionPreset: PermissionPreset,
   ): string {
     const toolText = tools.map((tool) => tool.name).join('、') || '无';
     const autonomy = permissionPreset === 'full-access' ? `\n\n${FULL_ACCESS_AUTONOMY_PROMPT}` : '';
-    const profile =
-      this.appDataDir && userId && agentId
-        ? readAgentMemoryProfile(this.appDataDir, userId, agentId)
-        : '';
-    const memoryProfile = profile
-      ? `\n\n<agent_memory_profile>\n${profile}\n</agent_memory_profile>`
+    const memoryProfile = agentMemoryProfile?.trim()
+      ? `\n\n<agent_memory_profile>\n${agentMemoryProfile.trim()}\n</agent_memory_profile>`
       : '';
     const instructions = agentInstructions?.trim()
       ? `\n\n<agent_instructions>\n${agentInstructions.trim()}\n</agent_instructions>`
@@ -286,6 +280,22 @@ function estimateMessage(message: RuntimeMessage): number {
 
 function estimateMessages(messages: readonly RuntimeMessage[]): number {
   return messages.reduce((sum, message) => sum + estimateMessage(message), 0);
+}
+
+/**
+ * Some OpenAI-compatible providers reject any system message after index 0.
+ * Keep contextual summaries, checkpoints, and transient reminders in one leading
+ * system message while preserving the relative order of conversation/tool facts.
+ * Selection uses the unmerged message costs, so the recorded budget remains a
+ * conservative upper bound after the per-message overhead is removed here.
+ */
+function coalesceSystemMessages(messages: readonly RuntimeMessage[]): RuntimeMessage[] {
+  const systemContent = messages
+    .filter((message) => message.role === 'system' && message.content.trim())
+    .map((message) => message.content);
+  const nonSystemMessages = messages.filter((message) => message.role !== 'system');
+  if (systemContent.length === 0) return nonSystemMessages;
+  return [{ role: 'system', content: systemContent.join('\n\n') }, ...nonSystemMessages];
 }
 
 function toRuntimeMessage(

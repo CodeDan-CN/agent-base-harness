@@ -11,6 +11,8 @@ import { BridgeError, toErrorPayload } from '../shared/contracts/errors';
 import {
   IPC_CHANNELS,
   sessionFileOpenSchema,
+  sessionSubscriptionRequestSchema,
+  sessionUnsubscriptionRequestSchema,
   type LifecycleEvent,
   type RpcEnvelope,
 } from '../shared/contracts/ipc';
@@ -229,18 +231,11 @@ function installIpcHandlers(connector: LocalConnector, dataDir: string): void {
       event.sender.send(IPC_CHANNELS.lifecycle, serviceStatus);
       return;
     }
-    if (!payload || typeof payload !== 'object') return;
-    const value = payload as Record<string, unknown>;
-    if (
-      value.kind !== 'session' ||
-      typeof value.sessionId !== 'string' ||
-      typeof value.afterSeq !== 'number'
-    ) {
-      return;
-    }
-    const afterSeq = value.afterSeq;
-    const sessionId = value.sessionId;
-    sessionUnsubscribers.get(senderId)?.();
+    const parsed = sessionSubscriptionRequestSchema.safeParse(payload);
+    if (!parsed.success) return;
+    const { afterSeq, sessionId, subscriptionId } = parsed.data;
+    const subscriptionKey = `${senderId}\u0000${subscriptionId}`;
+    sessionUnsubscribers.get(subscriptionKey)?.();
     const unsubscribe = serviceClient!.subscribeSession(
       sessionId,
       afterSeq,
@@ -248,6 +243,7 @@ function installIpcHandlers(connector: LocalConnector, dataDir: string): void {
         if (mainWindow?.webContents.id !== Number(senderId)) return;
         mainWindow.webContents.send(IPC_CHANNELS.sessionEvents, {
           type: 'events',
+          subscriptionId,
           sessionId,
           fromSeq: runtimeEvent.seq,
           toSeq: runtimeEvent.seq,
@@ -258,6 +254,7 @@ function installIpcHandlers(connector: LocalConnector, dataDir: string): void {
         onError: () => {
           mainWindow?.webContents.send(IPC_CHANNELS.sessionEvents, {
             type: 'resync-required',
+            subscriptionId,
             sessionId,
             expectedSeq: afterSeq + 1,
             receivedSeq: afterSeq + 1,
@@ -265,13 +262,16 @@ function installIpcHandlers(connector: LocalConnector, dataDir: string): void {
         },
       },
     );
-    sessionUnsubscribers.set(senderId, unsubscribe);
+    sessionUnsubscribers.set(subscriptionKey, unsubscribe);
   });
-  ipcMain.on(IPC_CHANNELS.unsubscribe, (event) => {
+  ipcMain.on(IPC_CHANNELS.unsubscribe, (event, payload: unknown) => {
     if (!isTrustedSender(event)) return;
     const senderId = String(event.sender.id);
-    sessionUnsubscribers.get(senderId)?.();
-    sessionUnsubscribers.delete(senderId);
+    const parsed = sessionUnsubscriptionRequestSchema.safeParse(payload);
+    if (!parsed.success) return;
+    const subscriptionKey = `${senderId}\u0000${parsed.data.subscriptionId}`;
+    sessionUnsubscribers.get(subscriptionKey)?.();
+    sessionUnsubscribers.delete(subscriptionKey);
   });
   ipcMain.handle(IPC_CHANNELS.selectSkillDirectory, async (event) => {
     if (!isTrustedSender(event) || !mainWindow) return unauthorizedEnvelope();

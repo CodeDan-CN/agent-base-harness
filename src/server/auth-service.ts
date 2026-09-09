@@ -59,6 +59,9 @@ export interface LocalAuthServiceOptions {
   logger: Logger;
   sessionTtlMs?: number;
   randomToken?: () => string;
+  /** Runs synchronously inside the account creation SQLite transaction. */
+  initializeAccountRecords?: (userId: LocalUserId) => void;
+  /** Prepares retryable filesystem/catalog defaults after the transaction commits. */
   onAccountCreated?: (userId: LocalUserId) => void | Promise<void>;
 }
 
@@ -157,6 +160,7 @@ export class LocalAuthService {
         passwordSalt,
         passwordParams: DEFAULT_PARAMS,
         now: this.options.clock.nowIso(),
+        initializeRecords: () => this.options.initializeAccountRecords?.(userId),
       });
     } catch (error) {
       if (String((error as { code?: unknown }).code ?? '').startsWith('SQLITE_CONSTRAINT')) {

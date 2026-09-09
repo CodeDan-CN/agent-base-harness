@@ -26,12 +26,23 @@ export class AgentManagementService {
     },
   ) {}
 
+  initializeUserRecords(userId: LocalUserId): void {
+    this.deps.repos.agents.ensureDylan(userId, 'guarded', this.deps.clock.nowIso());
+  }
+
   initializeUser(userId: LocalUserId): void {
     const now = this.deps.clock.nowIso();
-    this.deps.repos.agents.ensureDylan(userId, 'guarded', now);
+    this.initializeUserRecords(userId);
     const legacy = readLegacyMemory(this.deps.appDataDir, userId);
-    ensureAgentMemoryProfile(this.deps.appDataDir, userId, DEFAULT_AGENT_ID, legacy);
-    this.ensurePrivateMemory(userId, DEFAULT_AGENT_ID, now);
+    for (const agent of this.deps.repos.agents.list(userId, true)) {
+      ensureAgentMemoryProfile(
+        this.deps.appDataDir,
+        userId,
+        agent.id,
+        agent.id === DEFAULT_AGENT_ID ? legacy : '',
+      );
+      this.ensurePrivateMemory(userId, agent.id, now);
+    }
     const creator = this.deps.repos.skills.getInstallation(userId, BUILTIN_SKILL_CREATOR_NAME);
     if (creator) {
       this.deps.repos.agents.ensureSkillBinding(userId, DEFAULT_AGENT_ID, creator.id, now);
@@ -59,6 +70,7 @@ export class AgentManagementService {
   }
 
   create(userId: LocalUserId, input: AgentCreateParams): AgentProfile {
+    this.assertModelAvailable(userId, input.defaultModelId);
     const now = this.deps.clock.nowIso();
     const profile = this.deps.repos.agents.create({
       id: this.deps.ids.newId(),
@@ -78,50 +90,63 @@ export class AgentManagementService {
   }
 
   update(userId: LocalUserId, input: AgentUpdateParams): AgentProfile {
-    return this.deps.repos.agents.update({
-      userId,
-      agentId: input.agentId,
-      name: input.name,
-      description: input.description,
-      avatarKey: input.avatarKey,
-      instructions: input.instructions,
-      defaultModelId: input.defaultModelId,
-      permissionPreset: input.permissionPreset,
-      expectedRevision: input.expectedRevision,
-      expectedProfileRevision: input.expectedProfileRevision,
-      now: this.deps.clock.nowIso(),
+    const current = this.deps.repos.agents.requireActive(userId, input.agentId);
+    this.assertModelAvailable(userId, input.defaultModelId);
+    const now = this.deps.clock.nowIso();
+    return this.deps.repos.transaction(() => {
+      const profile = this.deps.repos.agents.update({
+        userId,
+        agentId: input.agentId,
+        name: input.name,
+        description: input.description,
+        avatarKey: input.avatarKey,
+        instructions: input.instructions,
+        defaultModelId: input.defaultModelId,
+        permissionPreset: input.permissionPreset,
+        expectedRevision: input.expectedRevision,
+        expectedProfileRevision: input.expectedProfileRevision,
+        now,
+      });
+      if (current.permissionPreset !== input.permissionPreset) {
+        this.deps.repos.sessions.setPermissionPresetForAgent(
+          userId,
+          input.agentId,
+          input.permissionPreset,
+          now,
+        );
+      }
+      return profile;
     });
   }
 
   setRuntimeDefaults(userId: LocalUserId, input: AgentRuntimeDefaultsSetParams): AgentProfile {
     const current = this.deps.repos.agents.requireActive(userId, input.agentId);
-    if (input.defaultModelId) {
-      const model = this.deps.repos.models.getModel(userId, input.defaultModelId);
-      if (!model || model.status !== 'enabled') {
-        throw new BridgeError('MODEL_NOT_CONFIGURED', 'Selected model is unavailable');
-      }
-    }
+    this.assertModelAvailable(userId, input.defaultModelId);
     const now = this.deps.clock.nowIso();
-    const profile = this.deps.repos.agents.update({
-      userId,
-      agentId: input.agentId,
-      name: current.name,
-      description: current.description,
-      avatarKey: current.avatarKey,
-      instructions: current.instructions,
-      defaultModelId: input.defaultModelId,
-      permissionPreset: input.permissionPreset,
-      expectedRevision: input.expectedRevision,
-      expectedProfileRevision: input.expectedProfileRevision,
-      now,
+    return this.deps.repos.transaction(() => {
+      const profile = this.deps.repos.agents.update({
+        userId,
+        agentId: input.agentId,
+        name: current.name,
+        description: current.description,
+        avatarKey: current.avatarKey,
+        instructions: current.instructions,
+        defaultModelId: input.defaultModelId,
+        permissionPreset: input.permissionPreset,
+        expectedRevision: input.expectedRevision,
+        expectedProfileRevision: input.expectedProfileRevision,
+        now,
+      });
+      if (current.permissionPreset !== input.permissionPreset) {
+        this.deps.repos.sessions.setPermissionPresetForAgent(
+          userId,
+          input.agentId,
+          input.permissionPreset,
+          now,
+        );
+      }
+      return profile;
     });
-    this.deps.repos.sessions.setPermissionPresetForAgent(
-      userId,
-      input.agentId,
-      input.permissionPreset,
-      now,
-    );
-    return profile;
   }
 
   archive(userId: LocalUserId, agentId: string, expectedRevision: number): { agentId: string } {
@@ -231,6 +256,14 @@ export class AgentManagementService {
       'agent',
       now,
     );
+  }
+
+  private assertModelAvailable(userId: LocalUserId, modelId: string | null): void {
+    if (!modelId) return;
+    const model = this.deps.repos.models.getModel(userId, modelId);
+    if (!model || model.status !== 'enabled') {
+      throw new BridgeError('MODEL_NOT_CONFIGURED', 'Selected model is unavailable');
+    }
   }
 }
 

@@ -14,6 +14,9 @@ export function hydrateProjection(snapshot: SessionSnapshotPayload): RuntimeProj
       snapshot.interactions.map((interaction) => [interaction.id, interaction]),
     ),
     approvals: new Map((snapshot.approvals ?? []).map((approval) => [approval.id, approval])),
+    delegations: new Map(
+      (snapshot.delegations ?? []).map((delegation) => [delegation.id, delegation]),
+    ),
     permissionGrants: new Set(snapshot.permissionGrants ?? []),
     steps: new Map(snapshot.trajectory.steps.map((step) => [step.id, step])),
     toolCalls: new Map(snapshot.trajectory.toolCalls.map((call) => [call.id, call])),

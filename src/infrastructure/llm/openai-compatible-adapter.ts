@@ -118,8 +118,8 @@ export class OpenAiCompatibleAdapter implements LlmAdapter {
           (message) => message.role === 'assistant' && (message.toolCalls?.length ?? 0) > 0,
         ).length,
         toolResultMessages: request.messages.filter((message) => message.role === 'tool').length,
-        reasoningHistoryMessages: request.messages.filter(
-          (message) => Boolean(message.reasoningContent),
+        reasoningHistoryMessages: request.messages.filter((message) =>
+          Boolean(message.reasoningContent),
         ).length,
         toolCount: request.tools.length,
         toolSchemaBytes: new TextEncoder().encode(JSON.stringify(request.tools)).byteLength,

@@ -171,14 +171,11 @@ export function CategoryCombo({
   const listId = useId();
 
   const query = text.trim().toLocaleLowerCase();
-  const matched = options.find(
-    (option) => String(option.label).toLocaleLowerCase() === query,
-  );
-  const filtered = !query || matched
-    ? options
-    : options.filter((option) =>
-        String(option.label).toLocaleLowerCase().includes(query),
-      );
+  const matched = options.find((option) => String(option.label).toLocaleLowerCase() === query);
+  const filtered =
+    !query || matched
+      ? options
+      : options.filter((option) => String(option.label).toLocaleLowerCase().includes(query));
 
   useEffect(() => {
     if (!open) return;

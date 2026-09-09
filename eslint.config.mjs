@@ -6,6 +6,7 @@ export default tseslint.config(
     ignores: [
       'node_modules/**',
       'dist/**',
+      '**/dist/**',
       'dist-*/**',
       'out/**',
       'reference_ui/**',
@@ -27,7 +28,13 @@ export default tseslint.config(
         process: 'readonly',
         console: 'readonly',
         Buffer: 'readonly',
+        crypto: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
       },
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     },
   },
   {

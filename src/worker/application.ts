@@ -383,7 +383,7 @@ export function createWorkerApplication(deps: CreateWorkerAppDeps): WorkerApplic
           runtime: 'ready',
           agentProfiles: 'ready',
           agentDelegation: 'ready',
-          scopedMcpInstances: 'pending',
+          scopedMcpInstances: 'ready',
         },
       };
     },

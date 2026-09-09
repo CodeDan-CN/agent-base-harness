@@ -51,6 +51,7 @@ export class McpInstanceManager<Client extends { close(): Promise<void> }> {
   private readonly states = new Map<string, InstanceState<Client>>();
   private readonly inactive = new Map<string, McpInstanceView>();
   private readonly generations = new Map<string, number>();
+  private readonly capacityWaiters = new Set<() => void>();
   private capacityTail: Promise<void> = Promise.resolve();
   private disposed = false;
 
@@ -59,6 +60,7 @@ export class McpInstanceManager<Client extends { close(): Promise<void> }> {
       idleMs?: number;
       maxPerUser?: number;
       maxHost?: number;
+      capacityWaitMs?: number;
       now?: () => number;
     } = {},
   ) {}
@@ -83,10 +85,10 @@ export class McpInstanceManager<Client extends { close(): Promise<void> }> {
       this.capacityTail = new Promise<void>((resolve) => {
         finishReservation = resolve;
       });
-      await previousReservation;
       try {
+        await abortable(previousReservation, input.signal);
         state = this.states.get(encoded);
-        if (!state) await this.reserveCapacity(input.key.userId);
+        if (!state) await this.reserveCapacity(input.key.userId, input.signal);
         state = this.states.get(encoded);
         if (!state) {
           const generation = (this.generations.get(encoded) ?? 0) + 1;
@@ -170,6 +172,7 @@ export class McpInstanceManager<Client extends { close(): Promise<void> }> {
         released = true;
         state!.activeCalls = Math.max(0, state!.activeCalls - 1);
         state!.lastUsedMs = this.now();
+        this.notifyCapacityChanged();
         if (state!.invalidated && state!.activeCalls === 0) {
           void this.closeState(encoded, state!);
         } else {
@@ -224,13 +227,15 @@ export class McpInstanceManager<Client extends { close(): Promise<void> }> {
   async close(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    this.notifyCapacityChanged();
     const entries = [...this.states.entries()];
     await Promise.all(entries.map(([encoded, state]) => this.closeState(encoded, state)));
   }
 
-  private async reserveCapacity(userId: string): Promise<void> {
+  private async reserveCapacity(userId: string, signal?: AbortSignal): Promise<void> {
     const maxPerUser = this.options.maxPerUser ?? 5;
     const maxHost = this.options.maxHost ?? 20;
+    const deadline = Date.now() + (this.options.capacityWaitMs ?? 30_000);
     while (
       this.states.size >= maxHost ||
       [...this.states.values()].filter((state) => state.key.userId === userId).length >= maxPerUser
@@ -238,9 +243,47 @@ export class McpInstanceManager<Client extends { close(): Promise<void> }> {
       const candidate = [...this.states.entries()]
         .filter(([, state]) => state.activeCalls === 0 && state.status !== 'connecting')
         .sort((left, right) => left[1].lastUsedMs - right[1].lastUsedMs)[0];
-      if (!candidate) throw new McpInstanceCapacityError();
-      await this.closeState(candidate[0], candidate[1]);
+      if (candidate) {
+        await this.closeState(candidate[0], candidate[1]);
+        continue;
+      }
+      if (this.disposed) throw new Error('MCP instance manager is closed');
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new McpInstanceCapacityError();
+      await this.waitForCapacityChange(remaining, signal);
     }
+  }
+
+  private waitForCapacityChange(timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    return new Promise<void>((resolve, reject) => {
+      const finish = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+        this.capacityWaiters.delete(changed);
+      };
+      const changed = () => {
+        finish();
+        resolve();
+      };
+      const abort = () => {
+        finish();
+        reject(signal?.reason ?? new Error('Operation aborted'));
+      };
+      const timer = setTimeout(() => {
+        finish();
+        reject(new McpInstanceCapacityError());
+      }, timeoutMs);
+      timer.unref();
+      this.capacityWaiters.add(changed);
+      signal?.addEventListener('abort', abort, { once: true });
+    });
+  }
+
+  private notifyCapacityChanged(): void {
+    const waiters = [...this.capacityWaiters];
+    this.capacityWaiters.clear();
+    for (const wake of waiters) wake();
   }
 
   private scheduleIdle(encoded: string, state: InstanceState<Client>): void {
@@ -263,6 +306,7 @@ export class McpInstanceManager<Client extends { close(): Promise<void> }> {
     if (this.states.get(encoded) !== state) return;
     clearIdle(state);
     this.states.delete(encoded);
+    this.notifyCapacityChanged();
     const client = state.client;
     state.client = null;
     if (client) await client.close().catch(() => undefined);

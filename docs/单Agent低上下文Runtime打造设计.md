@@ -486,7 +486,7 @@ inputBudget
 领域工具：mcp_load 后从下一 Step 加入当前 Turn 的 Tool Schema
 ```
 
-4.7.5 起，`capability_search` 接收外层 Agent 根据当前对话整理的完整、自包含 `userRequest`，以及可选 `kinds` 和有界 `limit`。Runtime 先确定性过滤当前 Agent 已授权且状态有效的 Skill/MCP/Agent，再复用当前会话已选模型，仅根据 `userRequest` 与候选的 kind/capabilityId/name/description/必要作用域做语义选择。不向选择模型暴露 `SKILL.md` 正文、MCP Tool Schema、Agent 核心指令/记忆/会话。三类来源同级，分别通过 `skill_load`、`mcp_load`、`agent_call` 执行；每个执行入口重新校验当前 Step 快照。delegated Session 的候选排除 Agent 且不暴露 agent_call，以保持单层委派。具体边界以 4.7.5 阶段方案为准。
+4.7.5 起，`capability_search` 接收外层 Agent 根据当前对话整理的完整、自包含 `userRequest`，以及有界 `limit`；不向外层模型提供能力类型筛选参数，每次固定同时检索 Skill、MCP、Agent。Runtime 先确定性过滤当前 Agent 已授权且状态有效的三类候选，再复用当前会话已选模型，仅根据 `userRequest` 与候选的 kind/capabilityId/name/description/必要作用域做语义选择。不向选择模型暴露 `SKILL.md` 正文、MCP Tool Schema、Agent 核心指令/记忆/会话。三类来源同级，分别通过 `skill_load`、`mcp_load`、`agent_call` 执行；每个执行入口重新校验当前 Step 快照。delegated Session 的候选排除 Agent 且不暴露 agent_call，以保持单层委派。具体边界以 4.7.5 阶段方案为准。
 
 ### 9.7 Session 历史与 ConversationEvent 上下文
 

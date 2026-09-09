@@ -82,7 +82,11 @@ describe('Agent Base Harness travel benchmark normalization', () => {
       expect.objectContaining({ toolName: 'bash' }),
     ]);
     expect(response.model_metrics).toEqual(
-      expect.objectContaining({ model_call_count: 1, total_input_tokens: 100, total_output_tokens: 20 }),
+      expect.objectContaining({
+        model_call_count: 1,
+        total_input_tokens: 100,
+        total_output_tokens: 20,
+      }),
     );
     expect(response.final_text).toBe('推荐 G123。');
   });

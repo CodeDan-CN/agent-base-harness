@@ -23,7 +23,7 @@ export function ProducedFiles({
     <section className="produced-files" aria-label="产出文件">
       <div className="produced-files-list">
         {paths.map((path) => (
-          <button key={path} type="button" title={path} onClick={() => open(path)}>
+          <button key={path} type="button" title={basename(path)} onClick={() => open(path)}>
             <FileText size={14} aria-hidden="true" />
             <span>{basename(path)}</span>
           </button>

@@ -148,8 +148,37 @@ export interface SessionEventBatch {
 }
 
 export type SessionSubscriptionEvent =
-  | { type: 'events'; sessionId: string; fromSeq: number; toSeq: number; events: SessionLogEvent[] }
-  | { type: 'resync-required'; sessionId: string; expectedSeq: number; receivedSeq: number };
+  | {
+      type: 'events';
+      subscriptionId?: string;
+      sessionId: string;
+      fromSeq: number;
+      toSeq: number;
+      events: SessionLogEvent[];
+    }
+  | {
+      type: 'resync-required';
+      subscriptionId?: string;
+      sessionId: string;
+      expectedSeq: number;
+      receivedSeq: number;
+    };
+
+export const sessionSubscriptionRequestSchema = z
+  .object({
+    kind: z.literal('session'),
+    subscriptionId: z.string().min(1).max(128),
+    sessionId: z.string().min(1).max(256),
+    afterSeq: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const sessionUnsubscriptionRequestSchema = z
+  .object({
+    kind: z.literal('session'),
+    subscriptionId: z.string().min(1).max(128),
+  })
+  .strict();
 
 const sessionLogEventSchema = z.object({
   userId: z.string(),
@@ -167,6 +196,7 @@ const sessionLogEventSchema = z.object({
 export const sessionSubscriptionEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('events'),
+    subscriptionId: z.string().optional(),
     sessionId: z.string(),
     fromSeq: z.number().int().positive(),
     toSeq: z.number().int().positive(),
@@ -174,6 +204,7 @@ export const sessionSubscriptionEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('resync-required'),
+    subscriptionId: z.string().optional(),
     sessionId: z.string(),
     expectedSeq: z.number().int().positive(),
     receivedSeq: z.number().int().positive(),

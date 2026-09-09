@@ -93,6 +93,7 @@ export class AuthRepository {
     passwordSalt: string;
     passwordParams: PasswordDigestParams;
     now: string;
+    initializeRecords?: () => void;
   }): void {
     const nextOrder = this.db.prepare(
       'SELECT COALESCE(MAX(sort_order), -1) + 1 AS value FROM local_users',
@@ -133,6 +134,7 @@ export class AuthRepository {
         input.now,
         input.now,
       );
+      input.initializeRecords?.();
     })();
   }
 }

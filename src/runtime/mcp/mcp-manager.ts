@@ -109,14 +109,17 @@ export class McpManager {
   }
 
   async testServer(server: McpServer): Promise<{ toolCount: number }> {
-    await validateServerNetwork(server);
-    const client = this.createClient(server);
-    const transport = await this.createTransport(server, userRoute(server.userId));
+    const stored = this.deps.repos.mcp.getServer(server.userId, server.id);
+    if (stored && connectionFingerprint(stored) !== connectionFingerprint(server)) {
+      await this.instances.invalidate(server.userId, server.id);
+    }
+    const lease = await this.acquire(server, userRoute(server.userId));
     try {
-      await client.connect(transport);
-      return { toolCount: (await listAllTools(client)).length };
+      return {
+        toolCount: await lease.runExclusive(async (client) => (await listAllTools(client)).length),
+      };
     } finally {
-      await client.close().catch(() => undefined);
+      lease.release();
     }
   }
 
@@ -221,17 +224,21 @@ export class McpManager {
 
   private async acquire(server: McpServer, route: InstanceRoute, signal?: AbortSignal) {
     const key = instanceKey(server.userId, server.id, route);
-    try {
-      return await this.instances.acquire({
-        key,
-        signal,
-        open: () => this.openConnection(server, route, key),
-      });
-    } catch (error) {
-      if (error instanceof McpInstanceCapacityError) {
-        throw new ToolExecutionError('MCP_CAPACITY_EXCEEDED');
+    const backoffMs = [100, 500];
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.instances.acquire({
+          key,
+          signal,
+          open: () => this.openConnection(server, route, key),
+        });
+      } catch (error) {
+        if (error instanceof McpInstanceCapacityError) {
+          throw new ToolExecutionError('MCP_CAPACITY_EXCEEDED');
+        }
+        if (signal?.aborted || attempt >= backoffMs.length) throw error;
+        await abortableDelay(backoffMs[attempt]!, signal);
       }
-      throw error;
     }
   }
 
@@ -382,12 +389,13 @@ export class McpManager {
       permissionIdentity: `mcp:${server.id}:${tool.rawName}:${tool.schemaDigest}`,
       timeoutMs: MCP_TOOL_MAX_TOTAL_TIMEOUT_MS + 5_000,
       execute: async (raw, context) => {
-        const binding = this.deps.repos.agents
-          .listBindings(context.userId, context.agentId)
-          .mcp.some(
-            (candidate) =>
-              candidate.serverId === server.id && candidate.accessScope === route.scopeType,
-          );
+        const binding = (
+          context.executionConfig?.mcpBindings ??
+          this.deps.repos.agents.listBindings(context.userId, context.agentId).mcp
+        ).some(
+          (candidate) =>
+            candidate.serverId === server.id && candidate.accessScope === route.scopeType,
+        );
         if (
           !binding ||
           route.scopeId !== (route.scopeType === 'agent' ? context.agentId : context.userId)
@@ -399,7 +407,17 @@ export class McpManager {
             entry.tool.publicName === tool.publicName &&
             entry.tool.schemaDigest === tool.schemaDigest,
         );
-        if (!current) throw new ToolExecutionError('MCP_TOOL_NOT_AVAILABLE');
+        if (!current) {
+          const schemaChanged = this.availableCatalog(context.userId).tools.some(
+            (entry) =>
+              entry.server.id === server.id &&
+              entry.tool.rawName === tool.rawName &&
+              entry.tool.schemaDigest !== tool.schemaDigest,
+          );
+          throw new ToolExecutionError(
+            schemaChanged ? 'MCP_SCHEMA_CHANGED' : 'MCP_TOOL_NOT_AVAILABLE',
+          );
+        }
         const currentServer = current.server;
         const result = await (async () => {
           const lease = await this.acquire(currentServer, route, context.signal);
@@ -493,7 +511,7 @@ export class McpManager {
       concurrencySafe: false,
       replaySafe: true,
       exclusive: true,
-      timeoutMs: 5_000,
+      timeoutMs: 120_000,
       execute: async (raw, context) => {
         if (context.userId !== userId) throw new ToolExecutionError('MCP_CATALOG_NOT_AVAILABLE');
         const input = mcpLoadInput.parse(raw);
@@ -504,11 +522,12 @@ export class McpManager {
         if (scopeType !== 'user' && scopeType !== 'agent') {
           throw new ToolExecutionError('MCP_SERVER_NOT_AVAILABLE');
         }
-        const binding = this.deps.repos.agents
-          .listBindings(userId, context.agentId)
-          .mcp.find(
-            (candidate) => candidate.serverId === serverId && candidate.accessScope === scopeType,
-          );
+        const binding = (
+          context.executionConfig?.mcpBindings ??
+          this.deps.repos.agents.listBindings(userId, context.agentId).mcp
+        ).find(
+          (candidate) => candidate.serverId === serverId && candidate.accessScope === scopeType,
+        );
         if (!binding) throw new ToolExecutionError('MCP_SERVER_NOT_AVAILABLE');
         const session = this.deps.repos.sessions.getSession(userId, context.sessionId);
         if (!session || session.agentId !== context.agentId) {
@@ -813,6 +832,14 @@ function schemaDigest(value: unknown): string {
   return createHash('sha256').update(stableJson(value)).digest('hex');
 }
 
+function connectionFingerprint(server: McpServer): string {
+  return schemaDigest({
+    transport: server.transport,
+    config: server.config,
+    credentialRef: server.credentialRef,
+  });
+}
+
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   const record = asRecord(value);
@@ -886,4 +913,24 @@ function isInside(root: string, target: string): boolean {
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 1000) : 'Unknown MCP error';
+}
+
+function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error('Operation aborted'));
+  return new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    };
+    const abort = () => {
+      finish();
+      reject(signal?.reason ?? new Error('Operation aborted'));
+    };
+    const timer = setTimeout(() => {
+      finish();
+      resolve();
+    }, milliseconds);
+    timer.unref();
+    signal?.addEventListener('abort', abort, { once: true });
+  });
 }

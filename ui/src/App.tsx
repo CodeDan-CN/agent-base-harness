@@ -27,6 +27,7 @@ import {
   type ThemePreference,
 } from './theme';
 import type { BannerState, SessionSnapshotPayload } from './types';
+import { sessionTitleFromFirstInput } from './session-title';
 
 export function App(): JSX.Element {
   const [authentication, setAuthentication] = useState<'checking' | 'required' | 'ready'>(
@@ -83,6 +84,7 @@ function RuntimeApp({
   const [renameTitle, setRenameTitle] = useState('');
   const [renaming, setRenaming] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const [pendingPermissionPreset, setPendingPermissionPreset] = useState<PermissionPreset | null>(
@@ -97,6 +99,7 @@ function RuntimeApp({
   const userEpochRef = useRef(0);
   const initializeRef = useRef<Promise<void> | null>(null);
   const retryingRuntimeRef = useRef(false);
+  const draftAgentIdRef = useRef<string | null>(null);
 
   const notify = useCallback((message: string, tone: BannerState['tone'] = 'info') => {
     setBanner({ message, tone });
@@ -135,13 +138,18 @@ function RuntimeApp({
       const targetAgent =
         preferredSession?.agentId ??
         (preferredAgent && homeIds.has(preferredAgent) ? preferredAgent : null) ??
+        (draftAgentIdRef.current && homeIds.has(draftAgentIdRef.current)
+          ? draftAgentIdRef.current
+          : null) ??
         (homeIds.has(nextNavigation.defaultAgentId) ? nextNavigation.defaultAgentId : null) ??
         nextNavigation.items[0]?.agent.id ??
         null;
       setActiveAgentId(targetAgent);
       const target =
         preferredSession?.id ??
-        active.find((session) => session.agentId === targetAgent)?.id ??
+        (draftAgentIdRef.current === targetAgent
+          ? null
+          : (active.find((session) => session.agentId === targetAgent)?.id ?? null)) ??
         null;
       setActiveSessionId(target);
       return target;
@@ -275,6 +283,7 @@ function RuntimeApp({
   );
 
   useEffect(() => {
+    if (sessionRef.current === activeSessionId) return;
     sessionRef.current = activeSessionId;
     cursorRef.current = 0;
     setProjection(null);
@@ -301,8 +310,8 @@ function RuntimeApp({
     return unsubscribe;
   }, [activeSessionId, Boolean(projection), loadSessions, loadSnapshot, runtimeStatus]);
 
-  const createSession = useCallback(
-    async (agentId = activeAgentId): Promise<Session | null> => {
+  const materializeSession = useCallback(
+    async (agentId: string | null, title: string): Promise<Session | null> => {
       if (!agentId) {
         notify('请先把一个智能体加入首页。', 'info');
         return null;
@@ -311,11 +320,16 @@ function RuntimeApp({
         const session = await command<Session>('session.create', {
           sessionId: crypto.randomUUID(),
           agentId,
-          title: '新对话',
+          title,
         });
+        draftAgentIdRef.current = null;
+        sessionRef.current = session.id;
+        cursorRef.current = 0;
+        setProjection(null);
         setSessions((items) => [session, ...items]);
         setActiveAgentId(agentId);
         setActiveSessionId(session.id);
+        await loadSnapshot(session.id);
         void loadSessions(session.id, agentId).catch(() => undefined);
         return session;
       } catch (error) {
@@ -323,7 +337,20 @@ function RuntimeApp({
         return null;
       }
     },
-    [activeAgentId, loadSessions, notify],
+    [loadSessions, loadSnapshot, notify],
+  );
+
+  const startDraftSession = useCallback(
+    (agentId: string | null) => {
+      if (!agentId) {
+        notify('请先把一个智能体加入首页。', 'info');
+        return;
+      }
+      draftAgentIdRef.current = agentId;
+      setActiveAgentId(agentId);
+      setActiveSessionId(null);
+    },
+    [notify],
   );
 
   const activeSession = sessions.find((session) => session.id === activeSessionId) ?? null;
@@ -347,7 +374,11 @@ function RuntimeApp({
 
   const send = async (content: string, mode: 'queue' | 'steer'): Promise<boolean> => {
     let sessionId = activeSessionId;
-    if (!sessionId) sessionId = (await createSession())?.id ?? null;
+    const materializing = !sessionId;
+    if (!sessionId) {
+      sessionId =
+        (await materializeSession(activeAgentId, sessionTitleFromFirstInput(content)))?.id ?? null;
+    }
     if (!sessionId) return false;
     try {
       const policy = deriveInputSubmissionPolicy(mode, Boolean(projection?.activeTurn));
@@ -357,6 +388,7 @@ function RuntimeApp({
         idempotencyKey: crypto.randomUUID(),
         ...policy,
       });
+      if (materializing) await loadSnapshot(sessionId);
       return true;
     } catch (error) {
       notify(userMessage(error), 'error');
@@ -420,6 +452,11 @@ function RuntimeApp({
     }
   };
 
+  const changePermissionPreset = async (preset: PermissionPreset) => {
+    if (!activeAgentProfile) return;
+    await changeAgentRuntimeDefaults({ permissionPreset: preset });
+  };
+
   const openRename = (session = activeSession) => {
     if (!session) return;
     setRenameTarget(session);
@@ -454,21 +491,24 @@ function RuntimeApp({
     }
   };
 
-  const logout = () => {
+  const logout = async () => {
+    if (loggingOut) return;
     setLoggingOut(true);
-    setProjection(null);
-    void requireClient()
-      .logout()
-      .then((envelope) => {
-        if (!envelope.ok) {
-          throw new ClientApiError(envelope.error.code, envelope.error.message);
-        }
-        userEpochRef.current += 1;
-        setActiveSessionId(null);
-        onAuthenticationRequired();
-      })
-      .catch((error) => notify(userMessage(error), 'error'))
-      .finally(() => setLoggingOut(false));
+    try {
+      const envelope = await requireClient().logout();
+      if (!envelope.ok) {
+        throw new ClientApiError(envelope.error.code, envelope.error.message);
+      }
+      setLogoutConfirmOpen(false);
+      setProjection(null);
+      userEpochRef.current += 1;
+      setActiveSessionId(null);
+      onAuthenticationRequired();
+    } catch (error) {
+      notify(userMessage(error), 'error');
+    } finally {
+      setLoggingOut(false);
+    }
   };
 
   if (!bootstrap) {
@@ -504,18 +544,12 @@ function RuntimeApp({
           activeUser={bootstrap.activeUser}
           onSelectSession={(id) => {
             const session = sessions.find((candidate) => candidate.id === id);
+            draftAgentIdRef.current = null;
             if (session) setActiveAgentId(session.agentId);
             setActiveSessionId(id);
           }}
-          onSelectAgent={(agentId) => {
-            setActiveAgentId(agentId);
-            setActiveSessionId(
-              sessions.find((session) => session.agentId === agentId && session.status === 'active')
-                ?.id ?? null,
-            );
-          }}
-          onNewSession={() => void createSession()}
-          onNewAgentSession={(agentId) => void createSession(agentId)}
+          onNewSession={() => startDraftSession(activeAgentId)}
+          onNewAgentSession={startDraftSession}
           onAddAgent={async (agentId) => {
             if (!navigation) return;
             try {
@@ -539,11 +573,16 @@ function RuntimeApp({
             setSettingsInitialTab(undefined);
             setSettingsOpen(true);
           }}
-          onLogout={logout}
+          onLogout={() => setLogoutConfirmOpen(true)}
         />
       )}
       <ChatArea
         sessionId={activeSessionId}
+        draftKey={
+          activeSessionId
+            ? `session:${activeSessionId}`
+            : `agent:${activeAgentId ?? 'none'}:new-session`
+        }
         title={activeSession?.title ?? '新对话'}
         modelLabel={modelLabel}
         modelId={activeModelId}
@@ -589,14 +628,28 @@ function RuntimeApp({
             idempotencyKey: crypto.randomUUID(),
           }).catch((error) => notify(userMessage(error), 'error'));
         }}
-        onResolveApproval={(approvalId, resolution) => {
-          if (!activeSessionId) return;
-          void command('approval.resolve', {
-            sessionId: activeSessionId,
-            approvalId,
-            resolution,
-            idempotencyKey: crypto.randomUUID(),
-          }).catch((error) => notify(userMessage(error), 'error'));
+        onResolveApproval={async (approvalId, resolution) => {
+          if (!activeSessionId) return false;
+          try {
+            await command('approval.resolve', {
+              sessionId: activeSessionId,
+              approvalId,
+              resolution,
+              idempotencyKey: crypto.randomUUID(),
+            });
+            await loadSnapshot(activeSessionId);
+            return true;
+          } catch (error) {
+            if (error instanceof ClientApiError && error.code === 'INTERACTION_NOT_PENDING') {
+              // A delegated approval can resolve or time out while its mirrored parent card is
+              // still visible. Refresh the event-derived projection instead of presenting a
+              // stale-state race as a user-facing failure.
+              await loadSnapshot(activeSessionId);
+              return true;
+            }
+            notify(userMessage(error), 'error');
+            return false;
+          }
         }}
         onModelChange={(modelId) => {
           if (modelId === activeModelId) return;
@@ -611,15 +664,10 @@ function RuntimeApp({
             setPendingPermissionPreset(preset);
             return;
           }
-          void changeAgentRuntimeDefaults({ permissionPreset: preset });
+          void changePermissionPreset(preset);
         }}
       />
       {banner && <Banner banner={banner} onClose={() => setBanner(null)} />}
-      {loggingOut && (
-        <div className="switch-overlay">
-          <Loader2 className="spin" /> 正在退出登录...
-        </div>
-      )}
       {settingsOpen && (
         <SettingsModal
           initialTab={settingsInitialTab}
@@ -631,6 +679,9 @@ function RuntimeApp({
             void loadSessions(activeSessionId, activeAgentId).catch(() => undefined);
           }}
           onModelChanged={setModelSnapshot}
+          onAgentChanged={() => {
+            void loadSessions(activeSessionId, activeAgentId).catch(() => undefined);
+          }}
           onNotify={(message, tone = 'info') => notify(message, tone)}
         />
       )}
@@ -644,6 +695,16 @@ function RuntimeApp({
         />
       )}
       <ConfirmDialog
+        open={logoutConfirmOpen}
+        title="退出登录？"
+        description="确定要退出当前账号吗？正在运行的任务不会因此停止，重新登录后仍可继续查看。"
+        confirmLabel={loggingOut ? '正在退出...' : '退出登录'}
+        tone="danger"
+        busy={loggingOut}
+        onCancel={() => !loggingOut && setLogoutConfirmOpen(false)}
+        onConfirm={() => void logout()}
+      />
+      <ConfirmDialog
         open={pendingPermissionPreset === 'full-access'}
         title="开启完全访问？"
         description="Agent 将自主采用合理默认值，并能以当前登录用户权限访问工作区外文件。只有缺少不可推断且任务必需的事实时才会询问；密码、验证码和 API Key 等秘密应通过专用安全入口提供。此本地用户只需确认一次。"
@@ -652,7 +713,7 @@ function RuntimeApp({
         tone="warning"
         busy={permissionBusy}
         onCancel={() => !permissionBusy && setPendingPermissionPreset(null)}
-        onConfirm={() => void changeAgentRuntimeDefaults({ permissionPreset: 'full-access' })}
+        onConfirm={() => void changePermissionPreset('full-access')}
       />
       <ConfirmDialog
         open={Boolean(archiveTarget)}

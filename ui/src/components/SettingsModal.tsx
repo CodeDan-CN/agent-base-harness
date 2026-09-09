@@ -54,6 +54,7 @@ interface SettingsModalProps {
   onThemePreferenceChange(preference: ThemePreference): void;
   onClose(): void;
   onModelChanged(snapshot: ModelManagementSnapshot): void;
+  onAgentChanged(): void;
   onNotify(message: string, tone?: 'success' | 'error' | 'info'): void;
 }
 
@@ -109,7 +110,11 @@ export function SettingsModal(props: SettingsModalProps): JSX.Element {
       <section className="settings-content">
         {tab === 'agents' ? (
           <div className="settings-page agents-page">
-            <AgentSettings onNotify={props.onNotify} />
+            <AgentSettings
+              startCreating={props.initialTab === 'agents'}
+              onNotify={props.onNotify}
+              onChanged={props.onAgentChanged}
+            />
           </div>
         ) : tab === 'appearance' ? (
           <AppearanceSettings {...props} />

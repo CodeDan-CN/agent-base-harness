@@ -50,17 +50,27 @@ const api: AgentClientApi = {
     afterSeq: number,
     listener: (event: SessionSubscriptionEvent) => void,
   ): () => void {
+    const subscriptionId = crypto.randomUUID();
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) => {
       const parsed = sessionSubscriptionEventSchema.safeParse(data);
-      if (parsed.success && parsed.data.sessionId === sessionId) {
+      if (
+        parsed.success &&
+        parsed.data.sessionId === sessionId &&
+        (!parsed.data.subscriptionId || parsed.data.subscriptionId === subscriptionId)
+      ) {
         listener(parsed.data as SessionSubscriptionEvent);
       }
     };
     ipcRenderer.on(IPC_CHANNELS.sessionEvents, handler);
-    ipcRenderer.send(IPC_CHANNELS.subscribe, { kind: 'session', sessionId, afterSeq });
+    ipcRenderer.send(IPC_CHANNELS.subscribe, {
+      kind: 'session',
+      subscriptionId,
+      sessionId,
+      afterSeq,
+    });
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.sessionEvents, handler);
-      ipcRenderer.send(IPC_CHANNELS.unsubscribe, { kind: 'session' });
+      ipcRenderer.send(IPC_CHANNELS.unsubscribe, { kind: 'session', subscriptionId });
     };
   },
   selectAndInstallSkill(): Promise<RpcEnvelope> {

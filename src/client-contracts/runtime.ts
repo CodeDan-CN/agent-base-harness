@@ -145,6 +145,8 @@ export const turnReadParamsSchema = z
 export type RuntimeEventType =
   | 'session.created'
   | 'agent.inbox.spliced'
+  | 'agent.delegation.accepted'
+  | 'agent.delegation.status-changed'
   | 'conversation.event.created'
   | 'conversation.event.status-changed'
   | 'conversation.event.summary-updated'
@@ -181,6 +183,8 @@ export type RuntimeEventType =
 export const RUNTIME_EVENT_TYPES: readonly RuntimeEventType[] = [
   'session.created',
   'agent.inbox.spliced',
+  'agent.delegation.accepted',
+  'agent.delegation.status-changed',
   'conversation.event.created',
   'conversation.event.status-changed',
   'conversation.event.summary-updated',
@@ -230,6 +234,36 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
     })
     .strict(),
   'agent.inbox.spliced': inboxSplicedPayloadSchema,
+  'agent.delegation.accepted': z
+    .object({
+      delegationId: id,
+      parentTurnId: id,
+      parentToolCallId: id,
+      delegatedSessionId: id,
+      targetAgentId: id,
+      callerAgentName: z.string().min(1).optional(),
+      targetAgentName: z.string().min(1).optional(),
+      status: z.literal('accepted'),
+    })
+    .strict(),
+  'agent.delegation.status-changed': z
+    .object({
+      delegationId: id,
+      status: z.enum([
+        'running',
+        'awaiting_user',
+        'completed',
+        'failed',
+        'cancelled',
+        'interrupted',
+      ]),
+      resultEventRef: id.nullable(),
+      report: z
+        .string()
+        .max(32 * 1024)
+        .optional(),
+    })
+    .strict(),
   'conversation.event.created': z.object({ eventId: id, title: z.string() }).strict(),
   'conversation.event.status-changed': z
     .object({ eventId: id, status: z.enum(['open', 'awaiting_user', 'completed', 'failed']) })
@@ -304,6 +338,10 @@ const eventSchemas: Record<RuntimeEventType, z.ZodTypeAny> = {
       skillRevision: z.number().int().nonnegative(),
       runtimeRevision: z.number().int().nonnegative(),
       mcpRevision: z.number().int().nonnegative().optional(),
+      agentRevision: z.number().int().nonnegative().optional(),
+      agentProfileRevision: z.number().int().nonnegative().optional(),
+      agentMemoryDigest: id.optional(),
+      agentConfigDigest: id.optional(),
       toolSnapshot: z
         .array(z.object({ name: id, schemaDigest: id.nullable() }).strict())
         .optional(),
@@ -555,14 +593,26 @@ export function validateAndUpcastRuntimeEvent(
   payload: unknown,
 ): unknown {
   if (!RUNTIME_EVENT_TYPES.includes(eventType as RuntimeEventType)) return payload;
-  if (schemaVersion !== RUNTIME_EVENT_SCHEMA_VERSION) {
+  if (schemaVersion !== 1 && schemaVersion !== RUNTIME_EVENT_SCHEMA_VERSION) {
     throw new UnsupportedRuntimeEventError(`Unsupported runtime event schema ${schemaVersion}`);
   }
+  const upcastPayload =
+    schemaVersion === 1 && eventType === 'session.created'
+      ? {
+          ...(typeof payload === 'object' && payload !== null ? payload : {}),
+          agentId: DEFAULT_LEGACY_AGENT_ID,
+          origin: 'direct',
+          parentSessionId: null,
+          allowSharedMemory: false,
+        }
+      : payload;
   const schema = eventSchemas[eventType as RuntimeEventType];
-  const parsed = schema.safeParse(payload);
+  const parsed = schema.safeParse(upcastPayload);
   if (!parsed.success) throw new UnsupportedRuntimeEventError(`Invalid ${eventType} payload`);
   return parsed.data;
 }
+
+const DEFAULT_LEGACY_AGENT_ID = 'dylan';
 
 function messageSchema() {
   return z.object({ messageId: id, turnId: id, eventId: id, content: z.string() });

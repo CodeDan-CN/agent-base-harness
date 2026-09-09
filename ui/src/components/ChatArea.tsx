@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import {
   Check,
@@ -36,6 +36,7 @@ import {
 
 interface ChatAreaProps {
   sessionId: string | null;
+  draftKey: string;
   title: string;
   modelLabel: string;
   modelId: string | null;
@@ -60,13 +61,14 @@ interface ChatAreaProps {
     value: unknown,
     resolution?: 'submitted' | 'cancelled' | 'rejected',
   ): void;
-  onResolveApproval(id: string, resolution: ApprovalResolution): void;
+  onResolveApproval(id: string, resolution: ApprovalResolution): Promise<boolean>;
   onPermissionPresetChange(preset: PermissionPreset): void;
   onModelChange(modelId: string): void;
 }
 
 export function ChatArea(props: ChatAreaProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
   const projection = props.projection;
   const allMessages = projection?.messages ?? [];
@@ -74,6 +76,7 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
     () => selectChatMessages(allMessages, [...(projection?.interactions.values() ?? [])]),
     [allMessages, projection],
   );
+  const hasConversationContent = Boolean(projection && messages.length > 0);
   const active = projection?.activeTurn ?? null;
   const executionTurn = active ?? [...(projection?.turns.values() ?? [])].at(-1) ?? null;
   const interactions = [...(projection?.interactions.values() ?? [])];
@@ -130,7 +133,7 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
       }
     : null;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const target = scrollRef.current;
     const hasStreamingBody =
       Boolean(runningStream?.content) && runningStream?.displayPhase !== 'commentary';
@@ -150,6 +153,20 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
     runningStream?.displayPhase,
   ]);
 
+  useLayoutEffect(() => {
+    const target = scrollRef.current;
+    const content = contentRef.current;
+    if (!target || !content || typeof ResizeObserver === 'undefined') return;
+
+    pinnedToBottom.current = true;
+    target.scrollTop = target.scrollHeight;
+    const observer = new ResizeObserver(() => {
+      if (pinnedToBottom.current) target.scrollTop = target.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [props.draftKey, hasConversationContent]);
+
   return (
     <main className={`chat-area ${props.sidebarOpen ? '' : 'sidebar-collapsed'}`}>
       <header className="chat-header">
@@ -160,9 +177,11 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
             </button>
           )}
           <h1>{props.title}</h1>
-          <button className="icon-button" onClick={props.onRename} aria-label="重命名会话">
-            <Edit3 size={15} />
-          </button>
+          {props.sessionId && (
+            <button className="icon-button" onClick={props.onRename} aria-label="重命名会话">
+              <Edit3 size={15} />
+            </button>
+          )}
         </div>
         <div className="header-status">
           <span className={`runtime-dot ${props.runtimeReady ? 'ready' : 'offline'}`} />
@@ -192,7 +211,7 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
             <p>我可以回答问题、分析资料、调用本地工具，并持续处理排队任务。</p>
           </div>
         ) : (
-          <div className="message-column">
+          <div ref={contentRef} className="message-column">
             {messages.map((message) => {
               const messageTurnIds = interactionExecutionTurnIds(interactions, message.turnId);
               const producedFiles =
@@ -236,6 +255,9 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                               className="assistant-response"
                               sessionId={props.sessionId}
                               producedFiles={producedFiles}
+                              streamKey={
+                                message.requestId ? `assistant:${message.requestId}` : undefined
+                              }
                               onOpenError={props.onNotifyError}
                             />
                             <ProducedFiles
@@ -310,10 +332,12 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
                     <div className="streaming-output">
                       {runningStream.content ? (
                         <MarkdownContent
+                          key={runningStream.requestId}
                           content={runningStream.content}
                           className="streaming-markdown"
                           sessionId={props.sessionId}
                           streaming
+                          streamKey={`assistant:${runningStream.requestId}`}
                           onOpenError={props.onNotifyError}
                         />
                       ) : (
@@ -349,8 +373,9 @@ export function ChatArea(props: ChatAreaProps): JSX.Element {
           </div>
         )}
         <InputArea
+          draftKey={props.draftKey}
           processing={Boolean(active)}
-          disabled={!projection || !props.runtimeReady}
+          disabled={!props.runtimeReady || (Boolean(props.sessionId) && !projection)}
           queue={projection?.inbox ?? []}
           busyActionId={props.busyActionId}
           modelId={props.modelId}
@@ -599,9 +624,16 @@ function ApprovalCard({
 }: {
   approval: RuntimeProjection['approvals'] extends Map<string, infer T> ? T : never;
   argumentsValue?: unknown;
-  onResolve(id: string, resolution: ApprovalResolution): void;
+  onResolve(id: string, resolution: ApprovalResolution): Promise<boolean>;
 }): JSX.Element {
+  const [submitting, setSubmitting] = useState(false);
   const display = approvalDisplay(approval.toolName, approval.presentation, argumentsValue);
+  const submit = async (resolution: ApprovalResolution) => {
+    if (submitting) return;
+    setSubmitting(true);
+    const accepted = await onResolve(approval.id, resolution);
+    if (!accepted) setSubmitting(false);
+  };
   return (
     <section className="approval-card" aria-live="polite">
       <div className="approval-heading">
@@ -616,11 +648,20 @@ function ApprovalCard({
       </div>
       <p className={display.technicalDetail ? 'technical' : undefined}>{display.detail}</p>
       <div className="interaction-actions">
-        <button className="secondary danger" onClick={() => onResolve(approval.id, 'rejected')}>
+        <button
+          className="secondary danger"
+          disabled={submitting}
+          onClick={() => void submit('rejected')}
+        >
           拒绝
         </button>
-        <button className="secondary" onClick={() => onResolve(approval.id, 'allowed-once')}>
-          允许一次
+        <button
+          className="secondary"
+          disabled={submitting}
+          onClick={() => void submit('allowed-once')}
+        >
+          {submitting && <Loader2 className="spin" size={13} />}
+          {submitting ? '处理中' : '允许一次'}
         </button>
       </div>
     </section>

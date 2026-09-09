@@ -5,7 +5,13 @@ import path from 'node:path';
 import process from 'node:process';
 
 function parseArgs(argv) {
-  const args = { left: '', right: '', leftLabel: 'curry-studio', rightLabel: 'Agent Base Harness', output: '' };
+  const args = {
+    left: '',
+    right: '',
+    leftLabel: 'curry-studio',
+    rightLabel: 'Agent Base Harness',
+    output: '',
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === '--left') args.left = path.resolve(argv[++index]);
@@ -15,7 +21,8 @@ function parseArgs(argv) {
     else if (value === '--output') args.output = path.resolve(argv[++index]);
     else throw new Error(`Unknown argument: ${value}`);
   }
-  if (!args.left || !args.right || !args.output) throw new Error('--left, --right and --output are required');
+  if (!args.left || !args.right || !args.output)
+    throw new Error('--left, --right and --output are required');
   return args;
 }
 
@@ -39,7 +46,10 @@ function average(values) {
 
 function formatNumber(value, digits = 0) {
   return Number.isFinite(value)
-    ? new Intl.NumberFormat('zh-CN', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value)
+    ? new Intl.NumberFormat('zh-CN', {
+        maximumFractionDigits: digits,
+        minimumFractionDigits: digits,
+      }).format(value)
     : 'n/a';
 }
 
@@ -57,8 +67,12 @@ function summarize(result, label) {
     taskSuccess: turn.evaluation?.task_success === true,
     quality: finite(turn.evaluation?.quality_score),
     critical: turn.evaluation?.critical_error === true,
-    failures: (turn.evaluation?.checks || []).filter((item) => item.core && !item.passed).map((item) => item.type),
-    flaws: (turn.evaluation?.checks || []).filter((item) => !item.core && !item.passed).map((item) => item.type),
+    failures: (turn.evaluation?.checks || [])
+      .filter((item) => item.core && !item.passed)
+      .map((item) => item.type),
+    flaws: (turn.evaluation?.checks || [])
+      .filter((item) => !item.core && !item.passed)
+      .map((item) => item.type),
     costWarnings: turn.evaluation?.cost_warnings || [],
     ttft: turn.response?.timing?.first_visible_text_ms,
     e2e: turn.response?.timing?.end_to_end_ms,
@@ -103,7 +117,11 @@ function decision(left, right) {
     item.summary.criticalErrors === 0;
   const lq = qualified(left);
   const rq = qualified(right);
-  if (lq !== rq) return { preferred: lq ? left.label : right.label, reason: '只有该应用通过全部三轮业务质量门槛。' };
+  if (lq !== rq)
+    return {
+      preferred: lq ? left.label : right.label,
+      reason: '只有该应用通过全部三轮业务质量门槛。',
+    };
   if (left.summary.successes !== right.summary.successes) {
     return {
       preferred: left.summary.successes > right.summary.successes ? left.label : right.label,
@@ -112,7 +130,8 @@ function decision(left, right) {
   }
   if (left.summary.averageQuality !== right.summary.averageQuality) {
     return {
-      preferred: left.summary.averageQuality > right.summary.averageQuality ? left.label : right.label,
+      preferred:
+        left.summary.averageQuality > right.summary.averageQuality ? left.label : right.label,
       reason: '核心成功持平，优先选择平均质量更高的应用。',
     };
   }
@@ -132,7 +151,10 @@ function metricRows(left, right) {
   return left.turns
     .map((turn, index) => {
       const other = right.turns[index] || {};
-      const row = (item, label) => `<tr><td>${escapeHtml(turn.checkpoint)}</td><td>${escapeHtml(label)}</td>
+      const row = (
+        item,
+        label,
+      ) => `<tr><td>${escapeHtml(turn.checkpoint)}</td><td>${escapeHtml(label)}</td>
         <td>${item.taskSuccess ? '通过' : '失败'}</td><td>${formatNumber(item.quality)}</td>
         <td>${formatDuration(item.ttft)}</td><td>${formatDuration(item.e2e)}</td>
         <td>${formatNumber(item.inputTokens)}</td><td>${formatNumber(item.outputTokens)}</td>
@@ -147,7 +169,11 @@ function diagnostics(left, right) {
     .map((turn, index) => {
       const other = right.turns[index] || {};
       const cell = (item) => {
-        const issues = [...(item.failures || []), ...(item.flaws || []), ...(item.costWarnings || [])];
+        const issues = [
+          ...(item.failures || []),
+          ...(item.flaws || []),
+          ...(item.costWarnings || []),
+        ];
         return issues.length ? issues.map(escapeHtml).join('、') : '无';
       };
       return `<tr><td>${escapeHtml(turn.checkpoint)}</td><td>${cell(turn)}</td><td>${cell(other)}</td></tr>`;
@@ -172,7 +198,9 @@ function toolTrace(left, right) {
   for (const candidate of [left, right]) {
     for (const turn of candidate.turns) {
       turn.tools.forEach((tool, index) => {
-        rows.push(`<tr><td>${escapeHtml(candidate.label)}</td><td>${escapeHtml(turn.checkpoint)}</td><td>${index + 1}</td><td>${escapeHtml(tool.name)}</td><td><code>${escapeHtml(JSON.stringify(tool.input))}</code></td></tr>`);
+        rows.push(
+          `<tr><td>${escapeHtml(candidate.label)}</td><td>${escapeHtml(turn.checkpoint)}</td><td>${index + 1}</td><td>${escapeHtml(tool.name)}</td><td><code>${escapeHtml(JSON.stringify(tool.input))}</code></td></tr>`,
+        );
       });
     }
   }
@@ -189,11 +217,11 @@ function buildHtml(left, right, verdict, generatedAt, jsonName) {
   <p class="lead">固定同一 A3b 模型与同一三轮场景，比较两个 Agent 应用的上下文管理、Skill 选择、工具编排、事实落地、响应成本和安全轨迹。</p>
   <div class="banner"><strong>当前优先：${escapeHtml(verdict.preferred)}</strong><p>${escapeHtml(verdict.reason)}</p></div>
   <div class="cards"><div class="card"><h3>${escapeHtml(left.label)}</h3><p>Agent：${escapeHtml(left.agentName)}<br>Model：${escapeHtml(left.model)}</p></div><div class="card"><h3>${escapeHtml(right.label)}</h3><p>Agent：${escapeHtml(right.agentName)}<br>Model：${escapeHtml(right.model)}</p></div></div>
-  <div class="metric"><div><small>成功轮次</small>${l.successes}/3 vs ${r.successes}/3</div><div><small>平均质量</small>${formatNumber(l.averageQuality,1)} vs ${formatNumber(r.averageQuality,1)}</div><div><small>输入 Token</small>${formatNumber(l.inputTokens)} vs ${formatNumber(r.inputTokens)}</div><div><small>总 E2E</small>${formatDuration(l.e2e)} vs ${formatDuration(r.e2e)}</div><div><small>模型调用</small>${l.modelCalls} vs ${r.modelCalls}</div><div><small>工具 / 错误</small>${l.toolCalls}/${l.toolErrors} vs ${r.toolCalls}/${r.toolErrors}</div></div>
-  <h2>三轮指标</h2><table><thead><tr><th>上下文</th><th>应用</th><th>任务</th><th>质量</th><th>可见 TTFT</th><th>E2E</th><th>Input</th><th>Output</th><th>模型调用</th><th>工具/错误</th></tr></thead><tbody>${metricRows(left,right)}</tbody></table>
-  <h2>评分诊断</h2><table><thead><tr><th>上下文</th><th>${escapeHtml(left.label)}</th><th>${escapeHtml(right.label)}</th></tr></thead><tbody>${diagnostics(left,right)}</tbody></table>
-  <h2>工具调用轨迹</h2><table><thead><tr><th>应用</th><th>上下文</th><th>#</th><th>工具</th><th>参数（已脱敏）</th></tr></thead><tbody>${toolTrace(left,right)}</tbody></table>
-  <h2>连续三轮最终回答</h2>${answers(left,right)}
+  <div class="metric"><div><small>成功轮次</small>${l.successes}/3 vs ${r.successes}/3</div><div><small>平均质量</small>${formatNumber(l.averageQuality, 1)} vs ${formatNumber(r.averageQuality, 1)}</div><div><small>输入 Token</small>${formatNumber(l.inputTokens)} vs ${formatNumber(r.inputTokens)}</div><div><small>总 E2E</small>${formatDuration(l.e2e)} vs ${formatDuration(r.e2e)}</div><div><small>模型调用</small>${l.modelCalls} vs ${r.modelCalls}</div><div><small>工具 / 错误</small>${l.toolCalls}/${l.toolErrors} vs ${r.toolCalls}/${r.toolErrors}</div></div>
+  <h2>三轮指标</h2><table><thead><tr><th>上下文</th><th>应用</th><th>任务</th><th>质量</th><th>可见 TTFT</th><th>E2E</th><th>Input</th><th>Output</th><th>模型调用</th><th>工具/错误</th></tr></thead><tbody>${metricRows(left, right)}</tbody></table>
+  <h2>评分诊断</h2><table><thead><tr><th>上下文</th><th>${escapeHtml(left.label)}</th><th>${escapeHtml(right.label)}</th></tr></thead><tbody>${diagnostics(left, right)}</tbody></table>
+  <h2>工具调用轨迹</h2><table><thead><tr><th>应用</th><th>上下文</th><th>#</th><th>工具</th><th>参数（已脱敏）</th></tr></thead><tbody>${toolTrace(left, right)}</tbody></table>
+  <h2>连续三轮最终回答</h2>${answers(left, right)}
   <p>生成时间：${escapeHtml(generatedAt)} · <a href="./${encodeURI(jsonName)}">结构化报告 JSON</a></p></main></body></html>`;
 }
 
@@ -220,12 +248,17 @@ async function main() {
     `${JSON.stringify({ generatedAt, scenario: leftRaw.run?.scenario, verdict, applications: [left, right] }, null, 2)}\n`,
     'utf8',
   );
-  await fs.writeFile(args.output, buildHtml(left, right, verdict, generatedAt, path.basename(dataPath)), 'utf8');
-  process.stdout.write(`Report: ${args.output}\nData: ${dataPath}\nPreferred: ${verdict.preferred}\n`);
+  await fs.writeFile(
+    args.output,
+    buildHtml(left, right, verdict, generatedAt, path.basename(dataPath)),
+    'utf8',
+  );
+  process.stdout.write(
+    `Report: ${args.output}\nData: ${dataPath}\nPreferred: ${verdict.preferred}\n`,
+  );
 }
 
 main().catch((error) => {
   process.stderr.write(`${error.stack || error.message}\n`);
   process.exitCode = 1;
 });
-

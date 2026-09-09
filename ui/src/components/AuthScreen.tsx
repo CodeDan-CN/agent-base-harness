@@ -49,6 +49,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps): JSX.Element {
 
   return (
     <main className="auth-screen">
+      <div className="auth-drag-region" aria-hidden="true" />
       <section className="auth-card" aria-label={mode === 'register' ? '创建账号' : '登录'}>
         <div className="auth-brand" aria-label="Agent Harness">
           <span className="auth-brand-mark" aria-hidden="true">

@@ -27,7 +27,8 @@ export function resolveProducedFileMention(
   value: string,
 ): string | undefined {
   if (paths.includes(value)) return value;
-  const matches = paths.filter((path) => basename(path) === value);
+  const mentionedName = basename(value);
+  const matches = paths.filter((path) => basename(path) === mentionedName);
   return matches.length === 1 ? matches[0] : undefined;
 }
 

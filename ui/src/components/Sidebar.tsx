@@ -14,13 +14,13 @@ import {
   UserRoundPlus,
 } from 'lucide-react';
 import type { AgentNavigationSnapshot, BootstrapLocalUser, Session } from '@client-contracts';
+import { createPortal } from 'react-dom';
 
 interface SidebarProps {
   navigation: AgentNavigationSnapshot | null;
   activeAgentId: string | null;
   activeSessionId: string | null;
   activeUser: BootstrapLocalUser;
-  onSelectAgent(id: string): void;
   onSelectSession(id: string): void;
   onNewSession(): void;
   onNewAgentSession(agentId: string): void;
@@ -37,8 +37,10 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   const [menuId, setMenuId] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerPosition, setPickerPosition] = useState({ top: -1000, left: 12, width: 280 });
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const profileAreaRef = useRef<HTMLDivElement>(null);
+  const pickerButtonRef = useRef<HTMLButtonElement>(null);
   const initials = props.activeUser.displayName.slice(0, 2).toUpperCase();
 
   useEffect(() => {
@@ -52,6 +54,27 @@ export function Sidebar(props: SidebarProps): JSX.Element {
     window.addEventListener('keydown', close);
     return () => window.removeEventListener('keydown', close);
   }, []);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const place = () => {
+      const rect = pickerButtonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(280, window.innerWidth - 24);
+      setPickerPosition({
+        top: rect.bottom + 6,
+        left: Math.min(Math.max(12, rect.left), window.innerWidth - width - 12),
+        width,
+      });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [pickerOpen]);
 
   useEffect(() => {
     const closeOnOutsidePointer = (event: PointerEvent) => {
@@ -106,39 +129,50 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         <div className="agent-navigation-heading">
           <strong>智能体</strong>
           <button
+            ref={pickerButtonRef}
             className="icon-button compact"
             aria-label="把已有智能体加入首页"
             onClick={() => setPickerOpen((current) => !current)}
           >
             <Plus size={15} />
           </button>
-          {pickerOpen && (
-            <div className="agent-picker-popover">
-              <strong>加入已有智能体</strong>
-              {(props.navigation?.availableToAdd.length ?? 0) === 0 ? (
-                <p>没有可加入的智能体</p>
-              ) : (
-                props.navigation?.availableToAdd.map((agent) => (
-                  <button
-                    key={agent.id}
-                    onClick={() => {
-                      setPickerOpen(false);
-                      void props.onAddAgent(agent.id);
-                    }}
-                  >
-                    <AgentAvatar name={agent.name} />
-                    <span>
-                      <strong>{agent.name}</strong>
-                      <small>{agent.description || '未填写简介'}</small>
-                    </span>
-                  </button>
-                ))
-              )}
-              <button className="manage-agents-link" onClick={props.onCreateAgent}>
-                管理智能体
-              </button>
-            </div>
-          )}
+          {pickerOpen &&
+            createPortal(
+              <div className="agent-picker-popover" style={pickerPosition}>
+                <strong className="agent-picker-title">加入已有智能体</strong>
+                {(props.navigation?.availableToAdd.length ?? 0) === 0 ? (
+                  <p className="agent-picker-empty">没有可加入的智能体</p>
+                ) : (
+                  props.navigation?.availableToAdd.map((agent) => (
+                    <button
+                      key={agent.id}
+                      onClick={() => {
+                        setPickerOpen(false);
+                        void props.onAddAgent(agent.id);
+                      }}
+                    >
+                      <AgentAvatar name={agent.name} />
+                      <span>
+                        <strong>{agent.name}</strong>
+                        <small>{agent.description || '未填写简介'}</small>
+                      </span>
+                    </button>
+                  ))
+                )}
+                <div className="agent-picker-separator" />
+                <button
+                  className="manage-agents-link"
+                  onClick={() => {
+                    setPickerOpen(false);
+                    props.onCreateAgent();
+                  }}
+                >
+                  <Settings size={14} />
+                  管理智能体
+                </button>
+              </div>,
+              document.body,
+            )}
         </div>
 
         {props.navigation?.items.map((item) => {
@@ -156,10 +190,12 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                 </button>
                 <button
                   className="agent-select"
+                  aria-expanded={!isCollapsed}
+                  aria-label={`${isCollapsed ? '展开' : '折叠'} ${item.agent.name} 的会话`}
                   onClick={() => {
                     setMenuId(null);
                     setPickerOpen(false);
-                    props.onSelectAgent(item.agent.id);
+                    toggleAgent(item.agent.id);
                   }}
                 >
                   <AgentAvatar name={item.agent.name} />
@@ -189,7 +225,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                           props.onSelectSession(session.id);
                         }}
                       >
-                        <span>{session.title}</span>
+                        <ScrollableSessionTitle title={session.title} />
                       </button>
                       <button
                         className="session-menu-button"
@@ -269,7 +305,6 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           <span className="avatar">{initials}</span>
           <span className="profile-copy">
             <strong>{props.activeUser.displayName}</strong>
-            <small>本地用户</small>
           </span>
           <ChevronRight size={16} />
         </button>
@@ -280,4 +315,46 @@ export function Sidebar(props: SidebarProps): JSX.Element {
 
 function AgentAvatar({ name }: { name: string }): JSX.Element {
   return <span className="agent-avatar">{name.slice(0, 2).toUpperCase()}</span>;
+}
+
+function ScrollableSessionTitle({ title }: { title: string }): JSX.Element {
+  const viewportRef = useRef<HTMLSpanElement>(null);
+  const delayRef = useRef<number | null>(null);
+  const frameRef = useRef<number | null>(null);
+
+  const stop = (reset = true) => {
+    if (delayRef.current !== null) window.clearTimeout(delayRef.current);
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    delayRef.current = null;
+    frameRef.current = null;
+    if (reset && viewportRef.current) viewportRef.current.scrollLeft = 0;
+  };
+
+  useEffect(() => stop, [title]);
+
+  return (
+    <span
+      ref={viewportRef}
+      className="session-title-viewport"
+      onMouseEnter={(event) => {
+        stop(false);
+        const viewport = event.currentTarget;
+        const distance = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+        if (distance <= 1) return;
+        delayRef.current = window.setTimeout(() => {
+          let previous = performance.now();
+          const advance = (now: number) => {
+            const elapsed = now - previous;
+            previous = now;
+            viewport.scrollLeft = Math.min(distance, viewport.scrollLeft + elapsed / 32);
+            if (viewport.scrollLeft < distance) frameRef.current = requestAnimationFrame(advance);
+          };
+          frameRef.current = requestAnimationFrame(advance);
+        }, 420);
+      }}
+      onMouseLeave={() => stop()}
+    >
+      <span className="session-title-text">{title}</span>
+    </span>
+  );
 }

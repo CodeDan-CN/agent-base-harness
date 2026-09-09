@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export const AGENT_MEMORY_PROFILE_FILENAME = 'memory-profile.md';
@@ -44,6 +44,19 @@ export function readAgentMemoryProfile(
   } catch (error) {
     if (isMissing(error)) return '';
     throw error;
+  }
+}
+
+export function isAgentMemoryProfileReady(
+  appDataDir: string,
+  userId: string,
+  agentId: string,
+): boolean {
+  try {
+    const metadata = lstatSync(agentMemoryProfilePath(appDataDir, userId, agentId));
+    return metadata.isFile() && !metadata.isSymbolicLink();
+  } catch {
+    return false;
   }
 }
 

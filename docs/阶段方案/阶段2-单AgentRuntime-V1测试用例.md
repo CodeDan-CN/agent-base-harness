@@ -161,23 +161,23 @@
 
 ## 10. M06 Skill、Tool 与 Interaction 用例
 
-| ID         | 优先级/类型      | 场景                    | 关键步骤                 | 预期结果                               |
-| ---------- | ---------------- | ----------------------- | ------------------------ | -------------------------------------- |
-| S2-M06-001 | P0 / Integration | 统一能力概览             | 调用 `capability_search` | 同时返回全部可用 Skill/MCP 名称和完整 description，标记同级且无正文/完整 Schema，不受查询词或数量限制 |
-| S2-M06-002 | P0 / Integration | 按需加载                | 选择 Skill 后读 SKILL.md | 正文按需进入当前用户上下文             |
-| S2-M06-003 | P0 / Security    | Skill 越界资源          | 引用 `../`/外部链接      | 拒绝且不读取外部内容                   |
-| S2-M06-004 | P0 / Security    | Skill 用户隔离          | A 启用、B 未安装         | B Catalog/loader 不可见                |
-| S2-M06-005 | P0 / Contract    | Tool input/output       | 非法 args/result         | 执行前/后确定拒绝并规范化错误          |
-| S2-M06-006 | P0 / Concurrency | parallel-safe 重叠      | A/B barrier              | 同时运行                               |
-| S2-M06-007 | P0 / Concurrency | exclusive 屏障          | A并行、B独占、C并行      | A 完成后 B，B 完成后 C                 |
-| S2-M06-008 | P0 / Concurrency | 乱序完成                | C/A/B 完成               | Result 按 A/B/C commit                 |
-| S2-M06-009 | P0 / E2E         | 统一结果状态            | 五种 ToolResult          | Event/Surface/Trajectory 状态一致      |
-| S2-M06-010 | P0 / Integration | timeout/cancel          | 长工具超时或取消         | Abort 贯穿、确定收敛                   |
-| S2-M06-011 | P0 / E2E         | needs_input             | 工具请求 form            | Interaction 持久且 Event awaiting_user |
-| S2-M06-012 | P0 / Contract    | resolution Schema       | 提交非法/合法 value      | 非法拒绝，合法持久并继续               |
-| S2-M06-013 | P0 / Security    | 普通消息伪造 resolution | 输入同名字段             | 不能解除 Interaction                   |
-| S2-M06-014 | P1 / Integration | 宿主解释器缺失          | 执行 Skill Python 脚本   | 明确 Tool error，不自动安装            |
-| S2-M06-015 | P0 / Property    | Call/Result 一一对应    | 随机工具批次             | 已闭合 Step 每 Call 恰一 Result        |
+| ID         | 优先级/类型      | 场景                    | 关键步骤                 | 预期结果                                                                                              |
+| ---------- | ---------------- | ----------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| S2-M06-001 | P0 / Integration | 统一能力概览            | 调用 `capability_search` | 同时返回全部可用 Skill/MCP 名称和完整 description，标记同级且无正文/完整 Schema，不受查询词或数量限制 |
+| S2-M06-002 | P0 / Integration | 按需加载                | 选择 Skill 后读 SKILL.md | 正文按需进入当前用户上下文                                                                            |
+| S2-M06-003 | P0 / Security    | Skill 越界资源          | 引用 `../`/外部链接      | 拒绝且不读取外部内容                                                                                  |
+| S2-M06-004 | P0 / Security    | Skill 用户隔离          | A 启用、B 未安装         | B Catalog/loader 不可见                                                                               |
+| S2-M06-005 | P0 / Contract    | Tool input/output       | 非法 args/result         | 执行前/后确定拒绝并规范化错误                                                                         |
+| S2-M06-006 | P0 / Concurrency | parallel-safe 重叠      | A/B barrier              | 同时运行                                                                                              |
+| S2-M06-007 | P0 / Concurrency | exclusive 屏障          | A并行、B独占、C并行      | A 完成后 B，B 完成后 C                                                                                |
+| S2-M06-008 | P0 / Concurrency | 乱序完成                | C/A/B 完成               | Result 按 A/B/C commit                                                                                |
+| S2-M06-009 | P0 / E2E         | 统一结果状态            | 五种 ToolResult          | Event/Surface/Trajectory 状态一致                                                                     |
+| S2-M06-010 | P0 / Integration | timeout/cancel          | 长工具超时或取消         | Abort 贯穿、确定收敛                                                                                  |
+| S2-M06-011 | P0 / E2E         | needs_input             | 工具请求 form            | Interaction 持久且 Event awaiting_user                                                                |
+| S2-M06-012 | P0 / Contract    | resolution Schema       | 提交非法/合法 value      | 非法拒绝，合法持久并继续                                                                              |
+| S2-M06-013 | P0 / Security    | 普通消息伪造 resolution | 输入同名字段             | 不能解除 Interaction                                                                                  |
+| S2-M06-014 | P1 / Integration | 宿主解释器缺失          | 执行 Skill Python 脚本   | 明确 Tool error，不自动安装                                                                           |
+| S2-M06-015 | P0 / Property    | Call/Result 一一对应    | 随机工具批次             | 已闭合 Step 每 Call 恰一 Result                                                                       |
 
 ## 11. M07 History 与 Compaction 用例
 
