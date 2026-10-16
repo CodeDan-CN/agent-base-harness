@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "apps/server/src",
+    "apps/web/src",
+    "apps/cli/src",
+    "packages/*/src",
+    "vite.web.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-*",
+    "out",
+    "reference_ui",
+    "apps/desktop",
+    "apps/mobile"
+  ]
+}

@@ -25,12 +25,12 @@ import { Readable } from 'node:stream';
 import { fileURLToPath, URL } from 'node:url';
 import { promisify } from 'node:util';
 import { build } from 'esbuild';
+import { loadRuntimeTarget, matchesBinaryTarget } from './runtime-target.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const lockPath = path.join(root, 'resources', 'runtime-lock.json');
+const { lockPath, lock, force } = await loadRuntimeTarget();
 const cacheRoot = path.join(root, '.runtime-cache');
-const lock = JSON.parse(await readFile(lockPath, 'utf8'));
 const targetName = `${lock.target.platform}-${lock.target.arch}`;
 const finalRoot = path.join(cacheRoot, targetName);
 
@@ -41,7 +41,7 @@ if (process.platform !== lock.target.platform || process.arch !== lock.target.ar
   );
 }
 await assertInstalledMemoryMcp();
-if (!process.argv.includes('--force') && (await preparedPackMatchesLock())) {
+if (!force && (await preparedPackMatchesLock())) {
   process.stdout.write(`[runtime-pack] ${targetName} already matches runtime-lock.json\n`);
   process.exit(0);
 }
@@ -82,8 +82,8 @@ try {
   const [nodeVersion, pythonVersion, nodeFile, pythonFile] = await Promise.all([
     versionOf(nodeExecutable, ['--version']),
     versionOf(pythonExecutable, ['--version']),
-    versionOf('/usr/bin/file', [nodeExecutable]),
-    versionOf('/usr/bin/file', [pythonExecutable]),
+    versionOf('/usr/bin/file', ['-L', nodeExecutable]),
+    versionOf('/usr/bin/file', ['-L', pythonExecutable]),
   ]);
   if (!nodeVersion.includes(lock.node.version)) {
     throw new Error(`Prepared Node version mismatch: ${nodeVersion}`);
@@ -91,8 +91,13 @@ try {
   if (!pythonVersion.includes(lock.python.version)) {
     throw new Error(`Prepared Python version mismatch: ${pythonVersion}`);
   }
-  if (!nodeFile.includes('arm64') || !pythonFile.includes('arm64')) {
-    throw new Error('Prepared Runtime Pack contains a non-arm64 executable');
+  if (
+    !matchesBinaryTarget(nodeFile, lock.target) ||
+    !matchesBinaryTarget(pythonFile, lock.target)
+  ) {
+    throw new Error(
+      `Prepared Runtime Pack contains an executable for the wrong target: ${targetName}`,
+    );
   }
 
   const manifest = {
@@ -139,10 +144,10 @@ try {
 function assertLock(value) {
   if (
     value?.schemaVersion !== 1 ||
-    value?.target?.platform !== 'darwin' ||
-    value?.target?.arch !== 'arm64'
+    !['darwin', 'linux'].includes(value?.target?.platform) ||
+    !['arm64', 'x64'].includes(value?.target?.arch)
   ) {
-    throw new Error('runtime-lock.json does not describe the supported darwin-arm64 target');
+    throw new Error('Runtime lock does not describe a supported target');
   }
   for (const name of ['node', 'python']) {
     const entry = value[name];
@@ -217,6 +222,16 @@ async function assertInstalledMemoryMcp() {
 
 async function downloadArtifact(entry, directory) {
   const destination = path.join(directory, entry.artifact);
+  const cached = path.join(cacheRoot, 'archives', entry.artifact);
+  try {
+    if ((await sha256File(cached)) === entry.sha256) {
+      await copyFile(cached, destination);
+      process.stdout.write(`[runtime-pack] reused verified archive ${entry.artifact}\n`);
+      return destination;
+    }
+  } catch {
+    /* Missing or corrupt cached archives are downloaded again. */
+  }
   let lastError;
   for (const url of entry.urls) {
     try {
@@ -235,6 +250,8 @@ async function downloadArtifact(entry, directory) {
       if (digest !== entry.sha256) {
         throw new Error(`SHA-256 mismatch: expected ${entry.sha256}, received ${digest}`);
       }
+      await mkdir(path.dirname(cached), { recursive: true });
+      await copyFile(destination, cached);
       return destination;
     } catch (error) {
       lastError = error;
@@ -335,15 +352,15 @@ async function preparedPackMatchesLock() {
     const [nodeVersion, pythonVersion, nodeFile, pythonFile] = await Promise.all([
       versionOf(path.join(finalRoot, 'node', 'bin', 'node'), ['--version']),
       versionOf(path.join(finalRoot, 'python', 'bin', 'python3'), ['--version']),
-      versionOf('/usr/bin/file', [path.join(finalRoot, 'node', 'bin', 'node')]),
-      versionOf('/usr/bin/file', [path.join(finalRoot, 'python', 'bin', 'python3')]),
+      versionOf('/usr/bin/file', ['-L', path.join(finalRoot, 'node', 'bin', 'node')]),
+      versionOf('/usr/bin/file', ['-L', path.join(finalRoot, 'python', 'bin', 'python3')]),
       access(path.join(finalRoot, 'mcp', 'server-memory', 'index.mjs'), fsConstants.R_OK),
     ]);
     return (
       nodeVersion.includes(lock.node.version) &&
       pythonVersion.includes(lock.python.version) &&
-      nodeFile.includes('arm64') &&
-      pythonFile.includes('arm64')
+      matchesBinaryTarget(nodeFile, lock.target) &&
+      matchesBinaryTarget(pythonFile, lock.target)
     );
   } catch {
     return false;

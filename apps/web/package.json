@@ -1,0 +1,16 @@
+{
+  "version": "0.1.0",
+  "private": true,
+  "name": "@agent-harness/web",
+  "scripts": {
+    "dev": "vite --config ../../vite.web.config.ts",
+    "build": "npm --prefix ../.. run build:web"
+  },
+  "dependencies": {
+    "@agent-harness/app-ui": "0.1.0",
+    "@agent-harness/client-sdk": "0.1.0",
+    "@agent-harness/protocol": "0.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

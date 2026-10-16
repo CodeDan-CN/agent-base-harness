@@ -1,0 +1,13 @@
+{
+  "name": "@agent-harness/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@agent-harness/app-ui": "0.1.0",
+    "@agent-harness/client-sdk": "0.1.0",
+    "@agent-harness/protocol": "0.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "lucide-react": "^0.546.0"
+  }
+}

@@ -21,7 +21,7 @@ describe('Agent Base Harness travel benchmark normalization', () => {
           stepId: 'step-1',
           toolCallId: 'tool-1',
           toolName: 'skill_load',
-          input: { skillName: '12306' },
+          input: { name: '12306' },
         },
       },
       {

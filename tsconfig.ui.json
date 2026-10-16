@@ -4,10 +4,16 @@
     "types": ["vite/client"],
     "baseUrl": ".",
     "paths": {
-      "@client-contracts": ["src/client-contracts/index.ts"],
-      "@ui/*": ["ui/src/*"]
+      "@client-contracts": ["packages/protocol/src/client/index.ts"],
+      "@ui/*": ["packages/app-ui/src/*"]
     }
   },
-  "include": ["ui/src", "src/client-contracts"],
+  "include": [
+    "packages/app-ui/src",
+    "apps/web/src",
+    "apps/mobile/src",
+    "apps/desktop/src/renderer",
+    "packages/protocol/src/client"
+  ],
   "exclude": ["node_modules", "dist", "dist-*", "out", "reference_ui", "tests"]
 }

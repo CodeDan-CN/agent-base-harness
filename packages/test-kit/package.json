@@ -1,0 +1,15 @@
+{
+  "name": "@agent-harness/test-kit",
+  "version": "0.1.0",
+  "private": true,
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@agent-harness/protocol": "0.1.0",
+    "@agent-harness/runtime-core": "0.1.0",
+    "@agent-harness/storage": "0.1.0",
+    "@agent-harness/execution": "0.1.0",
+    "@agent-harness/server-core": "0.1.0"
+  }
+}

@@ -5,6 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { loadRuntimeTarget, pythonMachineNames } from './runtime-target.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import {
   getDefaultEnvironment,
@@ -13,7 +14,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const target = `${process.platform}-${process.arch}`;
+const { target, lock } = await loadRuntimeTarget();
 const runtimeRoot = path.join(root, '.runtime-cache', target);
 const manifest = JSON.parse(
   await readFile(path.join(runtimeRoot, 'runtime-manifest.json'), 'utf8'),
@@ -23,6 +24,12 @@ if (manifest.target?.platform !== process.platform || manifest.target?.arch !== 
   throw new Error(`Runtime Pack target does not match ${target}`);
 }
 
+if (
+  manifest.node.version !== lock.node.version ||
+  manifest.python.version !== lock.python.version ||
+  manifest.mcp.memory.version !== lock.memoryMcp.version
+)
+  throw new Error('Runtime manifest versions do not match the selected lock');
 const binDir = path.join(runtimeRoot, manifest.binDir);
 const env = {
   PATH: [binDir, '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(path.delimiter),
@@ -43,8 +50,10 @@ const { stdout, stderr } = await execFileAsync('/bin/bash', ['-c', script], {
 if (stderr.trim()) process.stderr.write(stderr);
 process.stdout.write(stdout);
 if (
-  !stdout.includes(`node:v${manifest.node.version}:arm64`) ||
-  !stdout.includes(`python:${manifest.python.version}:arm64`)
+  !stdout.includes(`node:v${manifest.node.version}:${lock.target.arch}`) ||
+  !pythonMachineNames(lock.target.arch).some((machine) =>
+    stdout.includes(`python:${manifest.python.version}:${machine}`),
+  )
 ) {
   throw new Error('Bundled runtime verification output does not match its manifest');
 }

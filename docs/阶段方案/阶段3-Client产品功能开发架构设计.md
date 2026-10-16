@@ -127,9 +127,9 @@ Command 成功只表示对应持久事实已接纳。UI 不因 Promise resolve �
 ### 3.3 前端技术基线
 
 - React 19 + TypeScript strict。
-- Renderer 源码独立位于顶层 `ui/`，使用不包含 Node 类型的 `tsconfig.ui.json`。
+- Renderer 源码独立位于顶层 `packages/app-ui/`，使用不包含 Node 类型的 `tsconfig.ui.json`。
 - UI 只允许导入 `@client-contracts` 和自身模块；Main、Preload、Worker、Runtime、Infrastructure 的能力一律通过 Preload 白名单桥调用。
-- `src/client-contracts/` 只保存跨进程 DTO、Schema 与纯投影逻辑，不包含 Electron、Node、SQLite、Credential 或 ProcessRunner 实现。
+- `packages/protocol/src/client/` 只保存跨进程 DTO、Schema 与纯投影逻辑，不包含 Electron、Node、SQLite、Credential 或 ProcessRunner 实现。
 - React Router 管理 `/sessions/:id`、`/settings/models`、`/settings/skills`、`/settings/runtime`。
 - TanStack Query 管理普通 Query Snapshot、失效和 revision 冲突重取。
 - 自研 `SessionProjectionStore` + `useSyncExternalStore` 消费高频有序增量。

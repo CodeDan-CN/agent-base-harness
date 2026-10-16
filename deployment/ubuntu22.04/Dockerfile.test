@@ -1,0 +1,12 @@
+# Local deployment validation host, not the production application image.
+FROM ubuntu:22.04
+ENV container=docker
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    systemd systemd-sysv sudo ca-certificates dbus \
+    && useradd --create-home --shell /bin/bash deployuser \
+    && echo 'deployuser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/deployuser \
+    && chmod 0440 /etc/sudoers.d/deployuser \
+    && mkdir /home/deployuser/src && chown deployuser:deployuser /home/deployuser/src \
+    && rm -rf /var/lib/apt/lists/*
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

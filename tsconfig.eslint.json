@@ -1,5 +1,16 @@
 {
   "extends": "./tsconfig.json",
-  "include": ["src", "ui/src", "tests", "vite.config.ts", "playwright.config.ts"],
+  "include": [
+    "apps",
+    "packages/*/src",
+    "packages/app-ui/src",
+    "apps/web/src",
+    "tests",
+    "scripts/test-low-context-quality.ts",
+    "vite.config.ts",
+    "vite.web.config.ts",
+    "vite.mobile.config.ts",
+    "playwright.config.ts"
+  ],
   "exclude": ["node_modules", "dist", "dist-*", "out", "reference_ui", ".runtime-cache", "release"]
 }

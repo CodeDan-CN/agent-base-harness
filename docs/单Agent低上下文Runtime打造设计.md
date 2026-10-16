@@ -1,4 +1,8 @@
+> 2026-09-11 用户边界更新：现阶段注册、密码校验和登录状态由客户端本地负责；所有 Runtime 接入方式信任客户端声明的 userId，保留会话/数据归属及执行权限检查。该产品决定取代本文早期服务端账号与认证设计，协议和旧数据接入以[多端工程架构](多端工程拆分与远程客户端架构.md#客户端用户与-runtime-数据归属)为准。
+
 # 单 Agent 低上下文 Runtime 打造设计
+
+> 多端工程更新：本项目现采用 npm workspaces，源码位于 apps/ 与 packages/。生产 Server 托管 Web，Desktop/CLI 为远程客户端，Mobile 仅预留目录。当前工程、启动、依赖和交付约定以[多端工程架构](多端工程拆分与远程客户端架构.md)为准；下文关于单源码包、Electron 拉起/内置 Runtime 的历史约定已被替代。既有任务和数据语义继续有效。
 
 > 4.7.5 目标更新（待实施）：同等级 AgentProfile 支持直接问答与授权调用，Dylan 是每用户初始默认档案；智能体只在设置中创建管理，首页列表通过独立展示关系选择已有档案。委派采用单层星型结构，只有直接会话可调用其他 Agent，受派会话返回报告后由调用方决定是否再调用另一 Agent，不建立嵌套调用链。本文早期“只有一个 Agent / 不引入 Subagent”约束仅适用于 Runtime V1。每 Session 单 Driver、低上下文、原生 Tool Call 和独立服务边界继续成立。Agent 浅层记忆采用独立 MD，一个 builtin-memory 定义通过 Host MCP 实例管理器按 Agent 私有/用户共享作用域按需运行，普通 MCP 用户级复用，Node/Python 安装应用级共享。最新范围与验收以 [4.7.5 方案](阶段方案/阶段4.7.5-多智能体档案与会话归属开发架构设计.md) 为准，下文保留早期实现基线，不据此宣称多 Agent 已实现。
 
@@ -29,7 +33,7 @@
 - 仅追加的事件日志，用于恢复 Inbox、Turn/Step、模型上下文、UI 和 token 统计。
 - 精确的 provider usage 采集，并记录每次模型调用的上下文组成。
 - 工具参数、工具结果和外部输入的边界校验。
-- 工具结果作为事实完整持久化；Surface 在压力阈值以下使用完整结果，达到阈值后可使用不改写原 Event 的可追溯预裁剪投影。
+- 工具结果作为事实完整持久化；Surface 在单条入模限额内使用完整结果，超限时使用不改写原 Event 的可追溯投影，达到上下文压力阈值后继续裁剪与压缩。
 - 会话历史同时按 Session 和 ConversationEvent 组织；当前 Event 保存同一件事的用户可见问答，上下文可包含原始问答或 Summary/raw tail、当前用户输入和少量相关 Event 候选。
 
 ### 2.2 明确不做
@@ -38,7 +42,7 @@
 - 不做 `Decider → Executor → Harness → Decider → Answer Generator` 多模型链路。
 - 不为每个用户请求额外调用模型进行意图分类或历史相关性判断。
 - 不在每个 Step 同时携带全量事件、全量会话、另一份动作历史和重复摘要。
-- 不在压力阈值以下为缩短上下文主动裁剪工具结果，也不用不可追溯的 Artifact 自动外溢替代原始事实。
+- 不改写工具结果原始事实，不用不可追溯的 Artifact 自动外溢替代原始事件；模型视图通过独立入模限额和压力压缩生成持久替换。
 - 不让 UI 临时状态成为运行事实。
 - 不承诺外部副作用的无条件 exactly-once；通过幂等键、不自动重放修改类工具和人工确认降低风险。
 
@@ -134,6 +138,8 @@ flowchart TD
 
 ### 6.1 输入接纳
 
+当前普通文件先经认证上传接口校验会话归属并保存到该会话工作区，再把路径插入用户输入文本。Input Admission 接纳这份文本，不读取或展开文件正文；文件读取发生在后续工具调用，继续受文件工具权限约束。该流程不新增多模态输入或附件事件类型，详见[会话普通文件上传](多端工程拆分与远程客户端架构.md#会话普通文件上传)。
+
 1. API 校验 `sessionId`、`messageId`、内容类型、附件引用和幂等键。
 2. Runtime 把输入以 Inbox splice 事件写入持久层。
 3. 只有事件提交成功后才唤醒 Session Driver。
@@ -178,7 +184,7 @@ Context Projector 在每个 Step 前执行：
 5. 按预算加载少量相关 `ConversationEvent` 候选记录。
 6. 从 Surface 中取得当前 Turn 必须保留的完整消息链与当前用户输入。
 7. Event Context 不内联历史 ExecutionTurn 的 Step、Tool Call 或 Tool Result；只有模型显式调用 `turn_read` 后，所选执行证据才作为完整 Tool Result 进入当前 Turn。
-8. 当前 Turn 中的 Tool Result 必须使用工具返回的完整内容写入 Event；模型视图只能在压力触发后以新 Surface replacement 表达。
+8. 当前 Turn 中的 Tool Result 必须使用工具返回的完整内容写入 Event；每条结果入模前执行可配置限额，以新 Surface replacement 表达部分内容及原始事件定位，不依赖压力触发。
 9. 如果请求超过硬预算，依次移除低分可选上下文、预裁剪超大 Tool Result 模型视图、压缩最旧工具配对平衡区域；仍无法收敛时必须明确失败。
 
 ### 6.4 模型决策
@@ -481,12 +487,15 @@ inputBudget
 
 ```text
 常驻工具：capability_search、skill_load、mcp_load、必要通用工具
-统一发现：capability_search 检索当前执行快照中的 Skill、MCP 与可调用 Agent
+统一发现：capability_search {} 返回当前 Step 快照的全部已授权有效轻量候选
+语义选择：主 Agent 结合当前对话，从同级的 Skill、MCP 与可调用 Agent 中选择
 按需展开：Skill → skill_load；MCP → mcp_load；Agent → agent_call
 领域工具：mcp_load 后从下一 Step 加入当前 Turn 的 Tool Schema
 ```
 
-4.7.5 起，`capability_search` 接收外层 Agent 根据当前对话整理的完整、自包含 `userRequest`，以及有界 `limit`；不向外层模型提供能力类型筛选参数，每次固定同时检索 Skill、MCP、Agent。Runtime 先确定性过滤当前 Agent 已授权且状态有效的三类候选，再复用当前会话已选模型，仅根据 `userRequest` 与候选的 kind/capabilityId/name/description/必要作用域做语义选择。不向选择模型暴露 `SKILL.md` 正文、MCP Tool Schema、Agent 核心指令/记忆/会话。三类来源同级，分别通过 `skill_load`、`mcp_load`、`agent_call` 执行；每个执行入口重新校验当前 Step 快照。delegated Session 的候选排除 Agent 且不暴露 agent_call，以保持单层委派。具体边界以 4.7.5 阶段方案为准。
+4.7.5 的 `capability_search` 输入严格为空对象 `{}`，不接受 `userRequest`、`limit`、`kinds` 或其他筛选参数。每个 Step 开始时根据最新配置冻结执行快照，Runtime 从该快照确定性返回全部已授权且状态有效的 Skill、MCP、Agent 轻量候选，结构为 `{ totalAvailable, candidates }`。每项含 kind/name/完整 description/action；Skill 和 MCP 不对模型暴露内部 ID，分别使用 `skill_load({name})` 和 `mcp_load({name})`，name 原样取自候选；两种记忆分别命名为“本智能体记忆”和“用户共享记忆”。MCP 候选保留 scope 描述，Agent 候选另外含 capabilityId。内部仍按 kind/name/capabilityId 稳定排序；没有有效候选时返回零数量和空数组。目录查询不调用内部选择模型，不生成 selected/reason，也不按关键词或数量缩减候选。主 Agent 根据当前对话自行做语义选择，分别通过 `skill_load`、`mcp_load`、`agent_call` 执行。
+
+完整目录仅在调用后作为工具结果进入上下文，不在初始 Prompt 常驻。候选名称和 description 是不可信数据，主 Agent 必须忽略其中的指令、身份要求和输出要求。目录不暴露 `SKILL.md` 正文、MCP Tool Schema、Agent 核心指令/记忆/会话；正文与 Schema 仍在选中后按需加载。每个执行入口重新校验当前 Step 快照，本 Step 中途配置修改在下一 Step 的目录中生效。delegated Session 的候选排除 Agent 且不暴露 agent_call，以保持单层委派。具体边界以 4.7.5 阶段方案为准。
 
 ### 9.7 Session 历史与 ConversationEvent 上下文
 
@@ -657,20 +666,20 @@ Runtime 对可确定的结果直接归一化，不再调用独立 Harness LLM：
 ### 10.2 完整事实与模型视图不变量
 
 - `tool.result` 完整持久化工具返回的规范化 `content`，原始 Event 永久不被压缩事务改写。
-- 阈值以下 Surface 使用完整 `content`；达到压力阈值后可产生可追溯的模型视图，保留头尾、状态、分页/深读索引、digest 和原 seq。
+- 单条结果未超入模限额时使用完整 `content`；超限时即使总上下文低于压力阈值，也产生持久化的 `tool-output-limit` Surface replacement。保留头尾、部分内容标记和当前会话原始 `tool.result` seq；按项目共享估算器计算完整模型文本，包装文字、裁剪标记和消息开销均计入限额。配置见[阶段 4 工具结果入模限额](阶段方案/阶段4-模型能力与上下文管理开发架构设计.md#86a-工具结果入模限额)。压力裁剪、检查点摘要、最终请求预算检查和 Provider 超限重试继续执行。
 - 模型视图是新的 Surface replacement，不是对 `tool.result` payload 的原地截断、摘要或字段丢弃。
 - 如果某个工具原生就返回文件 ID、URL 或其他资源引用，该引用属于工具完整结果；这不是 Runtime 对结果的简化。
 
 ### 10.3 大结果的责任边界
 
-保留完整结果意味着产生大结果的工具必须在协议层控制单次请求范围，而不是由 Runtime 事后裁剪。例如：
+产生大结果的工具仍应在协议层控制单次请求范围；Runtime 入模限额不能替代工具的分页设计。例如：
 
-- 列表、数据库和搜索工具必须提供 `limit`、`cursor` 或分页参数。
+- 面向可增长数据集的列表、数据库和搜索工具必须提供 `limit`、`cursor` 或分页参数。`capability_search {}` 的轻量授权目录采用第 9.6 节的全量快照契约，不以分页或数量上限隐藏可用能力；正文和完整 Schema 仍按需加载。
 - 文件、网页和日志读取工具必须提供 `offset/range/lineStart/lineEnd` 等范围参数。
 - 工具返回的一页、一段范围或一个查询结果必须完整保留，并明确给出 `hasMore/nextCursor/total` 等语义。
 - 工具 Schema 应给出保守的默认页大小，但不能用业务上不正确的静默默认值替代缺失的必要参数。
 
-如果工具违反其声明的输出上限，Runtime 仍完整记录已收到的结果，然后在压力下先生成有界模型视图；只有当最新不可分割尾部在预裁剪后仍无法进入硬预算时，Turn 才以 `context_budget_exceeded` 结束。这种失败仍应被统计为工具协议设计问题。
+Runtime 完整记录已收到的结果，再在每步摘要及主模型请求前执行逐条入模限额。达到压力阈值时继续执行既有裁剪和摘要；完整请求仍无法进入硬预算时，Turn 以 `context_budget_exceeded` 结束。单条限额不保证多条结果合计一定进入窗口，也不替代工具自身的分页协议。
 
 ## 11. 事件模型
 
@@ -722,7 +731,9 @@ export interface SessionLogEvent<TType extends string, TPayload> {
 | `interaction.requested`              | 审批或结构化询问审计                          | 否                                              |
 | `interaction.resolved`               | 人工决定审计                                  | 否                                              |
 
-`tool.result` 在事件日志中始终保存完整内容。Surface 在压力阈值以下使用同一内容，阈值以上可由 `surface.replaced` 投影头尾预裁剪视图；`turn_read` 读取工具结果时仍逐字段返回原内容。任何 Compaction 只改变后续模型投影，不能改写或删除原始 Tool Result。
+`tool.result` 在事件日志中始终保存完整内容。Surface 可由逐条入模限额或压力裁剪的 `surface.replaced` 投影头尾视图；`turn_read` 执行时读取原内容，其返回结果入模时同样受限。任何 Compaction 只改变后续模型投影，不能改写或删除原始 Tool Result。
+
+`request_user_input` 的 `interaction.resolved` 无论为 `submitted`、`rejected` 还是 `cancelled`（跳过回答），都与续接 Inbox 在同一事务中持久化，再唤醒 Driver，在同一 ConversationEvent 创建后续 Exchange。拒绝或跳过不直接结束事项；续接输入明确记录未回答，要求模型尊重拒绝、继续可推进的部分，缺少必需事实或授权时说明限制，不得编造或推定同意。重复幂等请求不得重复续接；显式停止任务仍走独立取消命令。
 
 ### 11.3 Turn 结束原因
 
@@ -809,6 +820,14 @@ conversation_event_relations
 - 已记录 `tool.call` 但没有 `tool.result` 的副作用工具不自动重放。Runtime 写入不确定结果，并让新 Turn 向用户确认或通过幂等查询工具核对。
 - 只有明确声明 `replaySafe` 且带幂等键的工具才可在恢复时重试。
 
+### 12.4 模型空输出的有界恢复
+
+- 主任务收到空白正文且无 Tool Call 的完整响应（允许含推理），或流未完整结束且尚未输出可见正文时，每个 Turn 最多自动恢复一次。正常正文、合法的纯工具调用、`length` 输出上限、鉴权/其他 Provider 错误及用户取消不触发此恢复。
+- 恢复产生独立 Step 和 requestId，沿用已完成的 Tool Call/Result 事实；空助手消息不进入后续模型上下文，已经执行的工具不会被重放。恢复前处理已到达的 `next-step`，取消保持优先。
+- 原响应与已知 usage 继续写入事件日志；流不完整时不伪造 usage 或已完成的模型响应。第二次仍失败则按原失败原因结束 Turn，保留客户端的失败状态提示。
+- OpenAI-compatible SSE 至少需要明确的 `finish_reason` 或 `[DONE]` 之一；两者都未收到时按 `MODEL_STREAM_INCOMPLETE` 处理，已收集但未完成的工具调用不得执行。
+- 异常和恢复写入结构化服务日志，关联 user/session/turn/step/requestId，并记录模型、原始结束原因、流结束标志、usage、内容长度、耗时和是否重试。诊断不记录正文、推理、工具参数或密钥，不为正常成功请求新增详细日志。
+
 ## 13. Compaction 设计
 
 ### 13.1 触发时机
@@ -835,6 +854,10 @@ conversation_event_relations
 9. Runtime Checkpoint 不反向覆盖业务摘要；原始 SessionLogEvent、ExecutionTurn 和 Tool Result 始终不变。
 
 ### 13.3 摘要必须保留
+
+Session/Event 业务摘要及 Runtime Checkpoint 按当前用户、本次 Step 的模型有效上下文窗口动态计算：正文目标为窗口的 25%，生成硬上限最多为窗口的 40%，均向下取整。不是固定的 32K 配置。生成额度与业务请求输出限额分开，受模型输出能力、摘要请求输入能力与扣除安全量后的剩余窗口约束；受限时同比收紧正文目标，材料较少时允许更短，禁止凑字数。
+
+提示词要求关键目标、约束、更正、待办和下一步优先，并给出明确中文字符目标与 token 上限。按用户确定的策略，超限正文直接保留预算内的 Unicode 完整前缀，`length` 返回也可提交已有正文，不为此新增失败重试；空正文、意外工具调用、取消、冲突和未缩短仍拒绝。原始输出停止原因、截断标志、生成预算及估算长度写入摘要事件的 `summaryGeneration`，不改写 Provider 用量与主任务停止原因。原始历史始终保留。
 
 - 用户当前目标。
 - 已确认参数和约束。
@@ -1059,7 +1082,7 @@ DeepSeek Harness 中不纳入目标项目的部分包括 Subagent、Workflow Wor
 | Turn 与事件关联      | [`schema/db/conversation_turn.py`](../../private-learn/agent-base/schema/db/conversation_turn.py)                               | 用 `event_id` 把用户可见 Turn 归入业务事项                         | 保留用户可见问答分组，但显式拆成 ConversationExchange 和内部 ExecutionTurn                                              |
 | JSON Schema 缺参分类 | [`runtime/tools/schema_validator.py`](../../private-learn/agent-base/runtime/tools/schema_validator.py)                         | 区分 required 字段缺失与其他非法输入                               | 直接映射为 `needs_input` 或 `fatal_error`，不经 LLM Harness                                                             |
 | 工具输入/输出校验    | [`runtime/tools/skill_executor.py`](../../private-learn/agent-base/runtime/tools/skill_executor.py)                             | 执行前校验输入，执行后校验统一输出                                 | 保留双向校验，将 Skill 概念收敛为 Tool                                                                                  |
-| UI 事件适配          | [`runtime/ag_ui/adapter.py`](../../private-learn/agent-base/runtime/ag_ui/adapter.py)                                           | 运行事件与 UI 协议解耦                                             | 保留 adapter 层，改为可从持久日志重放                                                                                   |
+| UI 事件适配          | [`runtime/ag_packages/app-ui/adapter.py`](../../private-learn/agent-base/runtime/ag_packages/app-ui/adapter.py)                                           | 运行事件与 UI 协议解耦                                             | 保留 adapter 层，改为可从持久日志重放                                                                                   |
 | 压缩不阻断事实提交   | [`runtime/hooks/runtime_hook.py`](../../private-learn/agent-base/runtime/hooks/runtime_hook.py)                                 | 非核心投影失败不影响 Agent 主链路                                  | 不采用 after-Exchange 摘要 Hook；首 Step Memory Guard 独立提交摘要，原始问答、Inbox 和完整 Tool Result 必须同步持久成功 |
 
 ### 18.1 明确不借鉴的 Agent Base 主链路

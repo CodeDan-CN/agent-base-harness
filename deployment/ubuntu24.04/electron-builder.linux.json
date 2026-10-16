@@ -1,0 +1,19 @@
+{
+  "extends": null,
+  "appId": "com.agentharness.client",
+  "productName": "Agent Harness",
+  "electronDist": "node_modules/electron/dist",
+  "directories": {
+    "output": "release/desktop-linux"
+  },
+  "files": ["dist/main/**/*", "dist/preload/**/*", "dist/renderer/**/*", "package.json"],
+  "extraResources": [{ "from": "resources/icon.png", "to": "icon.png" }],
+  "npmRebuild": false,
+  "artifactName": "agent-harness-client-${version}-linux-${arch}.${ext}",
+  "linux": {
+    "executableName": "agent-harness-client",
+    "icon": "resources/icon.png",
+    "category": "Development",
+    "target": ["AppImage", "tar.gz"]
+  }
+}

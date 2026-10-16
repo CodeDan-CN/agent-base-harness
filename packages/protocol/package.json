@@ -1,0 +1,12 @@
+{
+  "version": "0.1.0",
+  "private": true,
+  "name": "@agent-harness/protocol",
+  "exports": {
+    ".": "./src/client/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "zod": "^3.24.2"
+  }
+}

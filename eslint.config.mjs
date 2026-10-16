@@ -55,7 +55,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['ui/**/*.{ts,tsx}'],
+    files: ['packages/app-ui/**/*.{ts,tsx}'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -63,11 +63,11 @@ export default tseslint.config(
           patterns: [
             {
               group: [
-                '**/src/main/**',
-                '**/src/preload/**',
-                '**/src/worker/**',
-                '**/src/runtime/**',
-                '**/src/infrastructure/**',
+                '**/apps/desktop/src/main/**',
+                '**/apps/desktop/src/preload/**',
+                '**/packages/server-core/src/application/**',
+                '**/packages/runtime-core/src/**',
+                '**/packages/execution/src/**',
               ],
               message: 'UI 只能通过 @client-contracts 和 window.agentClient 访问核心能力。',
             },

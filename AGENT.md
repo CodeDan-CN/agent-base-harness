@@ -1,6 +1,12 @@
 # Agent Base Harness 项目协作指南
 
+> 多端工程更新：本项目现采用 npm workspaces，源码位于 apps/ 与 packages/。生产 Server 托管 Web，Desktop/CLI 为远程客户端，Mobile 已有轻量手机界面与 Android 壳源码（APK 编译/真机待验收）。当前工程、启动、依赖和交付约定以[多端工程架构](docs/多端工程拆分与远程客户端架构.md)为准；下文关于单源码包、Electron 拉起/内置 Runtime 的历史约定已被替代。既有任务和数据语义继续有效。
+
 > 4.7.5 目标更新（待实施）：同等级 AgentProfile 支持直接问答与授权调用，Dylan 是每用户初始默认档案；智能体只在设置中创建管理，首页列表通过独立展示关系选择已有档案。模型通过统一 capability_search 有界检索 Skill/MCP/可调用 Agent，再分别进入 skill_load、mcp_load、agent_call。委派采用单层星型结构，只有直接会话可调用其他 Agent，受派会话返回报告后由调用方决定是否再调用另一 Agent，不建立嵌套调用链。本文早期“只有一个 Agent / 不引入 Subagent”约束仅适用于 Runtime V1。每 Session 单 Driver、低上下文、原生 Tool Call 和独立服务边界继续成立。Agent 浅层记忆采用独立 MD，一个 builtin-memory 定义通过 Host MCP 实例管理器按 Agent 私有/用户共享作用域按需运行，普通 MCP 用户级复用，Node/Python 安装应用级共享。最新范围与验收以 [4.7.5 方案](docs/阶段方案/阶段4.7.5-多智能体档案与会话归属开发架构设计.md) 为准，下文保留早期实现基线，不据此宣称多 Agent 已实现。
+
+> 2026-09-11 用户系统更新：各客户端独立管理本地账号和密码，Runtime（含远程 Server）统一信任客户端提供的 userId，只保留数据归属与执行权限校验。旧服务端注册/登录已停用，升级关联旧 ID 及具体协议以[多端工程架构](docs/多端工程拆分与远程客户端架构.md#客户端用户与-runtime-数据归属)为准；此前 Server 账号鉴权描述为历史方案。
+
+> 2026-09-14 凭据存储更新：模型/MCP API Key 统一由 Runtime SQLite 的 `credential_secrets` 表保存明文，业务表保留引用，客户端快照不读取或返回密钥。macOS、Ubuntu/Linux、Windows 不再默认使用系统钥匙串或独立加密文件。旧实现仅用于显式离线迁移，见[凭据存储与迁移](docs/Runtime凭据存储与迁移.md)。
 
 ## 1. 文档用途
 
@@ -14,20 +20,22 @@
 4. 当前开发阶段的技术落地方案（存在时）。
 5. 与当前任务直接相关的参考项目代码；只有需要追溯早期分析时，才查阅 `docs/设计文档/` 中的初始草案。
 
+涉及 Ubuntu 24.04.4 的环境准备、Runtime＋Web / Linux Desktop 打包、部署与验证时，先阅读并按 [Ubuntu 详细操作步骤](deployment/ubuntu24.04/RUNBOOK.md) 执行。常规重复打包优先使用 `npm run pack:ubuntu`（Runtime＋Web）或 `npm run pack:ubuntu -- --all`（加 Linux Desktop），首次宿主依赖配置见同一文档。独立工作目录、命令顺序、验证范围与回滚步骤以该文档为操作依据，相关配置与验收模板位于 [部署目录](deployment/README.md)。
+
 若阶段技术落地方案与总体方案冲突，应先确认并同步修订总体方案，不能由实现代码自行选择语义。若用户在当前任务中提出了更新要求，以用户的明确要求为准，并同步更新相关文档。
 
 ## 2. 当前状态
 
-阶段 4.7.0 已确定为 Runtime（运行时）独立化，首批支持 CLI（命令行客户端）与 Electron（桌面客户端），Web（浏览器）和手机应用后续接入。详见[4.7.0 开发架构设计](docs/阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)。当前代码仍以桌面主进程承载工作线程；下述既有目录是实现基线，不能把设计状态描述成已实现。
+阶段 4.7.0 Runtime（运行时）独立化已经实现 CLI（命令行客户端）与 Electron（桌面客户端）接入；当前进一步提供复用同一 React UI 的 Web 客户端，由独立 Runtime 同源托管静态资源并通过 HTTP/SSE 接入。手机应用仍为后续范围。详见[4.7.0 开发架构设计](docs/阶段方案/阶段4.7.0-Runtime独立化开发架构设计.md)。
 
 本项目是一个 **Client 应用开发项目**。阶段 1 的 Client 基础运行平台、阶段 2 的 Headless 单 Agent Runtime V1 和阶段 3 的正式 Client UI 主链路已经完成；阶段 4“模型能力与上下文管理”已形成实施方案，阶段 4.5“通用 MCP 接入、首个外部记忆 MCP 与 Pi 基础工具参考”也已完成开发架构和测试设计。实际开发以当前阶段对应设计和测试文档为准。
 
 仓库当前主要包含：
 
-- `ui/`：独立构建的正式 React Renderer，只能依赖公开 Client Contract 和 Preload 白名单 API。
+- `packages/app-ui/`：独立构建的正式 React Renderer，只能依赖公开 Client Contract 和 Preload 白名单 API。
 - `src/`：Electron Main、Preload、Runtime Worker、公开 Client Contract、单 Agent Runtime 与基础设施正式代码。
 - `tests/`：阶段 1～3 已有的单元、契约、安全与集成测试，以及阶段 4/4.5 将扩展的模型能力、Compaction、Pi 基础工具、MCP Tool Bridge、首个外部记忆 MCP 和迁移测试。
-- `src/infrastructure/llm/`：OpenAI-compatible 真实 HTTP/SSE Adapter；阶段 4 在其上增加 DeepSeek/百炼预制和思考参数映射，不建立通用真实 Provider 兼容矩阵。
+- `packages/execution/src/llm/`：OpenAI-compatible 真实 HTTP/SSE Adapter；阶段 4 在其上增加 DeepSeek/百炼预制和思考参数映射，不建立通用真实 Provider 兼容矩阵。
 - `docs/`：Client 总体方案、Runtime 目标设计、各阶段技术落地方案和早期设计草案。
 - `reference_ui/`：未来应用的视觉和布局参考原型。
 
@@ -41,7 +49,7 @@
 
 ## 3. 项目背景
 
-本项目计划使用 Node.js 和 TypeScript 构建一个完整的 Agent Client 应用。应用预置两个本地用户并支持继续注册、单 Agent Runtime、本地持久化、模型与工具集成、事件投影，以及面向用户的聊天和设置界面。
+本项目计划使用 Node.js 和 TypeScript 构建一个完整的 Agent Client 应用。独立 Runtime 从空账号状态开始并支持本地注册、单 Agent Runtime、本地持久化、模型与工具集成、事件投影，以及面向用户的聊天和设置界面；旧 Electron 基线中的两个本地用户只作为兼容迁移数据，不再作为新安装的演示账号。
 
 4.7.0 的交付主体包括可独立安装的服务与 CLI，以及接入同一服务的 Electron 客户端。Runtime 负责会话、模型调用、工具执行、队列、取消、恢复和上下文管理；客户端负责一致、可观察、可操作的交互体验。服务拥有任务生命周期，客户端断开不等于取消。
 
@@ -70,11 +78,11 @@
 - 一个 Step 中明确安全的工具可以有界并行；未声明安全或具有副作用的工具默认独占。
 - Inbox 持久化，并明确区分 `next-turn` 和 `next-step`。
 - Queue、Steer、队列项从 `next-turn` 立刻介入 `next-step`、Inject、Cancel 均具有确定、可测试、可恢复的语义。
-- 完整保存 Tool Result 事实；在上下文压力达到阈值时，允许只对模型可见 Surface 生成可追溯的头尾预裁剪投影，但不得改写原始 Event 或拆分 Tool Call/Result 配对。
+- 完整保存 Tool Result 事实；每条结果入模前执行可配置限额，压力达到阈值时继续执行既有预裁剪与检查点压缩。两者只生成可追溯的 Surface 替换，不改写原始 Event 或拆分 Tool Call/Result 配对。
 - 通过 Context Projector 贯彻“存全，发少”，控制模型上下文增长。
 - 采集 provider 返回的精确 usage，并单独记录上下文组成估算。
 - UI、执行轨迹、Inbox 和 Token 统计都应由持久事件投影得到，而不是依赖前端临时状态成为事实。
-- Client 预置两个本地用户并支持继续注册；会话、事件、模型、Skill、凭据引用和 Agent 上下文必须按 `userId` 隔离。
+- Client 支持注册多个本地用户但不预置演示账号；会话、事件、模型、Skill、凭据引用和 Agent 上下文必须按 `userId` 隔离。
 - Client 应用必须提供完整的会话、输入、运行过程、队列、停止、模型配置和能力管理体验，而不是只实现不可交互的 Runtime 核心。
 - 模型管理和 Skill 管理是正式 Client 产品模块，必须覆盖持久化、校验、凭据/授权、启停、用户隔离和 Runtime 配置快照，不能只做静态设置页面。
 - Runtime 与 UI 必须通过明确的命令和事件/Projection 契约连接，使客户端刷新或重启后仍能恢复一致状态。
@@ -85,7 +93,7 @@
 
 实现和命名应统一使用设计文档中的概念：
 
-- `LocalUser`：预置或注册产生的本地用户，是 Session、模型、Skill 和其他用户私有数据的顶层作用域。
+- `LocalUser`：注册产生或从旧版本迁移的本地用户，是 Session、模型、Skill 和其他用户私有数据的顶层作用域。
 - `Session`：一段可持久化会话；同时最多存在一个活动 Driver。
 - `Inbox`：已接纳但尚未在安全边界领取的输入，目标为 `next-turn` 或 `next-step`。
 - `ExecutionTurn`：Agent 对一条排队请求的完整执行过程。
@@ -119,7 +127,7 @@
 │   ├── runtime/             # 单 Agent Runtime、工具、上下文与 Provider 契约
 │   ├── infrastructure/      # SQLite、Credential、进程、Skill、日志适配
 │   └── shared/              # 跨进程契约与领域基础类型
-├── ui/                      # 与宿主核心物理分离的 React Renderer 工程
+├── packages/app-ui/                      # 与宿主核心物理分离的 React Renderer 工程
 │   ├── index.html           # Vite 页面入口
 │   └── src/                 # 页面、组件、交互状态、Client facade 与 UI Projection
 ├── tests/
@@ -150,12 +158,12 @@
 - `src/infrastructure` 放置模型 Provider、数据库、文件系统、网络和客户端平台能力的具体适配，避免外部实现细节侵入 Runtime 核心。
 - `src/shared` 只放真正跨层使用的契约和无领域状态工具，不作为无法分类代码的兜底目录。
 - `tests` 从一开始区分单元、集成和端到端层级，但只按当前阶段逐步增加实际测试文件。
-- `ui/public` 面向 Vite 页面资源，`resources` 面向最终客户端安装包资源；若后续技术选型证明不需要其中某项，可以删除。
+- `packages/app-ui/public` 面向 Vite 页面资源，`resources` 面向最终客户端安装包资源；若后续技术选型证明不需要其中某项，可以删除。
 - `reference_ui` 始终作为独立参考保留，不导入正式构建，也不在其中继续实现产品逻辑。
 
 当前已经使用 Electron + React + Vite，并由独立 Node Worker 承载 Runtime。以下内容仍按后续阶段细化：
 
-- `ui/src` 内部的正式 feature、组件和设计 token 进一步分层。
+- `packages/app-ui/src` 内部的正式 feature、组件和设计 token 进一步分层。
 - `src/runtime` 随实现规模增长后的进一步模块拆分。
 - 4.7.0 已确定服务独立交付；内部各层按模块隔离，服务 npm 包先包含 CLI，SDK 独立发布留待后续。
 
@@ -310,7 +318,7 @@ runtime/context/event_preloader.py
 runtime/events/manager.py
 runtime/tools/schema_validator.py
 runtime/tools/skill_executor.py
-runtime/ag_ui/adapter.py
+runtime/ag_packages/app-ui/adapter.py
 runtime/hooks/runtime_hook.py
 schema/db/agent_event.py
 schema/db/conversation_turn.py

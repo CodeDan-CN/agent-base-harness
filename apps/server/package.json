@@ -1,0 +1,15 @@
+{
+  "version": "0.1.0",
+  "private": true,
+  "name": "@agent-harness/server-app",
+  "scripts": {
+    "dev": "node ../../scripts/dev.mjs server",
+    "build": "npm --prefix ../.. run build:server",
+    "start": "node ../../dist/server/index.cjs"
+  },
+  "dependencies": {
+    "@agent-harness/cli": "0.1.0",
+    "@agent-harness/protocol": "0.1.0",
+    "@agent-harness/server-core": "0.1.0"
+  }
+}

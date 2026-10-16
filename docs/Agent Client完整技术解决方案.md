@@ -1,4 +1,8 @@
+> 2026-09-11 用户边界更新：现阶段注册、密码校验和登录状态由客户端本地负责；所有 Runtime 接入方式信任客户端声明的 userId，保留会话/数据归属及执行权限检查。该产品决定取代本文早期服务端账号与认证设计，协议和旧数据接入以[多端工程架构](多端工程拆分与远程客户端架构.md#客户端用户与-runtime-数据归属)为准。
+
 # Agent Client 完整技术解决方案
+
+> 多端工程更新：本项目现采用 npm workspaces，源码位于 apps/ 与 packages/。生产 Server 托管 Web，Desktop/CLI 为远程客户端，Mobile 已有轻量手机界面与 Android 壳源码（APK 编译/真机待验收）。当前工程、启动、依赖和交付约定以[多端工程架构](多端工程拆分与远程客户端架构.md)为准；下文关于单源码包、Electron 拉起/内置 Runtime 的历史约定已被替代。既有任务和数据语义继续有效。
 
 > 4.7.5 目标更新（待实施）：同等级 AgentProfile 支持直接问答与授权调用，Dylan 是每用户初始默认档案；智能体只在设置中创建管理，首页列表通过独立展示关系选择已有档案。委派采用单层星型结构，只有直接会话可调用其他 Agent，受派会话返回报告后由调用方决定是否再调用另一 Agent，不建立嵌套调用链。本文早期“只有一个 Agent / 不引入 Subagent”约束仅适用于 Runtime V1。每 Session 单 Driver、低上下文、原生 Tool Call 和独立服务边界继续成立。Agent 浅层记忆采用独立 MD，一个 builtin-memory 定义通过 Host MCP 实例管理器按 Agent 私有/用户共享作用域按需运行，普通 MCP 用户级复用，Node/Python 安装应用级共享。最新范围与验收以 [4.7.5 方案](阶段方案/阶段4.7.5-多智能体档案与会话归属开发架构设计.md) 为准，下文保留早期实现基线，不据此宣称多 Agent 已实现。
 
@@ -31,11 +35,11 @@ Client 技术解决方案
 
 ## 2. 项目背景
 
-本项目从 4.7.0 起交付可独立启动的 Agent 服务、CLI（命令行客户端）与 Electron（桌面客户端）。服务采用模块化单体：Gateway（网关）与 Runtime（运行时）代码分层，但默认运行在同一个 Node.js 进程、打包为同一个 npm 发布物；Gateway 提供本地账号注册与登录，并预置两个可直接使用的账号，用户可以不启动桌面而运行任务。
+本项目从 4.7.0 起交付可独立启动的 Agent 服务、CLI（命令行客户端）与 Electron（桌面客户端）。服务采用模块化单体：Gateway（网关）与 Runtime（运行时）代码分层，但默认运行在同一个 Node.js 进程、打包为同一个 npm 发布物；Gateway 提供本地账号注册与登录，全新安装不预置演示账号、固定密码或模型凭据，用户完成注册和模型配置后可以不启动桌面而运行任务。
 
-Client 内部包含一个单 Agent Runtime，默认预置两个可切换的本地用户，并允许继续注册本地账号。每个用户拥有独立的会话、模型配置、模型凭据、Skill、工具注册表、附件和运行统计。Runtime 需要在本地长期管理模型调用、工具执行、用户追加、软打断、取消、历史压缩、事件回放和崩溃恢复，同时为界面提供可重建的聊天、执行过程、队列和统计数据。
+Client 内部包含一个单 Agent Runtime，支持注册和切换多个本地用户。每个用户拥有独立的会话、模型配置、模型凭据、Skill、工具注册表、附件和运行统计。Runtime 需要在本地长期管理模型调用、工具执行、用户追加、软打断、取消、历史压缩、事件回放和崩溃恢复，同时为界面提供可重建的聊天、执行过程、队列和统计数据。
 
-所有本地用户都属于同一操作系统账号下的应用级身份，不是云端账号或强认证安全边界。数据采用单个 SQLite 数据库、同库同表的 `user_id` 字段隔离；敏感凭据继续使用操作系统 Credential Store，并按用户命名空间隔离。
+所有本地用户都属于同一操作系统账号下的应用级身份，不是云端账号或强认证安全边界。数据采用单个 SQLite 数据库、同库同表的 `user_id` 字段隔离；API Key 由 Runtime 自己管理，明文保存在同一数据库的 credential_secrets 表，按用户命名空间隔离；macOS、Ubuntu/Linux、Windows 统一使用此实现。
 
 项目主要借鉴三个来源：
 
@@ -50,7 +54,7 @@ Client 内部包含一个单 Agent Runtime，默认预置两个可切换的本�
 ### 3.1 产品目的
 
 - 提供完整的本地 Agent 对话和任务执行体验。
-- 提供本地账号注册、登录和清晰的用户切换入口，并预置两个可直接登录的账号。
+- 提供本地账号注册、登录和清晰的用户切换入口，不提供演示账号或固定密码。
 - 切换用户后，会话、模型和 Agent 可使用的 Skill 完全按用户隔离。
 - 让用户能够查看模型回答、工具步骤、排队任务和明确的停止状态。
 - 支持模型服务配置、模型选择、工具或技能能力管理。
@@ -74,7 +78,7 @@ Client 内部包含一个单 Agent Runtime，默认预置两个可切换的本�
 - Queue、Steer、队列项立刻介入、Cancel 和恢复行为稳定且有自动化测试。
 - 所有模型可见信息都能追溯到持久事件。
 - UI 可从持久化 Snapshot 和增量事件完整重建。
-- 当前 Turn 的工具结果在日志和模型 Surface 中逐字段一致。
+- 当前 Turn 的工具结果完整写入日志；模型 Surface 可使用逐条限额或压力裁剪产生的持久替换，保留调用配对和原文定位。配置与行为见[阶段 4 工具结果入模限额](阶段方案/阶段4-模型能力与上下文管理开发架构设计.md#86a-工具结果入模限额)。
 - 长 ConversationEvent 经压缩后，单 Turn 上下文趋于稳定。
 - Client 重启不会自动重放结果不确定的外部副作用。
 - 任一用户无法通过 Session、历史工具、模型或 Skill 引用读取另一用户的数据和配置。
@@ -87,7 +91,7 @@ Client 内部包含一个单 Agent Runtime，默认预置两个可切换的本�
 
 - Electron 桌面应用壳，以及 4.7.0 独立服务与 CLI（命令行客户端）。
 - 会话创建、切换、重命名和删除。
-- 预置账号与后续注册账号的切换和用户级数据隔离。
+- 多个注册账号之间的切换和用户级数据隔离。
 - 流式聊天和 Markdown 内容展示。
 - 执行过程、Step、Tool Call/Result 和结束原因展示。
 - Queue、Steer、队列项立刻介入、Cancel 以及队列项管理。
@@ -182,7 +186,7 @@ flowchart LR
 2. **客户端接入层**包含视图状态与事件订阅、预加载安全桥、主进程与应用生命周期。它负责把 Renderer 与本地 Node 能力隔离，并把用户操作转化为白名单、强类型的命令和查询。
 3. **应用服务层**是 Client 用例入口，包含命令服务、查询与订阅服务、本地用户上下文、模型、Skill 和 MCP 管理服务。它负责用户切换、会话提交、取消、各类能力配置和订阅管理，并把可信 `userId` 注入所有 Runtime 操作。
 4. **单 Agent Runtime 核心层**包含输入接纳与持久 Inbox、Session Driver 与 Turn/Step Loop、Context Projector 与 LLM Adapter、Tool Registry/Scheduler/Interaction、事件 Projection 与崩溃恢复。这一层实现设计文档定义的核心运行语义。
-5. **数据与基础设施层**提供单一 SQLite Event Store、模型/Skill/MCP 配置 Repository、操作系统 Credential Store、Agent Skills 目录、MCP Client/Supervisor、附件目录、宿主机命令执行、日志、迁移和诊断。外部 MCP 自己持有的业务数据不进入 Client 核心模型。所有本地用户共享 SQLite 文件和表结构，但所有私有数据按 `user_id` 隔离。
+5. **数据与基础设施层**提供单一 SQLite Event Store、模型/Skill/MCP 配置 Repository、Runtime SQLite Credential Store、Agent Skills 目录、MCP Client/Supervisor、附件目录、宿主机命令执行、日志、迁移和诊断。外部 MCP 自己持有的业务数据不进入 Client 核心模型。所有本地用户共享 SQLite 文件和表结构，但所有私有数据按 `user_id` 隔离。
 6. **外部能力**包括大模型服务、本地与远程工具以及操作系统能力。它们只能通过 Runtime 中的适配器和权限边界被调用，不能被 Renderer 直接访问。
 
 进程部署与上述职责对应：展示层运行在 Renderer；预加载桥和主进程承担客户端接入；应用服务、Runtime 核心和 SQLite 访问运行在独立 Node Worker；模型、工具和系统资源位于 Client 边界之外。图中的命令服务、查询与订阅服务是统一用例入口，模型管理和 Skill 管理是其内部独立业务组件，具体职责见 8.13 和 8.14。
@@ -210,7 +214,7 @@ flowchart LR
 
 架构依赖原则是：上层可以依赖下层接口，下层不能反向依赖具体 UI；事件和 Projection 可以向上流动，但领域代码依赖不能向上穿透。
 
-源码层同步建立物理依赖边界：React Renderer 独立放在顶层 `ui/`，Main、Preload、Worker、Runtime 和 Infrastructure 放在 `src/`。`ui/` 不得直接导入上述宿主实现，只能静态依赖 `src/client-contracts/` 中的 DTO、运行时 Schema 和纯投影逻辑；所有实际能力调用仍必须经过 `window.agentClient`、Preload 白名单桥和 Main/Worker 校验链。独立 UI TypeScript 配置不加载 Node 类型，构建前执行依赖边界扫描。
+源码层同步建立物理依赖边界：React Renderer 独立放在顶层 `packages/app-ui/`，Main、Preload、Worker、Runtime 和 Infrastructure 放在 `src/`。`packages/app-ui/` 不得直接导入上述宿主实现，只能静态依赖 `packages/protocol/src/client/` 中的 DTO、运行时 Schema 和纯投影逻辑；所有实际能力调用仍必须经过 `window.agentClient`、Preload 白名单桥和 Main/Worker 校验链。独立 UI TypeScript 配置不加载 Node 类型，构建前执行依赖边界扫描。
 
 ### 6.3 总体数据流
 
@@ -503,7 +507,7 @@ Tool Registry 保存：
 - 并发安全分类函数。
 - 是否可恢复重放、幂等要求和可选 Interaction 能力。
 
-每个用户拥有独立的 Skill 安装状态、MCP 定义和 AgentProfile，每个 Agent 通过 binding 获得自己的有效能力快照。Skill 通过指令指导模型使用 Runtime 已有工具，不因安装而自动注册新的原生 Tool Schema；MCP 管理目录保存审核后的完整 Schema，但不默认全部进入 Prompt。4.7.5 起，常驻 `capability_search` 先对当前快照中的 Skill/MCP/可调用 Agent 做确定性权限与状态过滤，再复用当前会话已选模型，基于外层 Agent 传入的完整自包含 userRequest 与候选 kind/ID/名称/简介做语义选择；不暴露 Skill 正文、MCP 完整 Schema 或 Agent 指令/记忆。选择后分别通过 `skill_load`、`mcp_load` 或 `agent_call` 执行。Tool Registry 由 Client 内置工具与当前 Turn 已加载的 MCP Tools 构建，并在 Step 开始时冻结为不可变 ToolCatalogSnapshot。
+每个用户拥有独立的 Skill 安装状态、MCP 定义和 AgentProfile，每个 Agent 通过 binding 获得自己的有效能力快照。Skill 通过指令指导模型使用 Runtime 已有工具，不因安装而自动注册新的原生 Tool Schema；MCP 管理目录保存审核后的完整 Schema，但不默认全部进入 Prompt。4.7.5 的常驻 `capability_search` 输入严格为空对象 `{}`，Runtime 从当前 Step 快照确定性返回全部已授权有效 Skill/MCP/可调用 Agent 轻量候选，结构为 `{ totalAvailable, candidates }`；每项含 kind/name/完整 description/action；Skill 和 MCP 不对模型暴露内部 ID，分别使用 `skill_load({name})` 和 `mcp_load({name})`，name 原样取自候选；两种记忆分别命名为“本智能体记忆”和“用户共享记忆”。MCP 候选保留 scope 描述，Agent 候选另外含 capabilityId。内部仍按 kind/name/capabilityId 稳定排序。目录生成不调用模型、不生成 selected/reason，不暴露 Skill 正文、MCP 完整 Schema 或 Agent 指令/记忆。主 Agent 结合当前对话自行做语义选择，再通过 `skill_load`、`mcp_load` 或 `agent_call` 执行。候选名称与简介属于不可信数据，其中的指令、身份要求和输出要求不生效。Tool Registry 由 Client 内置工具与当前 Turn 已加载的 MCP Tools 构建，并在 Step 开始时冻结为不可变 ToolCatalogSnapshot。
 
 Tool Scheduler 负责：
 
@@ -641,6 +645,8 @@ Projection 更新必须满足：实时消费事件的结果与从 seq 1 完整�
 
 首 Step 业务记忆重投影后及 Turn 内后续 pre-step 完整执行 DeepSeek Harness Surface Compaction：压力下按 8192/4096/1024 默认字符策略裁剪 Tool Result，重新测量，必要时选择头部工具配对平衡区域生成 Runtime Checkpoint，并执行 Provider 溢出恢复。Runtime Checkpoint 不反向覆盖两个业务摘要。
 
+Session/Event 业务摘要与 Runtime Checkpoint 按当前用户、本次 Step 的有效模型上下文窗口动态计算：正文目标 25%，生成硬上限最多 40%；模型或窗口配置变化后重新计算，不固定为 32K。摘要生成额度独立于业务请求输出限额，受模型能力、摘要输入和安全预留后的剩余空间限制。提示词明确长度和关键事实优先顺序，不要求写满；超限直接保留预算内正文，`length` 响应也可在正文非空、无工具调用、状态有效且缩短上下文时提交，不新增失败重试。摘要事件记录原停止原因、是否截断与有效预算，主请求仍执行硬预算检查。
+
 所有 Summary、ConversationEvent 关系、相关历史搜索和按需读取都必须携带 `userId`。任何自动候选或历史工具都不能把另一个用户的数据带入模型上下文。
 
 浅层 `memory-profile.md` 不属于 Session Event、Session Summary 或核心 SQLite 内容模型，由现有文件工具与三档权限管理。复杂长期记忆仍不在 Runtime 内建立 Memory Provider、记忆 Skill 或记忆专用 Tool Contract；默认 Memory MCP 通过通用 MCP Bridge 运行，其 JSONL 正文位于用户级 MCP 数据目录。Client 核心 SQLite 只保存通用 MCP 配置、工具审核和运行事实。
@@ -652,7 +658,7 @@ Projection 更新必须满足：实时消费事件的结果与从 seq 1 完整�
 - 普通配置：模型服务元数据、模型参数、上下文窗口、工具开关、并行度和 UI 偏好。
 - 敏感配置：API Key、Token 和私有服务凭据。
 
-普通配置按 `user_id` 写入 SQLite；敏感配置必须写入操作系统 Credential Store，并使用 `userId + providerId/skillId` 命名空间隔离，SQLite 只保存不可逆引用 ID。配置变更只生成该用户的新 prompt epoch，运行中的 Step 不被静默改变。
+普通配置按 `user_id` 写入 SQLite；敏感配置必须写入Runtime SQLite Credential Store，并使用 `userId + providerId/skillId` 命名空间隔离，模型/MCP 业务表只保存引用 ID，真实密钥保存在独立 credential_secrets 表，不返回客户端。配置变更只生成该用户的新 prompt epoch，运行中的 Step 不被静默改变。
 
 模型与 Skill 配置是用户级 CRUD 事实，不写入某个 Session 的 Event Log。相关表是配置事实来源，每次变更在同一事务中递增用户配置 revision，并发布带 `userId`、配置域和 revision 的 `configuration.changed` 增量。Runtime 事件只记录一次模型请求或工具执行实际使用的配置快照 ID、版本和摘要，保证历史可审计。
 
@@ -663,6 +669,7 @@ Model Management 是正式 Client 业务模块，不只是 LLM Adapter 内部的
 - 按当前用户创建、编辑、启用、停用和删除模型服务。
 - 管理服务名称、Provider 类型、标准 API 地址、Provider 专用地址和非敏感连接参数。
 - 通过 Credential Service 设置、替换或清除 API Key；数据库和 Renderer 只看到凭据引用及“已配置”状态。
+- 模型与 MCP 管理快照的 `credentialStatus` 仅根据已保存的非空凭据引用返回 `configured`（已保存凭据）或 `missing`（未保存凭据），对 Credential Store 的访问次数必须为零，不读取密钥或探测钥匙串。“已保存凭据”不代表连接验证成功；密钥可读取性与有效性留到连接测试或实际调用验证，MCP 的 `connectionStatus` 独立表示连接状态。
 - 使用待保存配置执行连接测试，并把认证失败、地址错误、协议不兼容、超时和能力不足显示为不同结果。
 - 从支持的 Provider 拉取模型列表，与本地模型记录做可预览的新增、更新和失效对比，不静默覆盖用户手工参数。
 - 支持手工添加和编辑模型 ID、显示名称、上下文窗口、最大输出、Tool Call 能力、视觉能力和默认请求参数。
@@ -678,7 +685,7 @@ Skill Management 负责兼容通用 Agent Skills，并管理 Skill 对当前用�
 - 识别以 `SKILL.md` 为入口的 Skill 目录，并允许可选的 `scripts/`、`references/`、`assets/` 及其他辅助文件。
 - 解析 `name`、`description`、`compatibility` 等通用元数据；未知扩展字段保留但不擅自赋予权限。
 - 展示当前用户的 Skill 列表、搜索、启用状态、来源、兼容性、正文和受控资源预览。
-- 初始上下文不常驻投影完整能力列表；模型需要专门流程或外部能力时调用统一 `capability_search`。该工具不接受能力类型筛选，每次固定从当前快照同时检索 Skill/MCP/可调用 Agent 三类同级轻量候选，命中后分别进入 `skill_load`、`mcp_load` 或 `agent_call`。
+- 初始上下文不常驻投影完整能力列表；模型需要专门流程或外部能力时调用统一 `capability_search {}`。该工具只接受空对象，不接受 userRequest/limit/kinds 等字段，直接返回当前 Step 快照全部已授权有效的 Skill/MCP/可调用 Agent 三类同级轻量候选。主 Agent 结合对话选择后分别进入 `skill_load`、`mcp_load` 或 `agent_call`，无需额外内部模型请求。
 - Skill 本身不动态注册一块常驻 Runtime。指令需要执行 `scripts/` 时，模型通过 Runtime 已有的通用命令能力调用 Client 内置优先的 Node.js/Python 或宿主 Shell。
 - macOS arm64 首个发行目标随 `.app` 固定交付经摘要校验的 Node/Python Runtime Pack；它们是 `bash` 背后的 Host Capability，不增加模型可见 `node`/`python` Tool。开发模式在 Runtime Pack 未准备时可以回退宿主解释器，正式包缺失或目标架构不匹配则启动失败。
 - 客户端负责版本锁、解释器检测、首次执行确认、命令超时与取消、stdout/stderr/退出码采集、受控工作目录、环境变量收敛和审计；不把第三方依赖预装进全局 Runtime，也不静默执行 npm/pip 安装。
@@ -699,9 +706,9 @@ MCP 是外部工具接入机制，不与 Skill 混为同一概念：Skill 提供
 - 发现到的全部工具保存在管理目录，新工具默认关闭；只有当前用户已启用、Schema 已审核的工具进入下一 Step `ToolCatalogSnapshot`。
 - 公开名称使用确定性 `mcp__<serverName>__<rawName>` 映射，Tool 定义、Schema digest 与 raw route 按 generation 原子发布，运行中的 Step 不热切换。
 - Tool 原始结果作为 Event 事实完整保存，模型只获得通过 Schema 校验后的有界 Surface 投影；MCP Server 故障只降级其自身。
-- Client 不自动下载 Server、不自动执行 npm/pip 安装、不实现 OAuth；秘密值只进入 OS Credential Store。
+- Client 不自动下载 Server、不自动执行 npm/pip 安装、不实现 OAuth；秘密值只进入 Runtime SQLite Credential Store。
 
-MCP V1 只桥接 Tools，不把 Resources、Prompts、Sampling、Roots、Elicitation、Completions、Tasks 或 Apps 投影给 Agent。阶段 4.5 的记忆 MCP 是普通外部 MCP：其真实工具由 `tools/list` 发现，经用户审核后以 `mcp__<serverName>__<rawName>` 暴露，不由 Client 包装成 `memory_*`。
+MCP V1 只桥接 Tools，不把 Resources、Prompts、Sampling、Roots、Completions、Tasks 或 Apps 投影给 Agent。2026-09-12 增加原生 Elicitation 单布尔确认桥接：只允许活动工具调用向用户请求确认，使用已有 Interaction 卡片直接恢复原调用，不把授权交给模型或 Inbox；详见 [确认桥接设计与测试](阶段方案/MCP原生确认桥接设计与测试.md)。阶段 4.5 的记忆 MCP 是普通外部 MCP：其真实工具由 `tools/list` 发现，经用户审核后以 `mcp__<serverName>__<rawName>` 暴露，不由 Client 包装成 `memory_*`。
 
 ### 8.16 MCP 与 Pi 参考依据
 
@@ -736,7 +743,7 @@ erDiagram
   TOOL_CALL ||--|| TOOL_RESULT : resolves_to
 ```
 
-- LocalUser 是预置或注册产生的本地用户，是所有用户私有数据的顶层作用域。
+- LocalUser 是注册产生或从旧版本迁移的本地用户，是所有用户私有数据的顶层作用域。
 - Session 是属于一个 LocalUser 的持久会话容器。
 - SessionLogEvent 是技术事实，不可原地修改。
 - ConversationEvent 是围绕同一事项的用户可见问答集合。
@@ -764,6 +771,8 @@ erDiagram
 
 ### 9.3 数据目录
 
+当前普通文件上传采用会话工作区内保存、输入框插入路径的方案：`workspaces/<userId>/<sessionId>/attachments/` 保存原始文件，事件只保存用户发送的路径文本，不自动展开正文，也不新增附件元数据表。下方独立 attachments 目录及 SQLite 元数据属于早期规划；当前实现和边界见[多端工程架构：会话普通文件上传](多端工程拆分与远程客户端架构.md#会话普通文件上传)。图片输入另行实现。
+
 客户端数据目录至少区分：
 
 ```text
@@ -779,7 +788,7 @@ app-data/
   cache/          # 可删除重建的缓存
 ```
 
-密钥不存放在上述目录的明文文件中。附件事件只保存受控引用、元数据和完整性信息，不把大二进制直接放入事件 JSON。
+API Key 明文保存在数据库 credential_secrets 表中；不再创建独立加密文件或主密钥，数据库及其 WAL、备份都应作为含密钥的数据处理。附件事件只保存受控引用、元数据和完整性信息，不把大二进制直接放入事件 JSON。
 
 ### 9.4 用户隔离范围
 
@@ -792,7 +801,7 @@ app-data/
 | 模型服务、模型与默认模型    | 用户级                 | 模型 ID 只能在所属用户内解析                                      |
 | Skill、Tool Registry 与授权 | 用户级                 | Agent 只获得当前用户启用的 Tool Schema                            |
 | MCP Server、Catalog 与连接  | 用户级                 | 配置同表隔离；连接、Credential、重连和 Tool Snapshot 不跨用户共享 |
-| API Key 与 Skill Credential | 用户级                 | 存在 OS Credential Store，以用户命名空间隔离                      |
+| API Key 与 Skill Credential | 用户级                 | 存在 Runtime SQLite Credential Store，以用户命名空间隔离                      |
 | 外部记忆 MCP 与其正文       | 用户级                 | 配置、审核和连接在 Client 隔离；正文由外部 Server 自己管理        |
 | 附件与文件引用              | 用户级                 | SQLite 元数据带 `user_id`，实际文件按用户目录分区                 |
 | Runtime 日志                | 应用级文件、用户级字段 | 日志必须带 `userId` 且默认不记录会话敏感正文                      |
@@ -836,8 +845,8 @@ sequenceDiagram
 
 ### 10.2 本地账号注册、登录与切换
 
-1. 服务为既有 `user-a`、`user-b` 数据域幂等预置 `user_a`、`user_b` 两个登录名，默认密码均为 `123456`。
-2. 用户也可以直接输入账号和密码注册；注册成功时创建新的稳定 userId 和完整用户数据域，并直接返回已登录会话。
+1. 全新服务不预置账号、登录名或固定密码；旧版本用户数据保留但不得被自动赋予公共凭据。
+2. 用户输入账号和密码注册；注册成功时创建新的稳定 userId 和完整用户数据域，并直接返回已登录会话。
 3. CLI 或 Electron 向 Gateway 登录，Gateway 校验密码摘要并返回绑定该数据域的访问令牌。
 4. Gateway 从访问令牌构造可信 User Context，普通 Command 中的 `userId` 不作为授权依据。
 5. Electron 切换账号时先撤销当前登录会话，再登录另一个本地账号；CLI 和其他窗口的登录不受影响。
@@ -856,6 +865,8 @@ sequenceDiagram
 5. 第一个 Step 领取全部已到达 `next-step` 和 FIFO 第一条 `next-turn`。
 6. Context Projector 构造请求，LLM Adapter 开始流式模型调用。
 7. 模型直接回答则进入 stopping check；没有新 `next-step` 时结束 Turn。
+
+主任务出现仅推理的空输出，或尚未输出可见正文时流意外结束，允许每 Turn 自动恢复一次：使用新的 Step/requestId，保留已经完成的工具事实，空助手消息不进入后续模型上下文。已有可见正文、输出上限、鉴权错误和用户取消维持原结束方式。异常与恢复记录有界诊断元数据，SSE 校验明确的结束信号；具体边界见 [Runtime 空输出恢复](单Agent低上下文Runtime打造设计.md#124-模型空输出的有界恢复)。
 
 ### 10.4 Tool Call 执行
 
@@ -954,6 +965,7 @@ cancel current Turn
 - 工具写入 `interaction.requested` 并返回 `needs_input`/`concludesTurn`。
 - UI 根据 Interaction Schema 展示审批、选择或表单。
 - 用户提交通过 `interaction.resolve` 返回等待中的工具或创建确定的后续 Exchange。
+- 拒绝询问或跳过回答同样通过 `interaction.resolve` 记录结果并续接同一事项，把未回答的事实反馈给模型；不得直接把事项标为失败或完成。模型尊重拒绝、不重复追问，继续可推进的部分；缺少必需事实或授权时说明限制，不把拒绝当作同意。跳过回答与停止当前任务使用不同语义。
 - ConversationEvent 进入 `awaiting_user`，下一次补充继续同一事项。
 - 普通聊天补充与工具 Interaction 使用不同 Command，不互相伪装。
 - Interaction 回答作为内部续接输入持久化，不在聊天区渲染成新的用户气泡；UI 将回答前后的 ExecutionTurn 合并为同一执行过程，并把回答显示为其中的“用户回答”步骤。
@@ -988,7 +1000,7 @@ cancel current Turn
 1. UI 读取当前用户的 SkillManagementSnapshot，展示搜索、启用状态、来源、兼容性、环境提示和详情入口。
 2. Skill 来源适配器把本地目录或后续 ModelScope/ClawHub 下载结果转换为标准 Agent Skill 目录；目录必须包含合法 `SKILL.md`，可选包含 `scripts/`、`references/` 和 `assets/`。
 3. Skill Management 校验目录边界、文件基本安全和必填 frontmatter，计算内容摘要并创建当前用户的安装记录；安装阶段不执行脚本、不自动安装依赖。
-4. 启用后更新该用户的 `skill_revision`。新 Step 获取不可变 Agent 能力快照；常驻 Prompt 不展开完整能力目录或正文，`capability_search` 接收完整自包含 userRequest 和可选 limit，不提供 kinds 参数；它固定同时过滤 Skill/MCP/可调用 Agent 三类授权候选，再复用当前模型在三类候选的名称与简介上做语义选择。
+4. 启用后更新该用户的 `skill_revision`。每个 Step 开始时按最新配置获取不可变 Agent 能力快照，本 Step 中途配置变化在下一 Step 生效。常驻 Prompt 不展开完整能力目录或正文，`capability_search {}` 从当前快照直接返回 `{ totalAvailable, candidates }`，包含全部已授权有效 Skill/MCP/可调用 Agent 的名称、完整简介和加载/调用入口；无候选时返回零数量和空数组。目录不按请求、数量或内部模型筛选，由主 Agent 结合对话自行选择；正文和完整 Schema 继续按需加载。
 5. 模型在同一份能力搜索结果中判断使用 Skill、MCP、Agent、组合或都不使用；选择后分别调用 `skill_load`、`mcp_load`、`agent_call`，执行入口重新校验当前快照。Skill loader 只加载选中项的完整 `SKILL.md`，其中显式引用的资料和资源再按需读取。
 6. 当 Skill 指令要求运行脚本时，模型调用已有 `bash` 工具。Runtime Worker 先解析应用内固定版本的 `node`、`python3`、`python`，开发模式才回退宿主解释器；第三方依赖缺失时返回明确错误，不静默安装。
 7. 首次执行脚本前按当前用户和 Skill 内容摘要确认风险；执行统一经过超时、取消、输出限制、工作目录、环境变量收敛和日志审计。敏感凭据只有经明确授权才按名称注入。
@@ -1120,7 +1132,7 @@ MCP 服务页面包含：
 
 ### 12.3 数据安全
 
-- API Key 使用 OS Credential Store。
+- API Key 使用 Runtime SQLite Credential Store。
 - API Key 和 Skill Credential 使用 `userId + providerId/skillId` 命名空间，禁止跨用户回退或复用，除非用户分别显式配置相同凭据。
 - SQLite 文件和附件根目录权限限制为当前操作系统用户，附件在应用目录内再按 `userId` 分区。
 - 外部 MCP 的工作目录、数据范围和 Credential 按 `userId/serverId` 隔离；MCP 子进程不继承模型凭据。
@@ -1259,14 +1271,14 @@ promptEpoch
 - 建立正式 Main、Preload、Renderer、Runtime Worker 入口和 Worker 监护机制。
 - 实现最终形态的强类型 Bridge、IPC Schema、可信 User Context 和 cursor 订阅通道。
 - 实现 SQLite EventStore、模型与 Skill 配置 Repository、用户配置 revision、迁移、事务追加、单库双用户隔离和 Projection 基础框架。
-- 实现 OS Credential Store、应用数据目录、标准 Agent Skills 目录发现、内置优先解释器检测、附件引用、结构化日志和诊断基础设施；macOS arm64 包含固定 Node/Python Runtime Pack。
+- 实现 Runtime SQLite Credential Store、应用数据目录、标准 Agent Skills 目录发现、内置优先解释器检测、附件引用、结构化日志和诊断基础设施；macOS arm64 包含固定 Node/Python Runtime Pack。
 - 建立 Mock LLM、Fake Provider、Scripted Tool、Clock、ID、事件断言和 Headless Runtime Harness。
 - 建立 CI、类型检查、Lint、Contract Test、数据库迁移测试和基础打包验证。
 
 阶段验收：
 
 - 四个运行入口及安全边界与目标架构一致，不存在后续需要替换的临时通信路径。
-- 单 SQLite 能初始化预置用户并注册新用户，复合外键和负向测试能阻止跨用户访问。
+- 单 SQLite 能从空用户状态注册多个用户，复合外键和负向测试能阻止跨用户访问。
 - EventStore 的追加、回放、版本冲突和 Projection 重建通过确定性测试。
 - 模型/Skill Repository、用户配置 revision、凭据命名空间和配置 Snapshot 通过双用户隔离测试。
 - Bridge、Worker 重启、Credential、Skill 发现/加载、宿主机命令执行和数据目录均通过 Contract/Integration Test。
@@ -1506,7 +1518,7 @@ promptEpoch
 - 目标操作系统范围以及签名、自动更新和发布渠道。
 - SQLite 驱动、迁移工具和可选 ORM/Query Builder。
 - Runtime Worker 的具体构建、热重载和崩溃隔离实现。
-- OS Credential Store 的跨平台库选择。
+- 如将来恢复凭据加密，需另行确定主密钥管理和升级迁移方案。
 - 首批内置工具、权限等级和文件访问根目录。
 - 附件格式、大小上限、清理和导出策略。
 - 是否需要全库加密和用户可配置的数据目录。
@@ -1531,3 +1543,7 @@ promptEpoch
 12. 阶段拆工作范围，不拆该阶段应交付的正式语义，也不提前展开后续阶段全部细节。
 13. 阶段 1–2 以正式基础设施、Contract Test 和 Headless Harness 为交付，不为了演示建立临时 Client 或简化 Runtime。
 14. 技术复杂度必须服务于稳定、低上下文和可恢复，而不是追求平台化。
+
+### 2026-09-11 模型目录与上下文修复
+
+Runtime 模型能力目录增加在线刷新及持久缓存，设置展示来源/版本/失败回退，已有模型在安全 Step 边界应用新容量并保护手工覆盖。业务记忆摘要覆盖的 QA 不再重复发送；执行 Surface 的裁剪结果及检查点按原始覆盖范围组合，校验工具配对和实际 token 下降。详细行为与验证范围见阶段 4 方案的同日补充。

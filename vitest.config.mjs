@@ -4,7 +4,7 @@ export default defineConfig({
   root: import.meta.dirname,
   resolve: {
     alias: {
-      '@client-contracts': `${import.meta.dirname}/src/client-contracts/index.ts`,
+      '@client-contracts': `${import.meta.dirname}/packages/protocol/src/client/index.ts`,
     },
   },
   test: {

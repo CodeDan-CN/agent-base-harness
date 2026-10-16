@@ -183,7 +183,7 @@ src/
   infrastructure/       SQLite、Credential、文件、进程、日志
   shared/contracts/     IPC、Schema、错误码、DTO
   shared/domain/        用户、Session、配置基础类型
-ui/
+packages/app-ui/
   index.html             Vite Renderer 入口
   src/                   React 入口与 UI 代码
 tests/

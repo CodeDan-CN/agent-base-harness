@@ -1,7 +1,7 @@
 // Builds the Main / Preload / Worker entry bundles with esbuild.
 // Kept separate from the Renderer (Vite) build so Node-only bindings
 // (better-sqlite3, electron, worker_threads) never enter the Renderer graph.
-import { build } from 'esbuild';
+import { build, context } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -10,38 +10,45 @@ const root = path.resolve(__dirname, '..');
 
 const targets = {
   main: {
-    entryPoints: [path.join(root, 'src/main/index.ts')],
+    entryPoints: [path.join(root, 'apps/desktop/src/main/index.ts')],
     outfile: path.join(root, 'dist/main/index.cjs'),
     platform: 'node',
     external: ['electron', 'better-sqlite3'],
   },
   preload: {
-    entryPoints: [path.join(root, 'src/preload/index.ts')],
+    entryPoints: [path.join(root, 'apps/desktop/src/preload/index.ts')],
     outfile: path.join(root, 'dist/preload/index.cjs'),
     platform: 'node',
     external: ['electron'],
   },
   worker: {
-    entryPoints: [path.join(root, 'src/worker/index.ts')],
+    entryPoints: [path.join(root, 'packages/server-core/src/application/index.ts')],
     outfile: path.join(root, 'dist/worker/index.cjs'),
     platform: 'node',
     external: ['better-sqlite3'],
   },
   server: {
-    entryPoints: [path.join(root, 'src/server/entry.ts')],
+    entryPoints: [path.join(root, 'apps/server/src/main.ts')],
     outfile: path.join(root, 'dist/server/index.cjs'),
     platform: 'node',
     external: ['better-sqlite3'],
   },
   cli: {
-    entryPoints: [path.join(root, 'src/cli/index.ts')],
+    entryPoints: [path.join(root, 'apps/cli/src/main.ts')],
     outfile: path.join(root, 'dist/cli/index.cjs'),
     platform: 'node',
     external: ['better-sqlite3'],
     banner: { js: '#!/usr/bin/env node' },
   },
+  admin: {
+    entryPoints: [path.join(root, 'apps/server/src/admin.ts')],
+    outfile: path.join(root, 'dist/admin/index.cjs'),
+    platform: 'node',
+    external: ['better-sqlite3'],
+    banner: { js: '#!/usr/bin/env node' },
+  },
   client: {
-    entryPoints: [path.join(root, 'src/client/index.ts')],
+    entryPoints: [path.join(root, 'packages/client-sdk/src/index.ts')],
     outfile: path.join(root, 'dist/client/index.cjs'),
     platform: 'node',
   },
@@ -68,7 +75,7 @@ const opts = {
 };
 
 if (wasWatch) {
-  const ctx = await build({ ...opts });
+  const ctx = await context(opts);
   await ctx.watch();
   console.log(`[build] watching ${name}...`);
 } else {

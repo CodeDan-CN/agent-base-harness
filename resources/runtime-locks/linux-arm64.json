@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "target": {
+    "platform": "linux",
+    "arch": "arm64"
+  },
+  "node": {
+    "version": "24.20.0",
+    "artifact": "node-v24.20.0-linux-arm64.tar.xz",
+    "urls": [
+      "https://nodejs.org/download/release/v24.20.0/node-v24.20.0-linux-arm64.tar.xz",
+      "https://registry.npmmirror.com/-/binary/node/v24.20.0/node-v24.20.0-linux-arm64.tar.xz"
+    ],
+    "sha256": "5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7"
+  },
+  "python": {
+    "version": "3.13.15",
+    "release": "20260807",
+    "artifact": "cpython-3.13.15+20260807-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "urls": [
+      "https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/20260807/cpython-3.13.15%2B20260807-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
+    ],
+    "sha256": "1dfc9565c26f8892a33202b5966bdf9ff45c56a57b06e8fa65fecf05030afe5b"
+  },
+  "memoryMcp": {
+    "package": "@modelcontextprotocol/server-memory",
+    "version": "2026.7.4",
+    "integrity": "sha512-D+NNzChsOHN72y58ngDmO+TzjJijGi/sSY/gBydhB3TJCcm1XQEozVWwEpruHeXt/HSkMV3Z/BpHDhdt1MLD5w=="
+  }
+}

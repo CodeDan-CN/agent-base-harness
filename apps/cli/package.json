@@ -1,0 +1,13 @@
+{
+  "version": "0.1.0",
+  "private": true,
+  "name": "@agent-harness/cli",
+  "scripts": {
+    "build": "npm --prefix ../.. run build:cli",
+    "start": "node ../../dist/cli/index.cjs"
+  },
+  "dependencies": {
+    "@agent-harness/client-sdk": "0.1.0",
+    "@agent-harness/protocol": "0.1.0"
+  }
+}

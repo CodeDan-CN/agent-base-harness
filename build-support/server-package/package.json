@@ -1,0 +1,27 @@
+{
+  "name": "@agent-harness/server",
+  "version": "4.7.7",
+  "description": "Local Agent Harness Runtime service, Gateway, client SDK, and CLI",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "main": "dist/client/index.cjs",
+  "exports": {
+    ".": "./dist/client/index.cjs"
+  },
+  "bin": {
+    "agent-harness": "dist/cli/index.cjs"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3"
+  }
+}

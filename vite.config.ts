@@ -5,13 +5,13 @@ import { defineConfig } from 'vite';
 // Renderer-only Vite config. Main / Preload / Worker are built by scripts/build.mjs
 // so that Node-only dependencies never leak into the Renderer bundle.
 export default defineConfig({
-  root: path.resolve(__dirname, 'ui'),
+  root: path.resolve(__dirname, 'apps/desktop'),
   plugins: [react()],
   base: './',
   resolve: {
     alias: {
-      '@ui': path.resolve(__dirname, 'ui/src'),
-      '@client-contracts': path.resolve(__dirname, 'src/client-contracts/index.ts'),
+      '@ui': path.resolve(__dirname, 'packages/app-ui/src'),
+      '@client-contracts': path.resolve(__dirname, 'packages/protocol/src/client/index.ts'),
     },
   },
   build: {

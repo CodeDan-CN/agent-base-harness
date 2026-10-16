@@ -1,0 +1,21 @@
+# Test-only template. Confirm the user, paths and unused port before installing.
+# Install the documented bubblewrap/AppArmor prerequisites before restricted tool execution.
+[Unit]
+Description=Agent Harness Ubuntu deployment test
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/agent-harness-deploy
+UMask=0077
+Environment=SHELL=/bin/bash
+ExecStart=/home/ubuntu/agent-harness-deploy/current/bin/agent-harness serve --data-dir /home/ubuntu/agent-harness-deploy/data/service-test --host 127.0.0.1 --port 14317
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+{
+  "version": "0.1.0",
+  "private": true,
+  "name": "@agent-harness/desktop",
+  "scripts": {
+    "dev": "node ../../scripts/dev.mjs desktop",
+    "build": "npm --prefix ../.. run build:desktop",
+    "pack": "npm --prefix ../.. run pack:desktop"
+  },
+  "dependencies": {
+    "@agent-harness/app-ui": "0.1.0",
+    "@agent-harness/client-sdk": "0.1.0",
+    "@agent-harness/protocol": "0.1.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8"
+  }
+}

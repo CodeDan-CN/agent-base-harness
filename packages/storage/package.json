@@ -1,0 +1,12 @@
+{
+  "version": "0.1.0",
+  "private": true,
+  "name": "@agent-harness/storage",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@agent-harness/protocol": "0.1.0",
+    "better-sqlite3": "13.0.3"
+  }
+}

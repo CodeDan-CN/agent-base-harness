@@ -304,7 +304,7 @@ function normalizeToolCall(event, securityGuard) {
     return {
       toolCallId: payload.toolCallId,
       toolName: 'Skill',
-      input: { skill: asRecord(payload.input).skillName },
+      input: { skill: asRecord(payload.input).name },
     };
   }
   return securityGuard.redact({
@@ -484,7 +484,6 @@ async function main() {
     generation,
     logDir: path.join(args.appData, 'logs'),
     debug: false,
-    useSystemCredential: true,
     skipRecovery: true,
     runtime,
   });
